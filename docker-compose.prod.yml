@@ -1,6 +1,6 @@
-# KBiz360 backend — PRODUCTION (EC2). The Mongo backend uses MongoDB Atlas, so no DB container here.
+# KBiz360 backend — PRODUCTION (EC2). MongoDB Atlas is external, so no DB container here.
 # Deploy:  docker compose -f docker-compose.prod.yml up -d --build
-# Env/secrets come from ./.env.production (copy .env.production.example) and ./secrets/.
+# Caddy terminates HTTPS (auto Let's Encrypt) for kbiz360.duckdns.org and proxies to the backend.
 services:
   backend:
     build: .
@@ -8,23 +8,28 @@ services:
     container_name: kb360
     restart: unless-stopped
     env_file: ./.env.production
+    expose:
+      - "4000"               # internal only — reached by Caddy on the compose network
     ports:
-      - "4000:4000"          # HTTP. Add a domain + Caddy for HTTPS (see DEPLOY_EC2.md "Going HTTPS").
+      - "4000:4000"          # also published on the host (HTTP fallback/debug; safe to remove later)
     volumes:
       - ./uploads:/app/uploads
-      # Firebase service account for the native call screen (optional — omit if unused):
-      # - ./secrets/firebase.json:/app/secrets/firebase.json:ro
+      - ./secrets/firebase.json:/app/secrets/firebase.json:ro
 
-  # ── HTTPS: enable once a domain (e.g. api.kbiz360.com) points at this instance ──
-  # caddy:
-  #   image: caddy:2-alpine
-  #   restart: unless-stopped
-  #   ports: ["80:80", "443:443"]
-  #   volumes:
-  #     - ./Caddyfile:/etc/caddy/Caddyfile:ro
-  #     - caddy_data:/data
-  #     - caddy_config:/config
-  #   depends_on: [backend]
-# volumes:
-#   caddy_data:
-#   caddy_config:
+  caddy:
+    image: caddy:2-alpine
+    container_name: kb360-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+
+volumes:
+  caddy_data:
+  caddy_config:
