@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+.DS_Store
+prisma/*.db
+uploads/
+
+# SECRETS — never commit
+firebase-service-account.json
+*.pem
+*.p8

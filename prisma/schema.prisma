@@ -1,0 +1,386 @@
+// KBiz360 Smart Connect — Prisma schema
+// Designed to reproduce the frontend behavior EXACTLY (see Backend/REPORTS/PHASE-0-FOUNDATION-REPORT.md).
+//
+// IDENTITY MODEL (approved): three frontend identity spaces are kept as SEPARATE, LINKED entities,
+// never merged, because their role/branch/dept values diverge for the "same" person:
+//   • User           — access space (adminUsers a1..a8)  → feeds deriveAccess / makeAccessFilters
+//   • ReminderViewer — canSee space (PERSON_META a,fa..) → feeds makeCanSee   (own id space, own role/dept)
+//   • Chat/ChatParticipant — DM space (u1..u7)           → DM list (NOT access-filtered, source-faithful)
+//
+// ACCESS GRANTS are stored as the EXACT composite-string vocabulary the frontend uses
+// ('AMD-Accounts', 'AMD-crm', branch codes). deriveAccess() receives identical arrays → identical
+// AccessControl → identical bizOK/brOK/grpOK/deptOK/alertOK output. (Normalizing into join tables
+// would require reconstructing these exact strings and risks behavior drift — deliberately deferred.)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────── Enums ─────────────────────────
+
+enum RoleKey {
+  SUPER_ADMIN
+  DIRECTOR
+  GENERAL_MANAGER
+  BRANCH_MANAGER
+  HOD
+  EMPLOYEE
+}
+
+enum BizStatus {
+  active
+  setup
+}
+
+enum ModuleKey {
+  crm
+  accounts
+  pl
+  hr
+  payables
+  receivables
+  inventory
+}
+
+// Runtime reminder states used by data/store (NOT the loose 'open' in the foundation type — see D2).
+enum ReminderState {
+  pending
+  review
+  approved
+}
+
+enum ChatKind {
+  direct
+  group
+}
+
+enum MessageStatus {
+  sent
+  delivered
+  read
+}
+
+// ───────────────────────── Reference: roles ─────────────────────────
+
+// Seeded from constants/roles.ts (ROLE_DEFS + RANK). Reference metadata for the roles screen.
+// User.role uses the RoleKey enum directly (the enum is the authoritative constraint).
+model Role {
+  key   RoleKey  @id
+  label String
+  badge String
+  color String
+  scope String
+  sees  String
+  rank  Int // RANK: lower = higher authority (canSee ordering)
+  perms String[]
+}
+
+// ───────────────────────── Org structure ─────────────────────────
+
+model Business {
+  id          String         @id // 'tk'
+  code        String         @unique // 'TK'
+  name        String
+  industry    String?
+  shortInd    String?
+  color       String
+  tint        String?
+  branchCount Int            @default(0) // mock 'branches' count (display)
+  userCount   Int?
+  status      BizStatus
+  unread      Int?
+  active      Boolean?
+  createdAt   DateTime       @default(now())
+  branches    Branch[]
+  departments Department[]
+  alerts      AlertChannel[]
+  users       User[]
+}
+
+model Branch {
+  id       String   @id // 'amd'
+  code     String   @unique // 'AMD'
+  bizId    String
+  business Business @relation(fields: [bizId], references: [id])
+  city     String
+  country  String
+  flag     String
+  tz       String // IANA
+  lat      Float
+  lng      Float
+  radius   Int // geofence radius (m)
+  wifi     String // office SSID
+  color    String
+  groups   Group[]
+}
+
+model Group {
+  id       String @id // 'amd-acc'
+  branchId String
+  branch   Branch @relation(fields: [branchId], references: [id])
+  name     String
+  icon     String
+  color    String
+}
+
+model Department {
+  id       String   @id // 'td1'
+  bizId    String
+  business Business @relation(fields: [bizId], references: [id])
+  name     String
+  icon     String
+  color    String
+}
+
+model AlertChannel {
+  id          String       @id // 'tk_crm'  (= `${bizId}_${module}`)
+  bizId       String
+  business    Business     @relation(fields: [bizId], references: [id])
+  module      ModuleKey
+  name        String
+  icon        String
+  color       String
+  tint        String
+  description String
+  memberKeys  String[] // reminder-space member ids, e.g. ['a']
+  events      AlertEvent[]
+}
+
+model AlertEvent {
+  id         String       @id // 'pe1'
+  channelId  String
+  channel    AlertChannel @relation(fields: [channelId], references: [id])
+  source     String
+  title      String
+  body       String
+  context    String
+  occurredAt DateTime
+  read       Boolean      @default(false)
+  actions    Json? // [{ label, primary? }]
+}
+
+// ───────────────────────── Identity: User (access space) ─────────────────────────
+
+model User {
+  id       String    @id @default(cuid())
+  name     String
+  email    String?   @unique
+  initials String
+  color    String
+  role     RoleKey
+  bizId    String? // null = Super (unrestricted)
+  business Business? @relation(fields: [bizId], references: [id])
+
+  // Access grants — EXACT frontend GrantId vocabulary (authoritative for makeAccessFilters):
+  branches     String[] // branch codes        → brOK
+  accessGroups String[] // 'AMD-Accounts'       → grpOK
+  accessDepts  String[] // 'AMD-Accounts'|bare  → deptOK
+  accessAlerts String[] // 'AMD-crm'|bare module→ alertOK
+
+  attendanceEnabled Boolean?
+  scopeLine         String?
+  loginLabel        String?
+  passwordHash      String? // set in Auth phase; seed uses a dev default
+  legacyAdminId     String?  @unique // original adminUsers id ('a1'..) for traceability
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  reminderViewer   ReminderViewer?
+  chatParticipants ChatParticipant[]
+  attendance       AttendanceRecord[]
+  notifications    Notification[]
+  devices          Device[]
+  refreshTokens    RefreshToken[]
+  uploads          Upload[]
+  auditLogs        AuditLog[]         @relation("AuditActor")
+}
+
+// ───────────────────────── Identity: ReminderViewer (canSee space) ─────────────────────────
+
+// PERSON_META + ROLE_VIEWERS + reminderPeople, kept SEPARATE from User. role/branches/dept are
+// STORED here (NOT derived from a linked User.role) so makeCanSee output is identical to today.
+model ReminderViewer {
+  id           String     @id // 'a','fa','p','f','m','r','sn','ko','an'
+  role         RoleKey
+  branches     String[]
+  dept         String?
+  name         String? // from reminderPeople (display)
+  initials     String?
+  color        String?
+  bizId        String? // PEOPLE_BIZ mapping ('tk' | null)
+  userId       String?    @unique // link to canonical User where CONFIDENT; null when divergent/orphan
+  user         User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  remindersFor Reminder[] @relation("RemindersFor")
+  remindersBy  Reminder[] @relation("RemindersBy")
+}
+
+model Reminder {
+  id          String         @id // 'r1'..
+  title       String?
+  text        String?
+  section     String // 'today'|'week'|... (open-ended per frontend type)
+  forId       String
+  forViewer   ReminderViewer @relation("RemindersFor", fields: [forId], references: [id])
+  forName     String
+  forInitials String?
+  forColor    String?
+  byId        String
+  byViewer    ReminderViewer @relation("RemindersBy", fields: [byId], references: [id])
+  byName      String?
+  byInitials  String?
+  byColor     String?
+  state       ReminderState  @default(pending)
+  whenLabel   String? // 'Today · 2:00 PM' (frontend 'when')
+  overdue     Boolean?
+  dueDate     String? // frontend 'date'
+  completedAt DateTime?
+  approvedAt  DateTime?
+  createdAt   DateTime       @default(now())
+
+  @@index([forId])
+  @@index([byId])
+}
+
+// ───────────────────────── Chat (DM space) ─────────────────────────
+
+model Chat {
+  id            String            @id // 'u1'.. (DM) or generated (group)
+  kind          ChatKind
+  name          String
+  bizId         String?
+  branchCode    String?
+  preview       String?
+  online        Boolean?
+  lastMessageAt DateTime?
+  createdAt     DateTime          @default(now())
+  participants  ChatParticipant[]
+  messages      Message[]
+}
+
+// Per-participant unread (multi-user ready). Reproduces chatStore: markRead → unread=0;
+// unreadTotal = Σ participant.unread for the viewer.
+model ChatParticipant {
+  id          String    @id @default(cuid())
+  chatId      String
+  chat        Chat      @relation(fields: [chatId], references: [id])
+  userId      String?
+  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  dmKey       String? // original DM id ('u1'..) when the counterpart isn't a canonical User yet
+  displayName String? // faithful DM name (list is name-based, not access-filtered)
+  unread      Int       @default(0)
+  lastReadAt  DateTime?
+
+  @@unique([chatId, userId])
+  @@index([chatId])
+}
+
+model Message {
+  id        String        @id @default(cuid())
+  chatId    String
+  chat      Chat          @relation(fields: [chatId], references: [id])
+  senderId  String // participant key (User.id or DM-space id); resolved in Chat phase
+  body      String
+  status    MessageStatus @default(sent)
+  createdAt DateTime      @default(now())
+
+  @@index([chatId])
+}
+
+// ───────────────────────── Attendance ─────────────────────────
+
+model AttendanceRecord {
+  id             String    @id @default(cuid())
+  userId         String?
+  user           User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  memberName     String? // snapshot for team-dashboard rows (teamAttendance) — display name
+  memberInitials String? // team-dashboard display initials
+  memberColor    String? // team-dashboard display color
+  branchLabel    String? // 'TK AMD' style label from the team dashboard
+  date           DateTime  @db.Date
+  checkInAt      DateTime?
+  checkOutAt     DateTime?
+  method         String? // exact PunchMethod string: 'Wi-Fi'|'Geofence'|'Face'|'Auto'
+  present        Boolean   @default(false)
+  latitude       Float? // GPS
+  longitude      Float?
+  distanceMeters Int?
+  wifiSsid       String? // Wi-Fi metadata
+  faceVerified   Boolean? // face verification result
+  createdAt      DateTime  @default(now())
+
+  @@index([userId, date])
+}
+
+// ───────────────────────── Notifications / devices ─────────────────────────
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String
+  data      Json? // { type, id } → routes.ts mapping
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Device {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expoPushToken String   @unique
+  platform      String?
+  createdAt     DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ───────────────────────── Auth ─────────────────────────
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ───────────────────────── Uploads ─────────────────────────
+
+model Upload {
+  id           String   @id @default(cuid())
+  storageKey   String
+  url          String
+  mimeType     String?
+  sizeBytes    Int?
+  uploadedById String?
+  uploadedBy   User?    @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now())
+}
+
+// ───────────────────────── Audit ─────────────────────────
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  actor     User?    @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  action    String // CREATE | UPDATE | DELETE | APPROVE | LOGIN ...
+  entity    String // User | Reminder | AttendanceRecord | Role | Permission ...
+  entityId  String?
+  before    Json?
+  after     Json?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+}

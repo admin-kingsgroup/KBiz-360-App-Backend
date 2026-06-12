@@ -1,0 +1,16 @@
+/** @type {import('ts-jest').JestConfigWithTsJest} */
+module.exports = {
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  rootDir: '.',
+  roots: ['<rootDir>/src'],
+  testMatch: ['**/__tests__/**/*.test.ts', '**/*.spec.ts'],
+  moduleNameMapper: {
+    '^@/(.*)$': '<rootDir>/src/$1',
+    '^@domain/(.*)$': '<rootDir>/src/domain/$1',
+  },
+  transform: {
+    '^.+\\.ts$': ['ts-jest', { tsconfig: './tsconfig.jest.json' }],
+  },
+  collectCoverageFrom: ['src/domain/**/*.ts', '!src/domain/**/__tests__/**'],
+};
