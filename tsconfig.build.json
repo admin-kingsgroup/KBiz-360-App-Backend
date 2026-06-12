@@ -1,4 +1,17 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "dist", "src/**/__tests__/**", "**/*.spec.ts", "**/*.test.ts", "prisma/seed.ts"]
+  "include": ["src/**/*.ts"],
+  "comment": "Production build = the MongoDB backend only (dist/mongo/main.js). The legacy Postgres/Prisma path (src/app.ts, src/main.ts, src/modules/**, src/common/audit.ts) is excluded — it's unused and needs a generated Prisma client. Files the Mongo path imports (e.g. modules/auth/jwt) are still compiled via import-following.",
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/**/__tests__/**",
+    "**/*.spec.ts",
+    "**/*.test.ts",
+    "prisma/seed.ts",
+    "src/app.ts",
+    "src/main.ts",
+    "src/modules/**",
+    "src/common/audit.ts"
+  ]
 }
