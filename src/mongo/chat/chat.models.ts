@@ -19,6 +19,9 @@ export interface ConversationDoc {
   createdBy: string;
   tenantId: string | null;
   directKey: string | null; // sorted "a|b" for direct dedupe
+  deptKey: string | null; // "<branchId>:<departmentId>" grouping key (NON-unique: a dept can have many groups)
+  branchId: string | null; // branch this group belongs to
+  departmentId: string | null; // department this group belongs to (branch → department → many groups)
   name: string | null; // group
   description: string | null;
   image: string | null;
@@ -48,7 +51,14 @@ const ConversationSchema = new Schema<ConversationDoc>(
     members: { type: [MemberSchema], default: [] },
     createdBy: { type: String, required: true },
     tenantId: { type: String, default: null },
-    directKey: { type: String, default: null },
+    // NOTE: no `default: null`. These back sparse-unique indexes; a sparse index still
+    // indexes a doc whose field is present-but-null, so `default: null` makes the 2nd
+    // doc-without-a-key collide (E11000). Leaving them unset means the field is absent and
+    // correctly skipped by the sparse index. Real values are set explicitly where needed.
+    directKey: { type: String },
+    deptKey: { type: String },
+    branchId: { type: String, default: null }, // branch this group belongs to (not unique)
+    departmentId: { type: String, default: null }, // department this group belongs to (not unique)
     name: { type: String, default: null },
     description: { type: String, default: null },
     image: { type: String, default: null },
@@ -64,6 +74,8 @@ const ConversationSchema = new Schema<ConversationDoc>(
   { timestamps: true },
 );
 ConversationSchema.index({ directKey: 1 }, { unique: true, sparse: true });
+// deptKey is NON-unique now — a (branch, department) can hold many groups. Just a lookup index.
+ConversationSchema.index({ deptKey: 1 });
 ConversationSchema.index({ participantIds: 1, lastActivityAt: -1 });
 
 // ─────────── Message ───────────
@@ -89,6 +101,7 @@ export interface MessageDoc {
   senderId: string;
   type: 'text' | 'image' | 'video' | 'document' | 'voice' | 'system';
   text: string;
+  clientId: string | null; // sender's optimistic id — used for send-idempotency (no duplicate on retry)
   attachments: Attachment[];
   replyTo: { messageId: Types.ObjectId; senderId: string; preview: string; type: string } | null;
   forwardedFrom: { messageId: Types.ObjectId; conversationId: Types.ObjectId } | null;
@@ -117,6 +130,7 @@ const MessageSchema = new Schema<MessageDoc>(
     senderId: { type: String, required: true, index: true },
     type: { type: String, enum: ['text', 'image', 'video', 'document', 'voice', 'system'], default: 'text' },
     text: { type: String, default: '' },
+    clientId: { type: String, default: null },
     attachments: { type: [new Schema<Attachment>({}, { _id: false, strict: false })], default: [] },
     replyTo: {
       type: new Schema({ messageId: Schema.Types.ObjectId, senderId: String, preview: String, type: String }, { _id: false }),
@@ -145,6 +159,7 @@ const MessageSchema = new Schema<MessageDoc>(
   { timestamps: true },
 );
 MessageSchema.index({ conversationId: 1, createdAt: -1 });
+MessageSchema.index({ conversationId: 1, clientId: 1 }, { sparse: true }); // send-idempotency lookup
 MessageSchema.index({ conversationId: 1, pinned: 1 });
 MessageSchema.index({ text: 'text' });
 
@@ -158,4 +173,20 @@ export function ConversationModel(): Model<ConversationDoc> {
 export function MessageModel(): Model<MessageDoc> {
   if (!_Message) _Message = appDb().model<MessageDoc>('Message', MessageSchema);
   return _Message;
+}
+
+// Drops the LEGACY unique deptKey index (so a department can hold many groups), then syncs the current
+// index set. We drop it explicitly first (not just syncIndexes) to be certain it's gone. Safe at startup.
+export async function ensureChatIndexes(): Promise<void> {
+  const model = ConversationModel();
+  try {
+    const existing = await model.collection.indexes();
+    const legacy = existing.find((ix) => ix.key && (ix.key as Record<string, number>).deptKey === 1 && ix.unique);
+    if (legacy?.name) {
+      await model.collection.dropIndex(legacy.name);
+      // eslint-disable-next-line no-console
+      console.log(`[kb360] dropped legacy unique deptKey index "${legacy.name}" — many groups per department now allowed`);
+    }
+  } catch { /* collection/index may not exist yet — ignore */ }
+  await model.syncIndexes();
 }

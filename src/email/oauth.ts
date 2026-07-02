@@ -18,7 +18,11 @@ async function postToken(params: Record<string, string>): Promise<TokenResponse>
     body: new URLSearchParams({ client_id: config.msEmail.clientId, scope: SCOPE, ...params }),
   });
   const json = (await resp.json()) as TokenResponse & { error?: string; error_description?: string };
-  if (!resp.ok) throw BadRequest(`Microsoft token error: ${json.error_description ?? json.error ?? resp.status}`);
+  if (!resp.ok) {
+    // eslint-disable-next-line no-console
+    console.error(`[email-oauth] token endpoint ${resp.status}: ${JSON.stringify(json)}`);
+    throw BadRequest(`Microsoft token error: ${json.error_description ?? json.error ?? resp.status}`);
+  }
   return json;
 }
 

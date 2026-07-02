@@ -7,6 +7,7 @@ import { requireAuth, requireManage } from '../middleware';
 import { callService } from './call.service';
 import { callPush } from './call.push';
 import { fcmDeviceRepo } from '../../push/fcm.devices';
+import { voipDeviceRepo } from '../../push/voip.devices';
 import { initiateSchema, callIdSchema, registerDeviceSchema, historyQuerySchema, analyticsQuerySchema } from './call.types';
 
 // Mounted at /api → endpoints are /api/calls/*. All require a valid access token; lifecycle routes
@@ -113,6 +114,19 @@ callsRouter.post(
     if (!req.auth) throw Unauthorized();
     const { fcmToken, platform } = req.body as { fcmToken: string; platform?: string };
     await fcmDeviceRepo.upsert(req.auth.userId, fcmToken, platform ?? null);
+    res.status(204).send();
+  }),
+);
+
+// POST /api/calls/register-voip — store the iOS device's Apple PushKit VoIP token (CallKit screen).
+callsRouter.post(
+  '/calls/register-voip',
+  requireAuth,
+  validate(z.object({ voipToken: z.string().min(1), production: z.boolean().optional() })),
+  asyncHandler(async (req, res) => {
+    if (!req.auth) throw Unauthorized();
+    const { voipToken, production } = req.body as { voipToken: string; production?: boolean };
+    await voipDeviceRepo.upsert(req.auth.userId, voipToken, production ?? true);
     res.status(204).send();
   }),
 );

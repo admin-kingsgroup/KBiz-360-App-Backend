@@ -1,6 +1,11 @@
 import { Types } from 'mongoose';
+import * as bcrypt from 'bcryptjs';
 import { crmRepo, type CrmBranch, type CrmCompany, type CrmDepartment, type CrmRole, type CrmUser } from './crm.repo';
-import type { MongoAccess } from './access';
+import { userPositions } from './userPositions';
+import { userAvatars } from './userAvatars';
+import { appDepartments } from './appDepartments';
+import { accessService, type MongoAccess } from './access';
+import { Forbidden, BadRequest } from '../common/errors';
 
 // Read-only directory built from the CRM. Access-scoped: company-wide roles see all in the tenant;
 // branch-scoped roles see only their branches (and users overlapping those branches).
@@ -19,9 +24,12 @@ function mapUser(u: CrmUser, roles: Map<string, CrmRole>) {
     name: `${firstName} ${lastName}`.trim() || u.email,
     phone: u.phone ?? null,
     role: r?.name ?? 'employee',
+    roleId: u.role_id ? String(u.role_id) : null,
     level: r?.level ?? 5,
     status: u.status ?? null,
     branchIds: (u.branch_ids ?? []).map(String),
+    position: null as string | null, // app-set job title, overlaid by listUsers/getUser
+    avatar: null as string | null, // app-set profile picture url, overlaid by listUsers/getUser
   };
 }
 const mapCompany = (c: CrmCompany) => ({ id: String(c._id), name: c.name, status: c.status ?? null });
@@ -39,6 +47,10 @@ const mapDept = (d: CrmDepartment) => ({
   name: d.name ?? null,
   code: d.code ?? null,
   branchId: d.branch_id ? String(d.branch_id) : null,
+  companyId: d.company_id ? String(d.company_id) : null,
+  icon: null as string | null,
+  color: null as string | null,
+  appOwned: false, // CRM department (read-only)
 });
 
 async function roleMap(): Promise<Map<string, CrmRole>> {
@@ -53,7 +65,11 @@ export const directoryService = {
     const scoped = access.companyWide
       ? users
       : users.filter((u) => (u.branch_ids ?? []).some((b) => access.branchIds!.includes(String(b))));
-    return scoped.map((u) => mapUser(u, roles));
+    const mapped = scoped.map((u) => mapUser(u, roles));
+    const ids = mapped.map((m) => m.id);
+    const positions = await userPositions.mapFor(ids);
+    const avatars = await userAvatars.mapFor(ids);
+    return mapped.map((m) => ({ ...m, position: positions[m.id] ?? null, avatar: avatars[m.id] ?? null }));
   },
 
   async getUser(access: MongoAccess, id: string) {
@@ -61,11 +77,20 @@ export const directoryService = {
     if (!u) return null;
     if (!access.companyWide && !(u.branch_ids ?? []).some((b) => access.branchIds!.includes(String(b)))) return null;
     const roles = await roleMap();
-    return mapUser(u, roles);
+    const mapped = mapUser(u, roles);
+    const positions = await userPositions.mapFor([mapped.id]);
+    const avatars = await userAvatars.mapFor([mapped.id]);
+    return { ...mapped, position: positions[mapped.id] ?? null, avatar: avatars[mapped.id] ?? null };
   },
 
   async listCompanies(access: MongoAccess) {
-    return (await crmRepo.listCompanies(tenantFilter(access))).map(mapCompany);
+    const companies = await crmRepo.listCompanies(tenantFilter(access));
+    if (access.companyWide) return companies.map(mapCompany);
+    // Branch-scoped users only see the companies they actually have a branch in.
+    const ids = (access.branchIds ?? []).filter((b) => Types.ObjectId.isValid(b)).map((b) => new Types.ObjectId(b));
+    const myBranches = await crmRepo.branchesByIds(ids);
+    const myCompanyIds = new Set(myBranches.map((b) => (b.company_id ? String(b.company_id) : '')).filter(Boolean));
+    return companies.filter((c) => myCompanyIds.has(String(c._id))).map(mapCompany);
   },
 
   async listBranches(access: MongoAccess) {
@@ -91,6 +116,150 @@ export const directoryService = {
     const scoped = access.companyWide
       ? depts
       : depts.filter((d) => (d.branch_id ? access.branchIds!.includes(String(d.branch_id)) : false));
-    return scoped.map(mapDept);
+    const crmMapped = scoped.map(mapDept);
+
+    // Merge app-created departments, expanding company-wide ones across the company's (in-scope) branches
+    // so each branch gets the department's group — exactly like a CRM department.
+    const branches = access.companyWide
+      ? await crmRepo.listBranches(tenantFilter(access))
+      : await crmRepo.branchesByIds((access.branchIds ?? []).filter((b) => Types.ObjectId.isValid(b)).map((b) => new Types.ObjectId(b)));
+    const apps = await appDepartments.listByTenant(access.tenantId);
+    const appExpanded = apps.flatMap((a) => {
+      const targets = branches.filter((b) => {
+        if (a.companyId && String(b.company_id) !== a.companyId) return false;
+        if (a.branchId && String(b._id) !== a.branchId) return false;
+        if (branchId && String(b._id) !== branchId) return false;
+        return true;
+      });
+      return targets.map((b) => ({
+        id: String(a._id), // same id across branches; deptKey "<branchId>:<id>" stays unique per branch
+        name: a.name,
+        code: null as string | null,
+        branchId: String(b._id),
+        companyId: a.companyId,
+        icon: a.icon ?? null,
+        color: a.color ?? null,
+        appOwned: true,
+      }));
+    });
+    return [...crmMapped, ...appExpanded];
+  },
+
+  // Super-admin: raw app-created departments (un-expanded) for the management screen.
+  async listAppDepartments(access: MongoAccess) {
+    const apps = await appDepartments.listByTenant(access.tenantId);
+    return apps.map((a) => ({
+      id: String(a._id),
+      name: a.name,
+      companyId: a.companyId ?? null,
+      branchId: a.branchId ?? null,
+      icon: a.icon ?? null,
+      color: a.color ?? null,
+    }));
+  },
+
+  // Super-admin department management (app-created departments live in kb360_app; CRM is read-only).
+  async createDepartment(userId: string, input: { name: string; companyId: string | null; branchId?: string | null; icon?: string | null; color?: string | null }) {
+    const access = await accessService.accessForUserId(userId);
+    if (!access) throw Forbidden('Session user not found');
+    return appDepartments.create({
+      name: input.name.trim(),
+      companyId: input.companyId ?? null,
+      branchId: input.branchId ?? null,
+      icon: input.icon ?? null,
+      color: input.color ?? null,
+      tenantId: access.tenantId,
+      createdBy: userId,
+    });
+  },
+  async updateDepartment(_userId: string, id: string, patch: { name?: string; companyId?: string | null; branchId?: string | null; icon?: string | null; color?: string | null }) {
+    const set: Partial<{ name: string; companyId: string | null; branchId: string | null; icon: string | null; color: string | null }> = {};
+    if (patch.name !== undefined) set.name = patch.name.trim();
+    if (patch.companyId !== undefined) set.companyId = patch.companyId;
+    if (patch.branchId !== undefined) set.branchId = patch.branchId;
+    if (patch.icon !== undefined) set.icon = patch.icon;
+    if (patch.color !== undefined) set.color = patch.color;
+    return appDepartments.update(id, set);
+  },
+  async deleteDepartment(_userId: string, id: string) {
+    return appDepartments.remove(id);
+  },
+
+  // ── User provisioning (writes to the CRM users collection so the account can log in normally) ──
+  async createUser(adminId: string, input: { email: string; password: string; firstName?: string; lastName?: string; phone?: string; roleId?: string; branchIds?: string[] }) {
+    const access = await accessService.accessForUserId(adminId);
+    if (!access) throw Forbidden('Session user not found');
+    const email = input.email.trim().toLowerCase();
+    if (!email) throw BadRequest('Email is required');
+    if (!input.password || input.password.length < 6) throw BadRequest('Password must be at least 6 characters');
+    if (await crmRepo.findUserByEmail(email)) throw BadRequest('A user with this email already exists');
+    const now = new Date();
+    const doc: Record<string, unknown> = {
+      email,
+      password: await bcrypt.hash(input.password, 10),
+      first_name: input.firstName?.trim() ?? '',
+      last_name: input.lastName?.trim() ?? '',
+      phone: input.phone?.trim() || null,
+      role_id: input.roleId && Types.ObjectId.isValid(input.roleId) ? new Types.ObjectId(input.roleId) : null,
+      branch_ids: (input.branchIds ?? []).filter((b) => Types.ObjectId.isValid(b)).map((b) => new Types.ObjectId(b)),
+      tenant_id: access.tenantId && Types.ObjectId.isValid(access.tenantId) ? new Types.ObjectId(access.tenantId) : null,
+      status: 'active',
+      email_verified: true,
+      created_at: now,
+      updated_at: now,
+    };
+    const created = await crmRepo.createUser(doc);
+    return mapUser(created, await roleMap());
+  },
+
+  async updateUser(adminId: string, id: string, patch: { firstName?: string; lastName?: string; phone?: string; roleId?: string; branchIds?: string[]; password?: string; status?: string }) {
+    const access = await accessService.accessForUserId(adminId);
+    if (!access) throw Forbidden('Session user not found');
+    const set: Record<string, unknown> = { updated_at: new Date() };
+    if (patch.firstName !== undefined) set.first_name = patch.firstName.trim();
+    if (patch.lastName !== undefined) set.last_name = patch.lastName.trim();
+    if (patch.phone !== undefined) set.phone = patch.phone?.trim() || null;
+    if (patch.roleId !== undefined) set.role_id = patch.roleId && Types.ObjectId.isValid(patch.roleId) ? new Types.ObjectId(patch.roleId) : null;
+    if (patch.branchIds !== undefined) set.branch_ids = patch.branchIds.filter((b) => Types.ObjectId.isValid(b)).map((b) => new Types.ObjectId(b));
+    if (patch.status !== undefined) set.status = patch.status;
+    if (patch.password) { if (patch.password.length < 6) throw BadRequest('Password must be at least 6 characters'); set.password = await bcrypt.hash(patch.password, 10); }
+    const updated = await crmRepo.updateUser(id, set);
+    if (!updated) throw BadRequest('User not found');
+    return mapUser(updated, await roleMap());
+  },
+
+  // A user setting their OWN profile picture (url from an /api/uploads result). Pass null to clear.
+  async setOwnAvatar(userId: string, url: string | null) {
+    await userAvatars.setAvatar(userId, url ? url.trim() : null);
+    return { avatar: url ? url.trim() : null };
+  },
+
+  // A user changing their OWN password (verifies the current one, then writes a new bcrypt hash to CRM).
+  async changeOwnPassword(userId: string, currentPassword: string, newPassword: string) {
+    if (!newPassword || newPassword.length < 6) throw BadRequest('New password must be at least 6 characters');
+    const user = await crmRepo.getUserById(userId);
+    if (!user) throw Forbidden('Session user not found');
+    if (!user.password || !(await bcrypt.compare(currentPassword, user.password))) throw BadRequest('Current password is incorrect');
+    await crmRepo.updateUser(userId, { password: await bcrypt.hash(newPassword, 10), updated_at: new Date() });
+    return { ok: true };
+  },
+
+  // A user editing their OWN profile (name / phone only — never role/branch/status).
+  async updateOwnProfile(userId: string, patch: { firstName?: string; lastName?: string; phone?: string }) {
+    const set: Record<string, unknown> = { updated_at: new Date() };
+    if (patch.firstName !== undefined) set.first_name = patch.firstName.trim();
+    if (patch.lastName !== undefined) set.last_name = patch.lastName.trim();
+    if (patch.phone !== undefined) set.phone = patch.phone?.trim() || null;
+    const updated = await crmRepo.updateUser(userId, set);
+    if (!updated) throw BadRequest('User not found');
+    return mapUser(updated, await roleMap());
+  },
+
+  async setRolePermissions(adminId: string, roleId: string, permissions: string[]) {
+    const access = await accessService.accessForUserId(adminId);
+    if (!access) throw Forbidden('Session user not found');
+    const role = await crmRepo.setRolePermissions(roleId, permissions);
+    if (!role) throw BadRequest('Role not found');
+    return { id: String(role._id), name: role.name, level: role.level, permissions: role.permissions ?? [] };
   },
 };

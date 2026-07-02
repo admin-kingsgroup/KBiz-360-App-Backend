@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { mongoAuthRouter } from './auth.router';
 import { directoryRouter } from './directory.router';
+import { adminRouter } from './admin.router';
 import { chatRouter } from './chat/chat.router';
 import { callsRouter } from './calls/calls.router';
 import { remindersRouter } from './reminders/reminders.router';
@@ -18,10 +19,11 @@ export function createMongoApp(): Express {
   const app = express();
   app.use(helmet());
   app.use(cors());
-  app.use(express.json({ limit: '5mb' }));
+  app.use(express.json({ limit: '20mb' })); // headroom for base64 email attachments (per-file 10 MB, ~14 MB total)
 
   app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'kb360-backend (mongo)', ts: Date.now() }));
   app.use('/api/auth', mongoAuthRouter);
+  app.use('/api/admin', adminRouter); // super-admin: app-access toggles
   app.use('/api', directoryRouter); // /users, /companies, /branches, /departments
   app.use('/api', chatRouter); // /conversations, /messages, /groups
   app.use('/api', callsRouter); // /calls/* (audio calling: signaling REST + history + analytics)

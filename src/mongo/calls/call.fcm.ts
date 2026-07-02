@@ -8,14 +8,25 @@ import type { CallMediaType } from './call.models';
 export const callFcm = {
   configured: (): boolean => fcm.isConfigured(),
 
-  async sendIncomingCall(receiverId: string, callerName: string, call: { callId: string; type: CallMediaType; callerId: string }): Promise<number> {
-    const tokens = await fcmDeviceRepo.tokensForUser(receiverId);
-    if (!tokens.length) return 0;
+  // skipIos: when iOS calls are handled by native VoIP/CallKit (callVoip configured), don't ALSO send
+  // the iOS an FCM alert — that would double-notify. Android always uses the data payload (notifee).
+  async sendIncomingCall(
+    receiverId: string,
+    callerName: string,
+    call: { callId: string; type: CallMediaType; callerId: string },
+    opts: { skipIos?: boolean } = {},
+  ): Promise<number> {
+    const devices = await fcmDeviceRepo.devicesForUser(receiverId);
+    const targets = opts.skipIos ? devices.filter((d) => d.platform !== 'ios') : devices;
+    if (!targets.length) return 0;
     const data = { type: 'call', callId: call.callId, callType: call.type, callerName, callerId: call.callerId };
+    // iOS shows this as a notification (data-only is silent on iOS); Android uses the data payload
+    // for the full-screen notifee UI.
+    const apnsAlert = { title: 'Incoming call', body: `${callerName} is calling…`, category: 'incoming_call' };
     let sent = 0;
-    for (const t of tokens) if (await fcm.sendData(t, data)) sent++;
+    for (const d of targets) if (await fcm.sendData(d.fcmToken, data, apnsAlert)) sent++;
     // eslint-disable-next-line no-console
-    console.log(`[call-fcm] incoming-call data → ${sent}/${tokens.length} device(s) for ${receiverId}`);
+    console.log(`[call-fcm] incoming-call data → ${sent}/${targets.length} device(s) for ${receiverId}${opts.skipIos ? ' (iOS via VoIP)' : ''}`);
     return sent;
   },
 

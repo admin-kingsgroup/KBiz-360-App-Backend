@@ -8,6 +8,8 @@ import { registerCallHandlers } from './calls/call.socket';
 import { ensureCallIndexes } from './calls/call.models';
 import { ensureReminderIndexes } from './reminders/reminder.model';
 import { ensureAttendanceIndexes } from './attendance/attendance.model';
+import { ensureOfficeGeofenceIndexes } from './attendance/office.model';
+import { ensureChatIndexes } from './chat/chat.models';
 import { startEmailPolling } from '../email/email.poll';
 
 // Entrypoint for the MongoDB-backed backend (real CRM auth + directory).
@@ -18,6 +20,8 @@ async function bootstrap(): Promise<void> {
   await ensureCallIndexes(); // call_logs / active_calls (TTL) / push_devices indexes
   await ensureReminderIndexes(); // reminders indexes
   await ensureAttendanceIndexes(); // attendance indexes
+  await ensureOfficeGeofenceIndexes(); // office geofence (per-branch) indexes
+  await ensureChatIndexes(); // conversation indexes (drops legacy unique deptKey → many groups per dept)
 
   const app = createMongoApp();
   const httpServer = createServer(app);

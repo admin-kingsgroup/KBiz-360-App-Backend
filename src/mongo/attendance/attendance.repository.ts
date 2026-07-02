@@ -14,4 +14,8 @@ export const attendanceRepo = {
   // Today's rows for a set of users (team view).
   forUsersOnDay: (dateKey: string, userIds: string[]) =>
     AttendanceModel().find({ dateKey, userId: { $in: userIds } }).lean<AttendanceDoc[]>(),
+
+  // A user's most recent records (newest first) for the personal history list.
+  historyForUser: (userId: string, limit: number) =>
+    AttendanceModel().find({ userId }).sort({ dateKey: -1 }).limit(limit).lean<AttendanceDoc[]>(),
 };

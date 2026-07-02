@@ -7,6 +7,7 @@ import { emitToUser, isOnline, setInCall, broadcastPresence } from '../chat/chat
 import { activeCallRepo, callLogRepo, callAnalyticsRepo, type AnalyticsFilter, type HistoryPage } from './call.repository';
 import { callPush } from './call.push';
 import { callFcm } from './call.fcm';
+import { callVoip } from './call.voip';
 import {
   CALL_EVENTS,
   toCallDTO,
@@ -39,14 +40,26 @@ const clearRing = (callId: string): void => {
   if (t) { clearTimeout(t); ringTimers.delete(callId); }
 };
 
+// Time-limited TURN credentials (coturn `use-auth-secret` / RFC 5766 TURN REST API): the username is
+// an expiry timestamp and the password is HMAC-SHA1(username, secret). The app gets fresh, short-lived
+// creds per call — nothing long-lived is shipped in the client. Falls back to static creds if no
+// secret is configured, and to STUN-only if no TURN at all.
+function turnCredentials(): { username: string; credential: string } | null {
+  const { turnSecret, turnTtlSec, turnUsername, turnPassword } = config.calls;
+  if (turnSecret) {
+    const username = `${Math.floor(Date.now() / 1000) + turnTtlSec}:kb360`;
+    const credential = crypto.createHmac('sha1', turnSecret).update(username).digest('base64');
+    return { username, credential };
+  }
+  if (turnUsername && turnPassword) return { username: turnUsername, credential: turnPassword };
+  return null;
+}
+
 function iceServers(): IceServer[] {
   const servers: IceServer[] = [{ urls: config.calls.stunUrl }];
-  if (config.calls.turnUrl) {
-    servers.push({
-      urls: config.calls.turnUrl,
-      username: config.calls.turnUsername,
-      credential: config.calls.turnPassword,
-    });
+  const creds = turnCredentials();
+  if (config.calls.turnUrls.length && creds) {
+    servers.push({ urls: config.calls.turnUrls, username: creds.username, credential: creds.credential });
   }
   return servers;
 }
@@ -86,14 +99,19 @@ export const callService = {
 
     // Realtime ring to the receiver's connected devices.
     emitToUser(receiverId, CALL_EVENTS.INCOMING, { callId, type, caller: dto.caller, startedAt: dto.startedAt });
+    // Native incoming-call UI when backgrounded/killed:
+    //   • iOS  → Apple VoIP/PushKit → CallKit screen — ONLY for devices that registered a VoIP token.
+    //   • Android → DATA FCM message → notifee full-screen UI (client's background handler).
+    // We skip iOS from the FCM call path only when the receiver actually has a VoIP token (a new build
+    // with CallKit). Older iOS builds (no VoIP token) still get the FCM alert — avoids both a double
+    // notification on new builds and a silent miss on old ones. No TURN → Expo push fallback otherwise.
+    const hasVoip = callVoip.configured() && (await callVoip.deviceCount(receiverId)) > 0;
     // eslint-disable-next-line no-console
-    console.log(`[call] ringing callId=${callId} receiverOnline=${isOnline(receiverId)} fcm=${callFcm.configured()}`);
-    // Native full-screen incoming-call UI when backgrounded/killed: send a DATA FCM message so the
-    // client's background handler can draw it (notifee). The foreground socket overlay handles the
-    // in-app case. If Firebase Admin isn't configured, fall back to the Expo push (rings, tap-to-open).
+    console.log(`[call] ringing callId=${callId} receiverOnline=${isOnline(receiverId)} fcm=${callFcm.configured()} voip=${hasVoip}`);
+    if (hasVoip) void callVoip.sendIncomingCall(receiverId, callerName, { callId, type, callerId });
     if (callFcm.configured()) {
-      void callFcm.sendIncomingCall(receiverId, callerName, { callId, type, callerId });
-    } else if (!isOnline(receiverId)) {
+      void callFcm.sendIncomingCall(receiverId, callerName, { callId, type, callerId }, { skipIos: hasVoip });
+    } else if (!hasVoip && !isOnline(receiverId)) {
       await callPush.sendIncomingCall(receiverId, callerName, { callId, type });
     }
 
@@ -184,8 +202,9 @@ export const callService = {
       endedBy,
     });
     await activeCallRepo.remove(callId);
-    // Dismiss any lingering full-screen incoming-call notification on the callee's device.
+    // Dismiss any lingering incoming-call UI on the callee's device (Android notifee + iOS CallKit).
     if (callFcm.configured()) void callFcm.sendCancel(active.receiverId, callId);
+    if (callVoip.configured()) void callVoip.sendCancel(active.receiverId, callId);
   },
 
   // GET /calls/history

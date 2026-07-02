@@ -1,7 +1,9 @@
 import { Router, type Request } from 'express';
+import { z } from 'zod';
 import { asyncHandler } from '../common/asyncHandler';
+import { validate } from '../common/validate';
 import { Unauthorized, NotFound } from '../common/errors';
-import { requireAuth } from './middleware';
+import { requireAuth, requireSuper } from './middleware';
 import { accessService, type MongoAccess } from './access';
 import { directoryService } from './directory.service';
 
@@ -65,3 +67,53 @@ directoryRouter.get(
     res.json(await directoryService.listDepartments(await getAccess(req), branchId));
   }),
 );
+
+// Super-admin department management (app-created departments; the CRM is read-only).
+const uid = (req: Request): string => { if (!req.auth) throw Unauthorized(); return req.auth.userId; };
+const deptBody = z.object({
+  name: z.string().min(1).max(80),
+  companyId: z.string().nullable().optional(),
+  branchId: z.string().nullable().optional(),
+  icon: z.string().max(8).nullable().optional(),
+  color: z.string().max(16).nullable().optional(),
+});
+directoryRouter.get('/departments/app', requireAuth, requireSuper,
+  asyncHandler(async (req, res) => res.json(await directoryService.listAppDepartments(await getAccess(req)))));
+
+// ── User provisioning (super-admin; writes to the CRM users collection) ──
+const userBody = z.object({
+  email: z.string().email(),
+  password: z.string().min(6).optional(),
+  firstName: z.string().max(80).optional(),
+  lastName: z.string().max(80).optional(),
+  phone: z.string().max(40).nullable().optional(),
+  roleId: z.string().optional(),
+  branchIds: z.array(z.string()).optional(),
+  status: z.string().optional(),
+});
+directoryRouter.post('/users', requireAuth, requireSuper, validate(userBody.extend({ password: z.string().min(6) })),
+  asyncHandler(async (req, res) => res.status(201).json(await directoryService.createUser(uid(req), req.body))));
+directoryRouter.put('/users/:id', requireAuth, requireSuper, validate(userBody.partial()),
+  asyncHandler(async (req, res) => res.json(await directoryService.updateUser(uid(req), req.params.id, req.body))));
+
+// A user editing their own profile (name / phone).
+directoryRouter.put('/me/profile', requireAuth, validate(z.object({ firstName: z.string().max(80).optional(), lastName: z.string().max(80).optional(), phone: z.string().max(40).nullable().optional() })),
+  asyncHandler(async (req, res) => res.json(await directoryService.updateOwnProfile(uid(req), req.body))));
+
+// A user setting their own profile picture (url from /api/uploads). null clears it.
+directoryRouter.put('/me/avatar', requireAuth, validate(z.object({ url: z.string().nullable() })),
+  asyncHandler(async (req, res) => res.json(await directoryService.setOwnAvatar(uid(req), req.body.url))));
+
+// A user changing their own password.
+directoryRouter.put('/me/password', requireAuth, validate(z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(6) })),
+  asyncHandler(async (req, res) => res.json(await directoryService.changeOwnPassword(uid(req), req.body.currentPassword, req.body.newPassword))));
+
+// Super-admin: edit a role's permission list (writes to the CRM roles collection).
+directoryRouter.put('/roles/:id/permissions', requireAuth, requireSuper, validate(z.object({ permissions: z.array(z.string()) })),
+  asyncHandler(async (req, res) => res.json(await directoryService.setRolePermissions(uid(req), req.params.id, req.body.permissions))));
+directoryRouter.post('/departments', requireAuth, requireSuper, validate(deptBody),
+  asyncHandler(async (req, res) => res.status(201).json(await directoryService.createDepartment(uid(req), req.body))));
+directoryRouter.put('/departments/:id', requireAuth, requireSuper, validate(deptBody.partial()),
+  asyncHandler(async (req, res) => res.json(await directoryService.updateDepartment(uid(req), req.params.id, req.body))));
+directoryRouter.delete('/departments/:id', requireAuth, requireSuper,
+  asyncHandler(async (req, res) => res.json(await directoryService.deleteDepartment(uid(req), req.params.id))));

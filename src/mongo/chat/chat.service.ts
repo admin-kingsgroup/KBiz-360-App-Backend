@@ -2,6 +2,7 @@ import { Types } from 'mongoose';
 import { Forbidden, NotFound, BadRequest } from '../../common/errors';
 import { crmRepo } from '../crm.repo';
 import { accessService } from '../access';
+import { userAvatars } from '../userAvatars';
 import { ConversationModel, MessageModel, type ConversationDoc, type MessageDoc, type Attachment } from './chat.models';
 import { conversationRepo, messageRepo } from './chat.repository';
 import { emitToUsers, isOnline, getLastSeen } from './chat.events';
@@ -29,13 +30,14 @@ const DELETE_EVERYONE_WINDOW_MS = 60 * 60 * 1000; // 1 h
 const directKeyOf = (a: string, b: string): string => [a, b].sort().join('|');
 
 // ── helpers ──
-async function resolveUsers(ids: string[]): Promise<Record<string, { id: string; name: string; email: string }>> {
+async function resolveUsers(ids: string[]): Promise<Record<string, { id: string; name: string; email: string; avatar: string | null }>> {
   const valid = [...new Set(ids)].filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id));
   const users = await crmRepo.listUsers({ _id: { $in: valid } });
-  const map: Record<string, { id: string; name: string; email: string }> = {};
+  const avatars = await userAvatars.mapFor(users.map((u) => String(u._id)));
+  const map: Record<string, { id: string; name: string; email: string; avatar: string | null }> = {};
   for (const u of users) {
     const name = `${u.first_name ?? ''} ${u.last_name ?? ''}`.trim() || u.email;
-    map[String(u._id)] = { id: String(u._id), name, email: u.email };
+    map[String(u._id)] = { id: String(u._id), name, email: u.email, avatar: avatars[String(u._id)] ?? null };
   }
   return map;
 }
@@ -82,6 +84,41 @@ function toMessageDTO(m: MessageDoc, viewerId: string) {
   return { ...toMessageBase(m), mine: m.senderId === viewerId, starred: m.starredBy.includes(viewerId) };
 }
 
+// ── group system notices (WhatsApp-style "X added Y", "Z left", subject changes) ──
+async function displayName(id: string): Promise<string> {
+  const map = await resolveUsers([id]);
+  return map[id]?.name ?? 'Member';
+}
+async function displayNames(ids: string[]): Promise<string> {
+  const map = await resolveUsers(ids);
+  const names = ids.map((id) => map[id]?.name ?? 'Member');
+  if (names.length <= 1) return names[0] ?? 'Member';
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+// Insert a system message into a group's timeline: it renders as a centered notice, becomes the
+// chat-list preview, and broadcasts live. Deliberately does NOT bump unread — membership churn
+// shouldn't light up the badge. `audience` is the set of user rooms to notify (include a member
+// who was just removed so their open app still shows the notice).
+async function postSystemMessage(conv: ConversationDoc, actorId: string, text: string, audience: string[]): Promise<void> {
+  const now = new Date();
+  const created = (await messageRepo.create({
+    conversationId: conv._id,
+    senderId: actorId,
+    type: 'system',
+    text,
+    status: 'sent',
+    sentAt: now,
+    deliveredTo: [],
+    readBy: [],
+  })) as unknown as MessageDoc;
+  await ConversationModel().updateOne(
+    { _id: conv._id },
+    { $set: { lastMessage: { messageId: created._id, text, type: 'system', senderId: actorId, at: now }, lastActivityAt: now } },
+  );
+  emitToUsers([...new Set(audience)], CHAT_EVENTS.RECEIVE, toMessageBase(created));
+}
+
 export const chatService = {
   // ── conversations ──
   async getOrCreateDirect(userId: string, otherUserId: string) {
@@ -121,7 +158,7 @@ export const chatService = {
     return this.buildConvDTO(conv, userId, users);
   },
 
-  buildConvDTO(c: ConversationDoc, userId: string, users: Record<string, { id: string; name: string }>) {
+  buildConvDTO(c: ConversationDoc, userId: string, users: Record<string, { id: string; name: string; avatar?: string | null }>) {
     const me = c.members.find((m) => m.userId === userId);
     const base = {
       id: String(c._id),
@@ -135,7 +172,7 @@ export const chatService = {
     if (c.type === 'direct') {
       const otherId = c.participantIds.find((p) => p !== userId) ?? '';
       const other = users[otherId];
-      return { ...base, name: other?.name ?? 'Unknown', image: null, otherUserId: otherId, online: isOnline(otherId), lastSeen: getLastSeen(otherId), memberCount: 2 };
+      return { ...base, name: other?.name ?? 'Unknown', image: other?.avatar ?? null, otherUserId: otherId, online: isOnline(otherId), lastSeen: getLastSeen(otherId), memberCount: 2 };
     }
     return {
       ...base,
@@ -146,6 +183,10 @@ export const chatService = {
       description: c.description ?? null,
       createdBy: c.createdBy,
       members: c.members.map((m) => ({ userId: m.userId, role: m.role })),
+      deptKey: c.deptKey ?? null,
+      // branch this group belongs to: explicit field, else derived from the dept key
+      branchId: c.branchId ?? (c.deptKey ? c.deptKey.split(':')[0] : null),
+      departmentId: c.departmentId ?? (c.deptKey ? c.deptKey.split(':')[1] : null),
     };
   },
 
@@ -163,6 +204,13 @@ export const chatService = {
     if (!conv) throw NotFound('Conversation not found');
     assertMember(conv, userId);
 
+    // Idempotency: if this clientId was already stored (retry / double-send after a dropped response),
+    // return the existing message instead of creating a duplicate.
+    if (input.clientId) {
+      const existing = await messageRepo.findByClientId(conv._id, input.clientId);
+      if (existing) return { ...toMessageDTO(existing, userId), clientId: input.clientId };
+    }
+
     let replyTo: MessageDoc['replyTo'] = null;
     if (input.replyToId) {
       const r = await messageRepo.findByIdLean(input.replyToId);
@@ -177,6 +225,7 @@ export const chatService = {
       senderId: userId,
       type,
       text: input.text ?? '',
+      clientId: input.clientId ?? null,
       attachments: input.attachments ?? [],
       replyTo,
       status: 'sent',
@@ -212,7 +261,7 @@ export const chatService = {
       }
     })();
 
-    return toMessageDTO(created, userId);
+    return { ...toMessageDTO(created, userId), clientId: input.clientId }; // echo clientId so the sender reconciles its optimistic row
   },
 
   async editMessage(userId: string, messageId: string, text: string) {
@@ -341,8 +390,17 @@ export const chatService = {
   },
 
   // ── groups ──
-  async createGroup(userId: string, input: { name: string; memberIds: string[]; description?: string; image?: string }) {
+  async createGroup(userId: string, input: { name: string; memberIds: string[]; description?: string; image?: string; branchId?: string; departmentId?: string }) {
     if (!input.name?.trim()) throw BadRequest('Group name required');
+    const branchId = input.branchId?.trim() || null;
+    const departmentId = input.departmentId?.trim() || null;
+    // Access guard: only super-admins / company-wide roles may create a group in a branch they don't
+    // belong to (the New Group picker is access-scoped, but enforce it server-side too).
+    if (branchId) {
+      const access = await accessService.accessForUserId(userId);
+      const allowed = !!access && (access.isSuper || access.companyWide || (access.branchIds ?? []).includes(branchId));
+      if (!allowed) throw Forbidden('You can only create groups in your own branch');
+    }
     const participantIds = [...new Set([userId, ...(input.memberIds ?? [])])];
     const me = await crmRepo.getUserById(userId);
     const now = new Date();
@@ -355,6 +413,56 @@ export const chatService = {
       name: input.name.trim(),
       description: input.description ?? null,
       image: input.image ?? null,
+      branchId, // branch this group belongs to
+      departmentId, // department this group belongs to (branch → department → many groups)
+      deptKey: branchId && departmentId ? `${branchId}:${departmentId}` : null, // non-unique lookup key
+      lastActivityAt: now,
+    })) as unknown as ConversationDoc;
+    emitToUsers(participantIds, CHAT_EVENTS.CONVERSATION_NEW, { conversationId: String(conv._id) });
+    return this.conversationDTO(conv, userId);
+  },
+
+  // Get-or-create the AUTO group chat for a (branch, department). Members = everyone in that branch
+  // (CRM branch_ids). Only a branch member or a super-admin may open/create it. Idempotent via deptKey.
+  async getOrCreateDepartmentGroup(userId: string, input: { branchId: string; departmentId: string; name: string }) {
+    const { branchId, departmentId } = input;
+    if (!Types.ObjectId.isValid(branchId)) throw BadRequest('Invalid branch');
+    const deptKey = `${branchId}:${departmentId}`;
+    const access = await accessService.accessForUserId(userId);
+    const isSuper = !!access?.isSuper;
+
+    const branchUsers = await crmRepo.listUsers({ branch_ids: new Types.ObjectId(branchId) });
+    const branchMemberIds = branchUsers.map((u) => String(u._id));
+    if (!isSuper && !branchMemberIds.includes(userId)) throw Forbidden('You are not in this branch');
+
+    const existing = await conversationRepo.findByDeptKey(deptKey);
+    if (existing) {
+      // Ensure the opener is a participant (new branch member / super-admin opening it).
+      if (!existing.participantIds.includes(userId)) {
+        await ConversationModel().updateOne(
+          { _id: existing._id },
+          {
+            $addToSet: { participantIds: userId },
+            $push: { members: { userId, role: isSuper ? 'admin' : 'member', joinedAt: new Date(), lastReadAt: null, unread: 0, muted: false, archived: false } },
+          },
+        );
+        const refreshed = await conversationRepo.findById(String(existing._id));
+        return this.conversationDTO(refreshed as ConversationDoc, userId);
+      }
+      return this.conversationDTO(existing, userId);
+    }
+
+    const participantIds = [...new Set([userId, ...branchMemberIds])];
+    const me = await crmRepo.getUserById(userId);
+    const now = new Date();
+    const conv = (await conversationRepo.create({
+      type: 'group',
+      participantIds,
+      members: participantIds.map((uid) => ({ userId: uid, role: uid === userId ? 'admin' : 'member', joinedAt: now, lastReadAt: uid === userId ? now : null, unread: 0, muted: false, archived: false })),
+      createdBy: userId,
+      tenantId: me?.tenant_id ? String(me.tenant_id) : null,
+      name: input.name?.trim() || 'Group',
+      deptKey,
       lastActivityAt: now,
     })) as unknown as ConversationDoc;
     emitToUsers(participantIds, CHAT_EVENTS.CONVERSATION_NEW, { conversationId: String(conv._id) });
@@ -372,6 +480,9 @@ export const chatService = {
     await ConversationModel().updateOne({ _id: conv._id }, { $set: set });
     const updated = await conversationRepo.findById(conversationId);
     emitToUsers(conv.participantIds, CHAT_EVENTS.CONVERSATION_UPDATED, { conversationId });
+    if (patch.name !== undefined && patch.name.trim() && patch.name !== conv.name) {
+      await postSystemMessage(conv, userId, `${await displayName(userId)} changed the group name to "${patch.name.trim()}"`, conv.participantIds);
+    }
     return this.conversationDTO(updated as ConversationDoc, userId);
   },
 
@@ -390,6 +501,7 @@ export const chatService = {
       );
       emitToUsers([...conv.participantIds, ...toAdd], CHAT_EVENTS.CONVERSATION_UPDATED, { conversationId });
       emitToUsers(toAdd, CHAT_EVENTS.CONVERSATION_NEW, { conversationId });
+      await postSystemMessage(conv, userId, `${await displayName(userId)} added ${await displayNames(toAdd)}`, [...conv.participantIds, ...toAdd]);
     }
     const updated = await conversationRepo.findById(conversationId);
     return this.conversationDTO(updated as ConversationDoc, userId);
@@ -399,8 +511,13 @@ export const chatService = {
     const conv = await conversationRepo.findById(conversationId);
     if (!conv || conv.type !== 'group') throw NotFound('Group not found');
     if (memberId !== userId) await assertManageGroup(conv, userId); // leaving is allowed; removing others needs admin
+    const wasMember = conv.participantIds.includes(memberId);
     await ConversationModel().updateOne({ _id: conv._id }, { $pull: { participantIds: memberId, members: { userId: memberId } } });
     emitToUsers(conv.participantIds, CHAT_EVENTS.CONVERSATION_UPDATED, { conversationId });
+    if (wasMember) {
+      const text = memberId === userId ? `${await displayName(userId)} left` : `${await displayName(userId)} removed ${await displayName(memberId)}`;
+      await postSystemMessage(conv, userId, text, conv.participantIds); // conv.participantIds still includes the removed member → they see the notice
+    }
     return { ok: true };
   },
 
@@ -408,8 +525,10 @@ export const chatService = {
     const conv = await conversationRepo.findById(conversationId);
     if (!conv || conv.type !== 'group') throw NotFound('Group not found');
     await assertManageGroup(conv, userId);
+    const alreadyAdmin = conv.members.find((m) => m.userId === memberId)?.role === 'admin';
     await ConversationModel().updateOne({ _id: conv._id, 'members.userId': memberId }, { $set: { 'members.$.role': 'admin' } });
     emitToUsers(conv.participantIds, CHAT_EVENTS.CONVERSATION_UPDATED, { conversationId });
+    if (!alreadyAdmin) await postSystemMessage(conv, userId, `${await displayName(memberId)} is now an admin`, conv.participantIds);
     return { ok: true };
   },
 

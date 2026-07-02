@@ -8,6 +8,7 @@ export const conversationRepo = {
   create: (data: Partial<ConversationDoc>) => ConversationModel().create(data),
   findById: (id: string) => (Types.ObjectId.isValid(id) ? ConversationModel().findById(id).lean<ConversationDoc>() : Promise.resolve(null)),
   findByDirectKey: (directKey: string) => ConversationModel().findOne({ directKey }).lean<ConversationDoc>(),
+  findByDeptKey: (deptKey: string) => ConversationModel().findOne({ deptKey }).lean<ConversationDoc>(),
   listForUser: (userId: string) =>
     ConversationModel().find({ participantIds: userId }).sort({ lastActivityAt: -1 }).limit(200).lean<ConversationDoc[]>(),
   raw: () => ConversationModel(),
@@ -35,6 +36,8 @@ export interface MessagePage {
 
 export const messageRepo = {
   create: (data: Partial<MessageDoc>) => MessageModel().create(data),
+  findByClientId: (conversationId: Types.ObjectId, clientId: string) =>
+    MessageModel().findOne({ conversationId, clientId }).lean<MessageDoc>(),
   findById: (id: string) => (Types.ObjectId.isValid(id) ? MessageModel().findById(id) : Promise.resolve(null)),
   findByIdLean: (id: string) => (Types.ObjectId.isValid(id) ? MessageModel().findById(id).lean<MessageDoc>() : Promise.resolve(null)),
 

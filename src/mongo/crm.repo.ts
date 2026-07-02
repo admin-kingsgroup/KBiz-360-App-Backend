@@ -15,6 +15,9 @@ export interface CrmUser {
   email_verified?: boolean;
   branch_ids?: Types.ObjectId[];
   last_login_at?: Date;
+  // Per-app login toggles set from the ERP (Settings → Users & Roles → App Access).
+  // Absent/true = allowed; `app === false` blocks login to KBiz360 Smart Connect.
+  access?: { crm?: boolean; erp?: boolean; app?: boolean };
 }
 export interface CrmRole {
   _id: Types.ObjectId;
@@ -90,5 +93,23 @@ export const crmRepo = {
   },
   async listDepartments(filter: Record<string, unknown> = {}): Promise<CrmDepartment[]> {
     return col('departments').find(filter).toArray() as Promise<CrmDepartment[]>;
+  },
+
+  // ── WRITES (user provisioning — explicitly authorized to write to the CRM users collection) ──
+  async createUser(doc: Record<string, unknown>): Promise<CrmUser> {
+    const res = await col('users').insertOne(doc);
+    return col('users').findOne({ _id: res.insertedId }) as Promise<CrmUser>;
+  },
+  async updateUser(id: string, set: Record<string, unknown>): Promise<CrmUser | null> {
+    const _id = oid(id);
+    if (!_id) return null;
+    await col('users').updateOne({ _id }, { $set: set });
+    return col('users').findOne({ _id }) as Promise<CrmUser | null>;
+  },
+  async setRolePermissions(id: string, permissions: string[]): Promise<CrmRole | null> {
+    const _id = oid(id);
+    if (!_id) return null;
+    await col('roles').updateOne({ _id }, { $set: { permissions } });
+    return col('roles').findOne({ _id }) as Promise<CrmRole | null>;
   },
 };

@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs';
 import admin from 'firebase-admin';
 import { config } from '../config';
+import { fcmDeviceRepo } from './fcm.devices';
 
 // Firebase Admin wrapper for DATA-only FCM messages (high priority) — used to wake a killed/
 // backgrounded Android app so it can draw the native full-screen incoming-call UI (notifee).
@@ -34,7 +35,9 @@ export const fcm = {
 
   // Send a high-priority DATA message to one device's raw FCM token. Returns true if delivered to
   // FCM (not a guarantee of device delivery). Data values must be strings (FCM requirement).
-  async sendData(token: string, data: Record<string, string>): Promise<boolean> {
+  // apnsAlert: when provided, iOS DISPLAYS a notification (title/body) — needed because iOS does not
+  // show data-only pushes. Android always uses the data payload (background handler → notifee).
+  async sendData(token: string, data: Record<string, string>, apnsAlert?: { title: string; body: string; category?: string }): Promise<boolean> {
     const a = getApp();
     if (!a) return false;
     try {
@@ -42,10 +45,20 @@ export const fcm = {
         token,
         data,
         android: { priority: 'high' }, // wakes the app from Doze for the background handler
-        apns: { headers: { 'apns-priority': '10', 'apns-push-type': 'background' }, payload: { aps: { contentAvailable: true } } },
+        apns: apnsAlert
+          ? {
+              headers: { 'apns-priority': '10', 'apns-push-type': 'alert' },
+              // `category` makes iOS show the registered Accept/Decline action buttons.
+              payload: { aps: { alert: { title: apnsAlert.title, body: apnsAlert.body }, sound: 'default', ...(apnsAlert.category ? { category: apnsAlert.category } : {}) } },
+            }
+          : { headers: { 'apns-priority': '10', 'apns-push-type': 'background' }, payload: { aps: { contentAvailable: true } } },
       });
       return true;
     } catch (e) {
+      // Prune a token the device has unregistered (uninstalled / token rotated) so we stop sending to it.
+      if ((e as { code?: string }).code === 'messaging/registration-token-not-registered') {
+        void fcmDeviceRepo.removeByToken(token);
+      }
       // eslint-disable-next-line no-console
       console.warn('[fcm] sendData error:', (e as Error).message);
       return false;

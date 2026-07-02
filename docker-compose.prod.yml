@@ -14,7 +14,7 @@ services:
       - "4000:4000"          # also published on the host (HTTP fallback/debug; safe to remove later)
     volumes:
       - ./uploads:/app/uploads
-      - ./secrets/firebase.json:/app/secrets/firebase.json:ro
+      - ./secrets:/app/secrets:ro   # firebase.json + apns.p8 (Apple VoIP key) live here
 
   caddy:
     image: caddy:2-alpine

@@ -15,13 +15,17 @@ export interface AppConfig {
   storage: { driver: 'local' | 's3'; localDir: string };
   push: { enabled: boolean; expoAccessToken?: string };
   firebase: { serviceAccountPath?: string };
+  // Apple VoIP push (PushKit) → native CallKit incoming-call screen on iOS. Token-based auth (.p8).
+  apnsVoip: { keyPath?: string; keyId?: string; teamId?: string; bundleId: string; production: boolean };
   msEmail: { clientId: string; tenantId: string; tokenKey: string };
   mongo: { uri: string; crmDb: string; appDb: string };
   // Audio-calling: WebRTC ICE servers (STUN always, TURN optional) + ring timeout. Creds from env only.
   calls: {
     stunUrl: string;
-    turnUrl?: string;
-    turnUsername?: string;
+    turnUrls: string[]; // one or more TURN URLs (comma-separated in env), e.g. turn:host:3478?transport=udp
+    turnSecret?: string; // coturn `static-auth-secret` → time-limited (HMAC) credentials, the secure standard
+    turnTtlSec: number; // lifetime of an issued TURN credential
+    turnUsername?: string; // legacy static creds (used only if turnSecret is unset)
     turnPassword?: string;
     ringTimeoutSec: number;
   };
@@ -54,6 +58,16 @@ export const config: AppConfig = {
   firebase: {
     serviceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT || undefined,
   },
+  // Apple VoIP/PushKit → CallKit. Uses an APNs auth key (.p8) — the SAME key works for VoIP and
+  // alert pushes (token-based). topic for VoIP is `<bundleId>.voip`. Optional: when unset, iOS calls
+  // fall back to the FCM alert notification (no native CallKit screen).
+  apnsVoip: {
+    keyPath: process.env.APNS_KEY_PATH || undefined, // path to the AuthKey_XXXX.p8 file
+    keyId: process.env.APNS_KEY_ID || undefined, // 10-char Key ID from Apple Developer → Keys
+    teamId: process.env.APNS_TEAM_ID || undefined, // 10-char Apple Developer Team ID
+    bundleId: process.env.APNS_BUNDLE_ID || 'com.kingsgroup.kbiz360',
+    production: process.env.APNS_PRODUCTION === 'true', // false → sandbox (dev builds); auto-fallback either way
+  },
   // Microsoft 365 email (Graph) — per-user delegated OAuth (PKCE public client). clientId/tenantId
   // come from the Azure app registration; tokenKey encrypts stored refresh tokens at rest.
   msEmail: {
@@ -68,7 +82,13 @@ export const config: AppConfig = {
   },
   calls: {
     stunUrl: process.env.STUN_URL ?? 'stun:stun.l.google.com:19302',
-    turnUrl: process.env.TURN_URL || undefined,
+    // TURN_URLS: comma-separated list (udp+tcp+tls variants of the same coturn server).
+    turnUrls: (process.env.TURN_URLS || process.env.TURN_URL || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    turnSecret: process.env.TURN_STATIC_AUTH_SECRET || undefined,
+    turnTtlSec: parseInt(process.env.TURN_TTL_SEC ?? '86400', 10),
     turnUsername: process.env.TURN_USERNAME || undefined,
     turnPassword: process.env.TURN_PASSWORD || undefined,
     ringTimeoutSec: parseInt(process.env.CALL_RING_TIMEOUT_SEC ?? '45', 10),

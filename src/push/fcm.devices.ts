@@ -38,4 +38,8 @@ export const fcmDeviceRepo = {
     const rows = await FcmDeviceModel().find({ userId }).select('fcmToken').lean<{ fcmToken: string }[]>();
     return rows.map((r) => r.fcmToken);
   },
+  async devicesForUser(userId: string): Promise<{ fcmToken: string; platform: string | null }[]> {
+    return FcmDeviceModel().find({ userId }).select('fcmToken platform').lean<{ fcmToken: string; platform: string | null }[]>();
+  },
+  removeByToken: (fcmToken: string) => FcmDeviceModel().deleteOne({ fcmToken }),
 };
