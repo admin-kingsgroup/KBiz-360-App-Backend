@@ -12,6 +12,7 @@ import { uploadsRouter } from './uploads.router';
 import { emailRouter } from '../email/email.router';
 import { config } from '../config';
 import { errorHandler, NotFound } from '../common/errors';
+import { PRIVACY_HTML } from './privacy';
 
 // Express app backed by MongoDB: real auth (CRM read-only) + directory reads.
 // App-owned writes (sessions, and later reminders/attendance/chat) go to the kb360_app database.
@@ -22,6 +23,7 @@ export function createMongoApp(): Express {
   app.use(express.json({ limit: '20mb' })); // headroom for base64 email attachments (per-file 10 MB, ~14 MB total)
 
   app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'kb360-backend (mongo)', ts: Date.now() }));
+  app.get('/privacy', (_req, res) => res.type('html').send(PRIVACY_HTML)); // public: linked from the Play Store listing
   app.use('/api/auth', mongoAuthRouter);
   app.use('/api/admin', adminRouter); // super-admin: app-access toggles
   app.use('/api', directoryRouter); // /users, /companies, /branches, /departments
