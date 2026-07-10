@@ -11,7 +11,8 @@ import { attendanceService, type PunchBody } from './attendance.service';
 export const attendanceRouter: Router = Router();
 
 const punchSchema = z.object({
-  wifiOn: z.boolean().optional(),
+  wifiOn: z.boolean().optional(), // legacy, ignored
+  wifiSsid: z.string().max(64).nullable().optional(),
   coords: z.object({ lat: z.number(), lng: z.number() }).nullable().optional(),
   method: z.enum(['auto', 'face']).optional(),
 });
@@ -99,6 +100,21 @@ attendanceRouter.post('/offices/id/:officeId/default', requireAuth, requireManag
   if (!req.auth) throw Unauthorized();
   res.json(await attendanceService.setDefaultOffice(req.auth.userId, req.params.officeId));
 }));
+
+// ── working branch (where each user marks attendance) ──
+// Admin: current per-user working-branch assignments { [userId]: branchId } (manager-only).
+attendanceRouter.get('/work-branches', requireAuth, requireManage, asyncHandler(async (req, res) => {
+  if (!req.auth) throw Unauthorized();
+  res.json(await attendanceService.listWorkBranchAssignments(req.auth.userId));
+}));
+
+// Admin: set a user's working branch (branchId null clears → first CRM access branch) (manager-only).
+attendanceRouter.post('/work-branches/assign', requireAuth, requireManage,
+  validate(z.object({ userId: z.string().min(1), branchId: z.string().nullable() })),
+  asyncHandler(async (req, res) => {
+    if (!req.auth) throw Unauthorized();
+    res.json(await attendanceService.assignUserWorkBranch(req.auth.userId, req.body.userId, req.body.branchId));
+  }));
 
 // Admin: lock a user to an office (officeId null clears the assignment) (manager-only).
 attendanceRouter.post('/offices/assign', requireAuth, requireManage,

@@ -5,13 +5,15 @@ import { accessService } from '../access';
 import { attendanceRepo } from './attendance.repository';
 import { officeRepo } from './office.repository';
 import { userOffices } from './userOffices';
+import { userWorkBranches } from './userWorkBranches';
 import { attendanceExempt } from '../attendanceExempt';
 import { userPositions } from '../userPositions';
 import type { OfficeGeofenceDoc } from './office.model';
 import type { AttendanceDoc } from './attendance.model';
 
 export interface PunchBody {
-  wifiOn?: boolean;
+  wifiOn?: boolean; // legacy client flag — ignored (never verifiable)
+  wifiSsid?: string | null; // the Wi-Fi network the device is actually connected to
   coords?: { lat: number; lng: number } | null;
   method?: 'auto' | 'face';
 }
@@ -44,11 +46,25 @@ function fmtTime(d: Date | null): string | null {
   }
 }
 
-function viaFor(body: PunchBody): string {
+function viaFor(body: PunchBody, wifiVerified: boolean): string {
   if (body.method === 'face') return 'Face';
-  if (body.wifiOn) return 'Wi-Fi';
+  if (wifiVerified) return 'Wi-Fi';
   if (body.coords) return 'Geofence';
   return 'Auto';
+}
+
+// ── Wi-Fi lock ──
+// Android reports the SSID wrapped in quotes ("Office 5G") and '<unknown ssid>' when it can't read it.
+const cleanSsid = (s?: string | null): string | null => {
+  if (!s) return null;
+  const t = s.trim().replace(/^"(.*)"$/, '$1').trim();
+  return t && t.toLowerCase() !== '<unknown ssid>' ? t : null;
+};
+const normalizeSsid = (s?: string | null): string | null => cleanSsid(s)?.toLowerCase() ?? null;
+// True when the device's reported Wi-Fi network matches an office's configured SSID.
+function wifiVerifiedFor(offices: OfficeGeofenceDoc[], reportedSsid?: string | null): boolean {
+  const reported = normalizeSsid(reportedSsid);
+  return !!reported && offices.some((o) => normalizeSsid(o.wifiSsid) === reported);
 }
 
 // ── geofence (anti-spoofing) ──
@@ -70,9 +86,16 @@ function nearestOffice(offices: OfficeGeofenceDoc[], coords: Coords): { office: 
   }
   return best ? { ...best, within: best.distance <= best.office.radius } : null;
 }
+// Default office(s) per branch: the branch's DEFAULT office if one is set, else ALL its offices.
+function preferDefaults(offices: OfficeGeofenceDoc[]): OfficeGeofenceDoc[] {
+  const defaults = offices.filter((o) => o.isDefault);
+  return defaults.length ? defaults : offices;
+}
+
 // The offices a user may punch at, in priority order:
-//   1. An explicit per-user assignment (e.g. Faiz → Bombay HQ) — locks them to exactly that office.
-//   2. Otherwise, for each of their branches: the branch's DEFAULT office if one is set, else ALL the
+//   1. An explicit per-user OFFICE assignment (e.g. Faiz → Bombay HQ) — locks them to exactly that office.
+//   2. An explicit WORKING BRANCH assignment — restricts them to that branch's default office(s).
+//   3. Otherwise, for each of their branches: the branch's DEFAULT office if one is set, else ALL the
 //      branch's offices (so single-office branches and un-defaulted branches keep working unchanged).
 // Company-wide roles with no assignment see every tenant office.
 async function officesForUser(userId: string): Promise<OfficeGeofenceDoc[]> {
@@ -86,6 +109,9 @@ async function officesForUser(userId: string): Promise<OfficeGeofenceDoc[]> {
     // assigned office was deleted/deactivated — fall through to branch defaults
   }
 
+  const workBranchId = await userWorkBranches.branchIdFor(userId);
+  if (workBranchId) return preferDefaults(await officeRepo.byBranchIds([workBranchId]));
+
   if (access.companyWide) return officeRepo.listByTenant(access.tenantId);
   const branchIds = access.branchIds ?? [];
   if (!branchIds.length) return [];
@@ -94,9 +120,7 @@ async function officesForUser(userId: string): Promise<OfficeGeofenceDoc[]> {
   // Per branch: prefer the default office; otherwise include all of that branch's offices.
   const out: OfficeGeofenceDoc[] = [];
   for (const bId of new Set(all.map((o) => o.branchId))) {
-    const offs = all.filter((o) => o.branchId === bId);
-    const defaults = offs.filter((o) => o.isDefault);
-    out.push(...(defaults.length ? defaults : offs));
+    out.push(...preferDefaults(all.filter((o) => o.branchId === bId)));
   }
   return out;
 }
@@ -119,25 +143,19 @@ function mapMe(doc: AttendanceDoc | null) {
 
 export const attendanceService = {
   // Anti-spoofing gate for CHECK-IN: when offices are configured for the user, the punch must come
-  // from inside one of their geofences. Returns the matched distance. If no office is configured yet
-  // (admin hasn't set coordinates), it allows the punch unverified so attendance isn't bricked.
-  async assertAtOffice(userId: string, body: PunchBody): Promise<{ distance: number | null }> {
+  // either from the office Wi-Fi (device SSID matches the office's configured SSID) or from inside
+  // one of their geofences. Wi-Fi match alone is enough — indoor GPS is often off by more than the
+  // radius. If no office is configured yet, the punch is allowed unverified so attendance isn't bricked.
+  async assertAtOffice(userId: string, body: PunchBody): Promise<{ distance: number | null; wifiVerified: boolean }> {
     const offices = await officesForUser(userId);
-    if (!offices.length) return { distance: null }; // nothing to validate against yet
+    if (!offices.length) return { distance: null, wifiVerified: false }; // nothing to validate against yet
+    const near = body.coords ? nearestOffice(offices, body.coords) : null;
+    if (wifiVerifiedFor(offices, body.wifiSsid)) return { distance: near?.distance ?? null, wifiVerified: true };
     if (!body.coords) throw Forbidden('Location is required to record attendance — enable location and try again');
-    const near = nearestOffice(offices, body.coords);
     if (!near || !near.within) {
       throw Forbidden(near ? `You must be at the office to check in — you are ${near.distance} m away` : 'You are not at a registered office');
     }
-    return { distance: near.distance };
-  },
-
-  // Distance to the nearest office without rejecting (used for check-out, which is allowed off-site).
-  async measureDistance(userId: string, coords?: { lat: number; lng: number } | null): Promise<number | null> {
-    if (!coords) return null;
-    const offices = await officesForUser(userId);
-    if (!offices.length) return null;
-    return nearestOffice(offices, coords)?.distance ?? null;
+    return { distance: near.distance, wifiVerified: false };
   },
 
   // POST /attendance/check-in — first punch of the day. Validated against the user's office geofence.
@@ -146,17 +164,17 @@ export const attendanceService = {
     const key = todayKey();
     const today = await attendanceRepo.findToday(userId, key);
     if (today?.checkInAt) throw BadRequest('Already checked in today');
-    const { distance } = await this.assertAtOffice(userId, body);
+    const { distance, wifiVerified } = await this.assertAtOffice(userId, body);
     const now = new Date();
     const saved = await attendanceRepo.upsert(userId, key, {
       date: todayDate(),
       checkInAt: now,
-      method: viaFor(body),
+      method: viaFor(body, wifiVerified),
       present: true,
       latitude: body.coords?.lat ?? null,
       longitude: body.coords?.lng ?? null,
       distanceMeters: distance,
-      wifiSsid: body.wifiOn ? 'Office Wi-Fi' : null,
+      wifiSsid: wifiVerified ? cleanSsid(body.wifiSsid) : null,
       faceVerified: body.method === 'face' ? true : null,
     });
     return mapMe(saved);
@@ -170,10 +188,12 @@ export const attendanceService = {
     if (!today?.checkInAt) throw BadRequest('Not checked in');
     if (today.checkOutAt) throw BadRequest('Already checked out');
     const now = new Date();
-    const distance = await this.measureDistance(userId, body.coords);
+    const offices = await officesForUser(userId);
+    const wifiVerified = wifiVerifiedFor(offices, body.wifiSsid);
+    const distance = body.coords && offices.length ? (nearestOffice(offices, body.coords)?.distance ?? null) : null;
     const saved = await attendanceRepo.upsert(userId, key, {
       checkOutAt: now,
-      method: viaFor(body),
+      method: viaFor(body, wifiVerified),
       present: false,
       distanceMeters: distance ?? today.distanceMeters,
       faceVerified: body.method === 'face' ? true : today.faceVerified,
@@ -313,6 +333,37 @@ export const attendanceService = {
     return { ok: true };
   },
 
+  // GET /attendance/work-branches → { [userId]: branchId } explicit working-branch assignments.
+  async listWorkBranchAssignments(userId: string) {
+    const access = await accessService.accessForUserId(userId);
+    if (!access) throw Forbidden('Session user not found');
+    const filter: Record<string, unknown> = { status: 'active' };
+    if (access.tenantId && Types.ObjectId.isValid(access.tenantId)) filter.tenant_id = new Types.ObjectId(access.tenantId);
+    const users = await crmRepo.listUsers(filter);
+    return userWorkBranches.mapFor(users.map((u) => String(u._id)));
+  },
+
+  // POST /attendance/work-branches/assign { userId, branchId } → set where a user marks attendance
+  // (null clears → falls back to their first CRM access branch). Manager-only.
+  async assignUserWorkBranch(adminId: string, targetUserId: string, branchId: string | null) {
+    const access = await accessService.accessForUserId(adminId);
+    if (!access) throw Forbidden('Session user not found');
+    if (branchId) {
+      if (!Types.ObjectId.isValid(branchId)) throw BadRequest('Invalid branch');
+      const [branch] = await crmRepo.branchesByIds([new Types.ObjectId(branchId)]);
+      if (!branch) throw BadRequest('Branch not found');
+      // An explicit office assignment in a DIFFERENT branch would contradict the new working branch
+      // (office assignments take priority when validating punches) — clear it so the branch wins.
+      const assignedOfficeId = await userOffices.officeIdFor(targetUserId);
+      if (assignedOfficeId) {
+        const office = await officeRepo.byId(assignedOfficeId);
+        if (office && office.branchId !== branchId) await userOffices.setOffice(targetUserId, null, adminId);
+      }
+    }
+    await userWorkBranches.setBranch(targetUserId, branchId, adminId);
+    return { ok: true };
+  },
+
   // GET /attendance/history — the caller's recent attendance rows (newest first).
   async history(userId: string, days = 30) {
     const rows = await attendanceRepo.historyForUser(userId, Math.min(Math.max(days, 1), 180));
@@ -356,8 +407,15 @@ export const attendanceService = {
     const records = await attendanceRepo.forUsersOnDay(todayKey(), ids);
     const byUser = new Map(records.map((r) => [r.userId, r]));
 
+    // Each user's WORKING branch: explicit assignment → first CRM access branch.
+    const workBranches = await userWorkBranches.mapFor(ids);
+    const workBranchOf = (u: CrmUser): string => {
+      const id = String(u._id);
+      return workBranches[id] ?? ((u.branch_ids ?? [])[0] ? String((u.branch_ids ?? [])[0]) : '');
+    };
+
     // Resolve branch labels for the displayed users.
-    const branchIds = [...new Set(users.flatMap((u) => (u.branch_ids ?? []).slice(0, 1).map(String)))]
+    const branchIds = [...new Set(users.map(workBranchOf).filter(Boolean))]
       .filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id));
     const branches: CrmBranch[] = branchIds.length ? await crmRepo.branchesByIds(branchIds) : [];
     const branchById = new Map(branches.map((b) => [String(b._id), b.code || b.name || '—']));
@@ -378,7 +436,7 @@ export const attendanceService = {
         const id = String(u._id);
         const rec = byUser.get(id);
         const name = nameOf(u);
-        const branchId = (u.branch_ids ?? [])[0] ? String((u.branch_ids ?? [])[0]) : '';
+        const branchId = workBranchOf(u);
         const assignedId = assignments[id] ?? null;
         const resolved = (assignedId ? officeById.get(assignedId) : undefined) ?? defaultByBranch.get(branchId);
         return {
@@ -388,6 +446,7 @@ export const attendanceService = {
           color: colorFor(id),
           branch: branchById.get(branchId) ?? '—',
           branchId,
+          workBranchId: workBranches[id] ?? null,
           position: positions[id] ?? null,
           office: officeLabel(resolved),
           officeId: assignedId,
