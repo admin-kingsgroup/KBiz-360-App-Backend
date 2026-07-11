@@ -106,6 +106,10 @@ export const crmRepo = {
     await col('users').updateOne({ _id }, { $set: set });
     return col('users').findOne({ _id }) as Promise<CrmUser | null>;
   },
+  async createCompany(doc: Record<string, unknown>): Promise<CrmCompany> {
+    const res = await col('companies').insertOne(doc);
+    return col('companies').findOne({ _id: res.insertedId }) as Promise<CrmCompany>;
+  },
   async setRolePermissions(id: string, permissions: string[]): Promise<CrmRole | null> {
     const _id = oid(id);
     if (!_id) return null;

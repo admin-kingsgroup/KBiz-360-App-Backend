@@ -80,6 +80,10 @@ const deptBody = z.object({
 directoryRouter.get('/departments/app', requireAuth, requireSuper,
   asyncHandler(async (req, res) => res.json(await directoryService.listAppDepartments(await getAccess(req)))));
 
+// Super-admin: create a business (writes to the CRM companies collection).
+directoryRouter.post('/companies', requireAuth, requireSuper, validate(z.object({ name: z.string().min(1).max(120) })),
+  asyncHandler(async (req, res) => res.status(201).json(await directoryService.createCompany(uid(req), req.body))));
+
 // ── User provisioning (super-admin; writes to the CRM users collection) ──
 const userBody = z.object({
   email: z.string().email(),

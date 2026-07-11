@@ -20,6 +20,7 @@ export interface ConversationDoc {
   tenantId: string | null;
   directKey: string | null; // sorted "a|b" for direct dedupe
   deptKey: string | null; // "<branchId>:<departmentId>" grouping key (NON-unique: a dept can have many groups)
+  companyId: string | null; // business/company this group belongs to (company → branch → department → groups)
   branchId: string | null; // branch this group belongs to
   departmentId: string | null; // department this group belongs to (branch → department → many groups)
   name: string | null; // group
@@ -57,6 +58,7 @@ const ConversationSchema = new Schema<ConversationDoc>(
     // correctly skipped by the sparse index. Real values are set explicitly where needed.
     directKey: { type: String },
     deptKey: { type: String },
+    companyId: { type: String, default: null }, // business/company this group belongs to (not unique)
     branchId: { type: String, default: null }, // branch this group belongs to (not unique)
     departmentId: { type: String, default: null }, // department this group belongs to (not unique)
     name: { type: String, default: null },

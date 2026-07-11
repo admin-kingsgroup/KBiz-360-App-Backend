@@ -64,7 +64,7 @@ chatRouter.get('/messages/starred', asyncHandler(async (req, res) => res.json(aw
 chatRouter.get('/messages/search', asyncHandler(async (req, res) => res.json(await chatService.search(uid(req), (req.query.q as string) ?? '', { senderId: req.query.senderId as string | undefined }))));
 
 // ── groups ──
-chatRouter.post('/groups', validate(z.object({ name: z.string().min(1), memberIds: z.array(z.string()).default([]), description: z.string().optional(), image: z.string().optional(), branchId: z.string().optional(), departmentId: z.string().optional() })), asyncHandler(async (req, res) => res.status(201).json(await chatService.createGroup(uid(req), req.body))));
+chatRouter.post('/groups', validate(z.object({ name: z.string().min(1), memberIds: z.array(z.string()).default([]), description: z.string().optional(), image: z.string().optional(), companyId: z.string().optional(), branchId: z.string().optional(), departmentId: z.string().optional() })), asyncHandler(async (req, res) => res.status(201).json(await chatService.createGroup(uid(req), req.body))));
 // Auto branch-department group (members = the whole branch). Get-or-create, then open it.
 chatRouter.post('/groups/department', validate(z.object({ branchId: z.string().min(1), departmentId: z.string().min(1), name: z.string().min(1) })), asyncHandler(async (req, res) => res.json(await chatService.getOrCreateDepartmentGroup(uid(req), req.body))));
 chatRouter.get('/groups/:id', asyncHandler(async (req, res) => { const c = await chatService.assertAccess(uid(req), req.params.id); res.json(await chatService.conversationDTO(c, uid(req))); }));

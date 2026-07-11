@@ -185,6 +185,30 @@ export const directoryService = {
     return appDepartments.remove(id);
   },
 
+  // ── Business provisioning (writes to the CRM companies collection, mirroring the ERP's doc shape
+  // so the new business shows up in both the app directory and the ERP) ──
+  async createCompany(adminId: string, input: { name: string }) {
+    const access = await accessService.accessForUserId(adminId);
+    if (!access) throw Forbidden('Session user not found');
+    const name = input.name.trim();
+    if (!name) throw BadRequest('Business name is required');
+    const existing = await crmRepo.listCompanies(tenantFilter(access));
+    if (existing.some((c) => c.name.trim().toLowerCase() === name.toLowerCase())) {
+      throw BadRequest('A business with this name already exists');
+    }
+    const now = new Date();
+    const created = await crmRepo.createCompany({
+      tenant_id: access.tenantId && Types.ObjectId.isValid(access.tenantId) ? new Types.ObjectId(access.tenantId) : null,
+      name,
+      status: 'active',
+      created_by: Types.ObjectId.isValid(adminId) ? new Types.ObjectId(adminId) : null,
+      created_at: now,
+      updated_at: now,
+      __v: 0,
+    });
+    return mapCompany(created);
+  },
+
   // ── User provisioning (writes to the CRM users collection so the account can log in normally) ──
   async createUser(adminId: string, input: { email: string; password: string; firstName?: string; lastName?: string; phone?: string; roleId?: string; branchIds?: string[] }) {
     const access = await accessService.accessForUserId(adminId);

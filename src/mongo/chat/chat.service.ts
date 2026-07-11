@@ -184,6 +184,7 @@ export const chatService = {
       createdBy: c.createdBy,
       members: c.members.map((m) => ({ userId: m.userId, role: m.role })),
       deptKey: c.deptKey ?? null,
+      companyId: c.companyId ?? null, // business this group belongs to
       // branch this group belongs to: explicit field, else derived from the dept key
       branchId: c.branchId ?? (c.deptKey ? c.deptKey.split(':')[0] : null),
       departmentId: c.departmentId ?? (c.deptKey ? c.deptKey.split(':')[1] : null),
@@ -390,8 +391,9 @@ export const chatService = {
   },
 
   // ── groups ──
-  async createGroup(userId: string, input: { name: string; memberIds: string[]; description?: string; image?: string; branchId?: string; departmentId?: string }) {
+  async createGroup(userId: string, input: { name: string; memberIds: string[]; description?: string; image?: string; companyId?: string; branchId?: string; departmentId?: string }) {
     if (!input.name?.trim()) throw BadRequest('Group name required');
+    let companyId = input.companyId?.trim() || null;
     const branchId = input.branchId?.trim() || null;
     const departmentId = input.departmentId?.trim() || null;
     // Access guard: only super-admins / company-wide roles may create a group in a branch they don't
@@ -400,6 +402,14 @@ export const chatService = {
       const access = await accessService.accessForUserId(userId);
       const allowed = !!access && (access.isSuper || access.companyWide || (access.branchIds ?? []).includes(branchId));
       if (!allowed) throw Forbidden('You can only create groups in your own branch');
+      // Anchor the group to its business: the branch's company must match the selected one
+      // (or fills it in when omitted), so a group always lives under business → branch → department.
+      if (Types.ObjectId.isValid(branchId)) {
+        const branch = (await crmRepo.branchesByIds([new Types.ObjectId(branchId)]))[0];
+        const branchCompanyId = branch?.company_id ? String(branch.company_id) : null;
+        if (companyId && branchCompanyId && companyId !== branchCompanyId) throw BadRequest('Branch does not belong to the selected business');
+        companyId = branchCompanyId ?? companyId;
+      }
     }
     const participantIds = [...new Set([userId, ...(input.memberIds ?? [])])];
     const me = await crmRepo.getUserById(userId);
@@ -413,6 +423,7 @@ export const chatService = {
       name: input.name.trim(),
       description: input.description ?? null,
       image: input.image ?? null,
+      companyId, // business this group belongs to (validated/derived from the branch above)
       branchId, // branch this group belongs to
       departmentId, // department this group belongs to (branch → department → many groups)
       deptKey: branchId && departmentId ? `${branchId}:${departmentId}` : null, // non-unique lookup key
@@ -454,6 +465,7 @@ export const chatService = {
 
     const participantIds = [...new Set([userId, ...branchMemberIds])];
     const me = await crmRepo.getUserById(userId);
+    const branch = (await crmRepo.branchesByIds([new Types.ObjectId(branchId)]))[0];
     const now = new Date();
     const conv = (await conversationRepo.create({
       type: 'group',
@@ -462,6 +474,7 @@ export const chatService = {
       createdBy: userId,
       tenantId: me?.tenant_id ? String(me.tenant_id) : null,
       name: input.name?.trim() || 'Group',
+      companyId: branch?.company_id ? String(branch.company_id) : null, // business, derived from the branch
       deptKey,
       lastActivityAt: now,
     })) as unknown as ConversationDoc;
