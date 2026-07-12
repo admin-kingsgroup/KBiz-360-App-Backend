@@ -57,7 +57,8 @@ emailRouter.get('/email/messages/:id/attachments/:attId', asyncHandler(async (re
 emailRouter.get('/email/messages/:id', asyncHandler(async (req, res) => res.json(await graph.getMessage(uid(req), req.params.id, (req.query.folder as EmailFolder) ?? 'inbox'))));
 emailRouter.post('/email/send', validate(draftSchema), asyncHandler(async (req, res) => res.status(201).json(await graph.sendMail(uid(req), req.body, req.body.id))));
 emailRouter.post('/email/drafts', validate(draftSchema), asyncHandler(async (req, res) => res.status(201).json(await graph.saveDraft(uid(req), req.body, req.body.id))));
-emailRouter.post('/email/messages/:id/move', validate(z.object({ folder: z.string() })), asyncHandler(async (req, res) => { await graph.move(uid(req), req.params.id, asFolder(req.body.folder)); res.status(204).send(); }));
+// Returns { id: newId } — Graph re-keys a message on move; the client must adopt the new id.
+emailRouter.post('/email/messages/:id/move', validate(z.object({ folder: z.string() })), asyncHandler(async (req, res) => { res.json(await graph.move(uid(req), req.params.id, asFolder(req.body.folder))); }));
 emailRouter.post('/email/messages/:id/read', validate(z.object({ read: z.boolean() })), asyncHandler(async (req, res) => { await graph.setRead(uid(req), req.params.id, req.body.read); res.status(204).send(); }));
 // POST /api/email/mark-all-read — mark every unread message in a folder as read.
 emailRouter.post('/email/mark-all-read', validate(z.object({ folder: z.string() })), asyncHandler(async (req, res) => {

@@ -195,8 +195,11 @@ export const graph = {
     const got = await graphFetch(userId, `/me/messages/${created.id}?$select=${SELECT},body`);
     return mapMessage(got, 'drafts');
   },
-  async move(userId: string, id: string, folder: EmailFolder): Promise<void> {
-    await graphFetch(userId, `/me/messages/${id}/move`, { method: 'POST', body: JSON.stringify({ destinationId: FOLDER_WK[folder] }) });
+  // Graph re-keys a message when it moves folders — the response carries the moved copy's NEW id.
+  // Return it so clients can re-key; acting on the old id afterwards (e.g. delete) 404s.
+  async move(userId: string, id: string, folder: EmailFolder): Promise<{ id: string }> {
+    const j = await graphFetch(userId, `/me/messages/${id}/move`, { method: 'POST', body: JSON.stringify({ destinationId: FOLDER_WK[folder] }) });
+    return { id: j?.id ?? id };
   },
   // ── custom (smart) folders ──
   // Create a real Outlook mail folder; returns its id (used as the smart folder's destination).
