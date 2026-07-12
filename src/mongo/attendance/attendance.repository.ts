@@ -18,4 +18,9 @@ export const attendanceRepo = {
   // A user's most recent records (newest first) for the personal history list.
   historyForUser: (userId: string, limit: number) =>
     AttendanceModel().find({ userId }).sort({ dateKey: -1 }).limit(limit).lean<AttendanceDoc[]>(),
+
+  // The user's earliest record — clamps history gap-filling so no absences are shown
+  // for days before the person ever started punching.
+  firstForUser: (userId: string) =>
+    AttendanceModel().findOne({ userId }).sort({ dateKey: 1 }).lean<AttendanceDoc>(),
 };

@@ -32,9 +32,11 @@ attendanceRouter.get('/me', requireAuth, asyncHandler(async (req, res) => {
   res.json(await attendanceService.me(req.auth.userId));
 }));
 
+// ?date=YYYY-MM-DD (business-tz, defaults to today) lets the admin browse past days.
 attendanceRouter.get('/team', requireAuth, asyncHandler(async (req, res) => {
   if (!req.auth) throw Unauthorized();
-  res.json(await attendanceService.team(req.auth.userId));
+  const date = typeof req.query.date === 'string' && req.query.date ? req.query.date : undefined;
+  res.json(await attendanceService.team(req.auth.userId, date));
 }));
 
 // The caller's recent attendance (personal history list). ?days=30 (default), clamped 1..180.
@@ -43,6 +45,28 @@ attendanceRouter.get('/history', requireAuth, asyncHandler(async (req, res) => {
   const days = req.query.days ? Number(req.query.days) : undefined;
   res.json(await attendanceService.history(req.auth.userId, Number.isFinite(days) ? (days as number) : undefined));
 }));
+
+// A teammate's recent attendance (per-user history for the admin team view). Manager-only;
+// the service additionally checks the target belongs to the viewer's tenant. ?days as above.
+attendanceRouter.get('/history/user/:userId', requireAuth, requireManage, asyncHandler(async (req, res) => {
+  if (!req.auth) throw Unauthorized();
+  const days = req.query.days ? Number(req.query.days) : undefined;
+  res.json(await attendanceService.historyForUserAsAdmin(req.auth.userId, req.params.userId, Number.isFinite(days) ? (days as number) : undefined));
+}));
+
+// Admin correction — mark a user present/absent for one day (manager-only; audit-stamped).
+attendanceRouter.post('/admin/day', requireAuth, requireManage,
+  validate(z.object({
+    userId: z.string().min(1),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    present: z.boolean(),
+    inTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+    outTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+  })),
+  asyncHandler(async (req, res) => {
+    if (!req.auth) throw Unauthorized();
+    res.json(await attendanceService.adminSetDay(req.auth.userId, req.body));
+  }));
 
 // ── office geofences ──
 // Offices the caller may punch at (drives the app's office picker + geofence presence).

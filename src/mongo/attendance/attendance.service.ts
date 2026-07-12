@@ -36,6 +36,26 @@ const dayKeyInTz = (d: Date): string => {
   }
 };
 const todayKey = (): string => dayKeyInTz(new Date()); // business-tz calendar day (daily uniqueness)
+// Calendar arithmetic on 'YYYY-MM-DD' keys — timezone-free once the key is fixed.
+const addDays = (key: string, n: number): string => {
+  const d = new Date(`${key}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+// The UTC instant whose wall clock in the business timezone reads `dayKey hh:mm` (for admin
+// corrections entered as business-local times). Two-step: format a UTC guess back into the tz,
+// and shift by the difference.
+const atBusinessTime = (dayKey: string, hhmm: string): Date => {
+  const guess = new Date(`${dayKey}T${hhmm}:00.000Z`);
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: ATTENDANCE_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  });
+  const wall = new Date(fmt.format(guess).replace(', ', 'T').replace(' ', 'T') + 'Z');
+  return new Date(guess.getTime() - (wall.getTime() - guess.getTime()));
+};
 const todayDate = (): Date => new Date(`${todayKey()}T00:00:00.000Z`); // calendar-day marker for the record
 function fmtTime(d: Date | null): string | null {
   if (!d) return null;
@@ -364,17 +384,85 @@ export const attendanceService = {
     return { ok: true };
   },
 
-  // GET /attendance/history — the caller's recent attendance rows (newest first).
-  async history(userId: string, days = 30) {
-    const rows = await attendanceRepo.historyForUser(userId, Math.min(Math.max(days, 1), 180));
-    return rows.map((r) => ({
-      date: r.dateKey,
-      inTime: r.checkInAt ? r.checkInAt.toISOString() : null,
-      outTime: r.checkOutAt ? r.checkOutAt.toISOString() : null,
-      via: r.method,
-      present: r.present,
-      distanceMeters: r.distanceMeters,
-    }));
+  // GET /attendance/history — the caller's recent attendance, one entry per calendar day
+  // (newest first). Days with no punch row come back as ABSENT entries so past absences are
+  // visible; the walk never goes past the user's first-ever record (no fake absences before
+  // they started punching).
+  async history(userId: string, days = 30, fillFullWindow = false) {
+    const limit = Math.min(Math.max(days, 1), 180);
+    const rows = await attendanceRepo.historyForUser(userId, limit);
+    const first = await attendanceRepo.firstForUser(userId);
+    if (!first && !fillFullWindow) return [];
+    const floor = fillFullWindow ? addDays(todayKey(), -(limit - 1)) : (first as NonNullable<typeof first>).dateKey;
+    const byKey = new Map(rows.map((r) => [r.dateKey, r]));
+    const out = [];
+    for (let key = todayKey(); out.length < limit && key >= floor; key = addDays(key, -1)) {
+      const r = byKey.get(key);
+      out.push({
+        date: key,
+        inTime: r?.checkInAt ? r.checkInAt.toISOString() : null,
+        outTime: r?.checkOutAt ? r.checkOutAt.toISOString() : null,
+        via: r?.method ?? null,
+        present: !!r?.checkInAt, // was present that day (doc.present means "currently in office")
+        distanceMeters: r?.distanceMeters ?? null,
+      });
+    }
+    return out;
+  },
+
+  // GET /attendance/history/user/:userId — a teammate's attendance history, for the admin
+  // team view. Manager-only (route), and the target must belong to the viewer's tenant.
+  async historyForUserAsAdmin(adminId: string, targetUserId: string, days = 30) {
+    const viewer = await accessService.accessForUserId(adminId);
+    if (!viewer?.canManage) throw Forbidden('Requires super_admin or company_manager');
+    const target = await crmRepo.getUserById(targetUserId);
+    if (!target) throw BadRequest('User not found');
+    if (viewer.tenantId && target.tenant_id && String(target.tenant_id) !== viewer.tenantId) {
+      throw Forbidden('User is outside your tenant');
+    }
+    // Full window (not clamped to the first record) so the admin can also correct days the
+    // app never recorded at all — e.g. a rejected auto punch on a user's very first day.
+    return this.history(targetUserId, days, true);
+  },
+
+  // POST /attendance/admin/day — admin correction: mark a user PRESENT (with business-local
+  // times, default 10:00–19:00) or ABSENT for one calendar day. Stored as method 'Manual' with
+  // adjustedBy/adjustedAt so corrected days are distinguishable from real punches. Manager-only
+  // (route), target must belong to the viewer's tenant.
+  async adminSetDay(adminId: string, body: { userId: string; date: string; present: boolean; inTime?: string; outTime?: string }) {
+    const viewer = await accessService.accessForUserId(adminId);
+    if (!viewer?.canManage) throw Forbidden('Requires super_admin or company_manager');
+    if (!DAY_KEY_RE.test(body.date) || body.date > todayKey()) throw BadRequest('Invalid date — expected YYYY-MM-DD, not in the future');
+    if ((body.inTime && !HHMM_RE.test(body.inTime)) || (body.outTime && !HHMM_RE.test(body.outTime))) throw BadRequest('Times must be HH:mm');
+    const target = await crmRepo.getUserById(body.userId);
+    if (!target) throw BadRequest('User not found');
+    if (viewer.tenantId && target.tenant_id && String(target.tenant_id) !== viewer.tenantId) throw Forbidden('User is outside your tenant');
+
+    const audit = { adjustedBy: adminId, adjustedAt: new Date() };
+    let set;
+    if (body.present) {
+      // Marking TODAY present leaves the day open (no checkout yet) unless a time was given.
+      const checkOutAt = body.outTime
+        ? atBusinessTime(body.date, body.outTime)
+        : body.date === todayKey() ? null : atBusinessTime(body.date, '19:00');
+      set = {
+        date: new Date(`${body.date}T00:00:00.000Z`),
+        checkInAt: atBusinessTime(body.date, body.inTime ?? '10:00'),
+        checkOutAt,
+        method: 'Manual',
+        present: !checkOutAt,
+        latitude: null, longitude: null, distanceMeters: null, wifiSsid: null, faceVerified: null,
+        ...audit,
+      };
+    } else {
+      set = {
+        date: new Date(`${body.date}T00:00:00.000Z`),
+        checkInAt: null, checkOutAt: null, method: 'Manual', present: false,
+        latitude: null, longitude: null, distanceMeters: null, wifiSsid: null, faceVerified: null,
+        ...audit,
+      };
+    }
+    return mapMe(await attendanceRepo.upsert(body.userId, body.date, set));
   },
 
   // GET /attendance/me — today's status.
@@ -383,9 +471,14 @@ export const attendanceService = {
     return { ...base, exempt: await attendanceExempt.isExempt(userId) };
   },
 
-  // GET /attendance/team — today's attendance for the people the viewer oversees.
+  // GET /attendance/team — attendance for the people the viewer oversees, for one calendar
+  // day (?date=YYYY-MM-DD, business-tz; defaults to today — lets the admin browse past days).
   // Managers (super_admin / company_manager) see their tenant; others see just themselves.
-  async team(userId: string) {
+  async team(userId: string, dateKey?: string) {
+    if (dateKey !== undefined && (!DAY_KEY_RE.test(dateKey) || dateKey > todayKey())) {
+      throw BadRequest('Invalid date — expected YYYY-MM-DD, not in the future');
+    }
+    const day = dateKey ?? todayKey();
     const viewer = await accessService.accessForUserId(userId);
     if (!viewer) throw Forbidden('Session user not found');
 
@@ -404,7 +497,7 @@ export const attendanceService = {
     users = users.filter((u) => !exempt.has(String(u._id)));
 
     const ids = users.map((u) => String(u._id));
-    const records = await attendanceRepo.forUsersOnDay(todayKey(), ids);
+    const records = await attendanceRepo.forUsersOnDay(day, ids);
     const byUser = new Map(records.map((r) => [r.userId, r]));
 
     // Each user's WORKING branch: explicit assignment → first CRM access branch.

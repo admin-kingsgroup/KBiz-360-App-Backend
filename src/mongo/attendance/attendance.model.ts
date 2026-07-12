@@ -10,13 +10,15 @@ export interface AttendanceDoc {
   date: Date;
   checkInAt: Date | null;
   checkOutAt: Date | null;
-  method: string | null; // 'Wi-Fi' | 'Geofence' | 'Face' | 'Auto'
+  method: string | null; // 'Wi-Fi' | 'Geofence' | 'Face' | 'Auto' | 'Manual' (admin correction)
   present: boolean;
   latitude: number | null;
   longitude: number | null;
   distanceMeters: number | null;
   wifiSsid: string | null;
   faceVerified: boolean | null;
+  adjustedBy: string | null; // admin user id when the day was manually corrected
+  adjustedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -35,6 +37,8 @@ const AttendanceSchema = new Schema<AttendanceDoc>(
     distanceMeters: { type: Number, default: null },
     wifiSsid: { type: String, default: null },
     faceVerified: { type: Boolean, default: null },
+    adjustedBy: { type: String, default: null },
+    adjustedAt: { type: Date, default: null },
   },
   { timestamps: true, collection: 'attendance' },
 );
