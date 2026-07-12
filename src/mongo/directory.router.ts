@@ -112,6 +112,13 @@ directoryRouter.put('/me/avatar', requireAuth, validate(z.object({ url: z.string
 directoryRouter.put('/me/password', requireAuth, validate(z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(6) })),
   asyncHandler(async (req, res) => res.json(await directoryService.changeOwnPassword(uid(req), req.body.currentPassword, req.body.newPassword))));
 
+// ── KBiz360 · BOM membership (super-admin) — all tenant users with a member flag + a toggle.
+// The GET ensures the KBiz360 business has its single BOM branch (created on first call).
+directoryRouter.get('/kbiz/membership', requireAuth, requireSuper,
+  asyncHandler(async (req, res) => res.json(await directoryService.kbizMembership(uid(req)))));
+directoryRouter.put('/kbiz/membership/:userId', requireAuth, requireSuper, validate(z.object({ member: z.boolean() })),
+  asyncHandler(async (req, res) => res.json(await directoryService.setKbizMembership(uid(req), req.params.userId, req.body.member))));
+
 // Super-admin: edit a role's permission list (writes to the CRM roles collection).
 directoryRouter.put('/roles/:id/permissions', requireAuth, requireSuper, validate(z.object({ permissions: z.array(z.string()) })),
   asyncHandler(async (req, res) => res.json(await directoryService.setRolePermissions(uid(req), req.params.id, req.body.permissions))));

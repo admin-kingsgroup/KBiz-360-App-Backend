@@ -110,6 +110,21 @@ export const crmRepo = {
     const res = await col('companies').insertOne(doc);
     return col('companies').findOne({ _id: res.insertedId }) as Promise<CrmCompany>;
   },
+  async createBranch(doc: Record<string, unknown>): Promise<CrmBranch> {
+    const res = await col('branches').insertOne(doc);
+    return col('branches').findOne({ _id: res.insertedId }) as Promise<CrmBranch>;
+  },
+  // Membership toggles: add/remove one branch id on a user without touching the rest of the array.
+  async addUserBranch(userId: string, branchId: Types.ObjectId): Promise<void> {
+    const _id = oid(userId);
+    if (!_id) return;
+    await col('users').updateOne({ _id }, { $addToSet: { branch_ids: branchId }, $set: { updated_at: new Date() } });
+  },
+  async removeUserBranch(userId: string, branchId: Types.ObjectId): Promise<void> {
+    const _id = oid(userId);
+    if (!_id) return;
+    await col('users').updateOne({ _id }, { $pull: { branch_ids: branchId }, $set: { updated_at: new Date() } });
+  },
   async setRolePermissions(id: string, permissions: string[]): Promise<CrmRole | null> {
     const _id = oid(id);
     if (!_id) return null;

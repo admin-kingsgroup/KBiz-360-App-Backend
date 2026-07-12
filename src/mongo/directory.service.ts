@@ -58,6 +58,36 @@ async function roleMap(): Promise<Map<string, CrmRole>> {
   return new Map(roles.map((r) => [String(r._id), r]));
 }
 
+// The KBiz360 business keeps exactly ONE branch — BOM. Membership in the business = having that
+// branch id in the user's branch_ids. Finds the KBiz360 company (name match, tenant-scoped) and
+// creates the BOM branch under it on first use; existing extra branches are left untouched.
+const squash = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+async function ensureKbizBom(access: MongoAccess, adminId: string): Promise<{ company: CrmCompany; branch: CrmBranch }> {
+  const companies = await crmRepo.listCompanies(tenantFilter(access));
+  const company = companies.find((c) => squash(c.name).includes('kbiz360')) ?? companies.find((c) => squash(c.name).includes('kbiz'));
+  if (!company) throw BadRequest('KBiz360 business not found — create the business first');
+  const branches = await crmRepo.listBranches({ company_id: company._id });
+  let branch = branches.find((b) => (b.code ?? '').trim().toUpperCase() === 'BOM' || (b.name ?? '').trim().toUpperCase() === 'BOM');
+  if (!branch) {
+    const now = new Date();
+    branch = await crmRepo.createBranch({
+      tenant_id: company.tenant_id ?? null,
+      company_id: company._id,
+      name: 'BOM',
+      code: 'BOM',
+      city: 'Mumbai',
+      country: 'India',
+      isHO: true,
+      status: 'active',
+      created_by: Types.ObjectId.isValid(adminId) ? new Types.ObjectId(adminId) : null,
+      created_at: now,
+      updated_at: now,
+      __v: 0,
+    });
+  }
+  return { company, branch };
+}
+
 export const directoryService = {
   async listUsers(access: MongoAccess) {
     const roles = await roleMap();
@@ -277,6 +307,38 @@ export const directoryService = {
     const updated = await crmRepo.updateUser(userId, set);
     if (!updated) throw BadRequest('User not found');
     return mapUser(updated, await roleMap());
+  },
+
+  // ── KBiz360 · BOM membership (super-admin, profile → "KBiz360 Members") ──
+  // Every tenant user with a `member` flag: is the BOM branch in their branch_ids? Ensures the
+  // KBiz360 company has its single BOM branch (created on first call).
+  async kbizMembership(adminId: string) {
+    const access = await accessService.accessForUserId(adminId);
+    if (!access) throw Forbidden('Session user not found');
+    const { company, branch } = await ensureKbizBom(access, adminId);
+    const bomId = String(branch._id);
+    const roles = await roleMap();
+    const users = await crmRepo.listUsers(tenantFilter(access));
+    const mapped = users.map((u) => ({ ...mapUser(u, roles), member: (u.branch_ids ?? []).some((b) => String(b) === bomId) }));
+    const ids = mapped.map((m) => m.id);
+    const positions = await userPositions.mapFor(ids);
+    const avatars = await userAvatars.mapFor(ids);
+    return {
+      company: mapCompany(company),
+      branch: mapBranch(branch),
+      users: mapped.map((m) => ({ ...m, position: positions[m.id] ?? null, avatar: avatars[m.id] ?? null })),
+    };
+  },
+
+  async setKbizMembership(adminId: string, userId: string, member: boolean) {
+    const access = await accessService.accessForUserId(adminId);
+    if (!access) throw Forbidden('Session user not found');
+    const { branch } = await ensureKbizBom(access, adminId);
+    const user = await crmRepo.getUserById(userId);
+    if (!user) throw BadRequest('User not found');
+    if (member) await crmRepo.addUserBranch(userId, branch._id);
+    else await crmRepo.removeUserBranch(userId, branch._id);
+    return { id: userId, member };
   },
 
   async setRolePermissions(adminId: string, roleId: string, permissions: string[]) {
