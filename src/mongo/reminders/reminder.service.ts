@@ -32,19 +32,31 @@ export interface ReminderRecordDTO {
   forId: string; forName: string; forInitials: string; forColor: string;
   byId: string; byName: string; byInitials: string; byColor: string;
   state: ReminderDoc['state']; when?: string; overdue?: boolean; date?: string;
+  dueAt?: string; // ISO due timestamp (when the reminder fires)
   completedAt?: number; approvedAt?: number;
 }
 
 function toRecord(r: ReminderDoc, meta: Map<string, Meta>): ReminderRecordDTO {
   const f = meta.get(r.forId) ?? { name: 'Unknown', initials: '?', color: colorFor(r.forId) };
   const b = meta.get(r.byId) ?? { name: 'Unknown', initials: '?', color: colorFor(r.byId) };
+  // Overdue is derived live from the real due time, not the stored flag — a pending reminder
+  // becomes overdue the moment its dueAt passes, with no write needed.
+  const overdue = r.state === 'pending' && !!r.dueAt && r.dueAt.getTime() < Date.now();
   return {
     id: String(r._id), text: r.text, section: r.section,
     forId: r.forId, forName: f.name, forInitials: f.initials, forColor: f.color,
     byId: r.byId, byName: b.name, byInitials: b.initials, byColor: b.color,
-    state: r.state, when: r.whenLabel ?? undefined, overdue: r.overdue, date: r.dueDate ?? undefined,
+    state: r.state, when: r.whenLabel ?? undefined, overdue, date: r.dueDate ?? undefined,
+    dueAt: r.dueAt?.toISOString(),
     completedAt: r.completedAt?.getTime(), approvedAt: r.approvedAt?.getTime(),
   };
+}
+
+// Parse an optional ISO due timestamp from the client; invalid dates are treated as absent.
+function parseDueAt(iso?: string | null): Date | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 export const remindersService = {
@@ -125,12 +137,12 @@ export const remindersService = {
   },
 
   // POST /reminders — creator = current user; assignee must be a real user.
-  async create(userId: string, body: { text: string; forId: string; when?: string; section?: string }): Promise<ReminderRecordDTO> {
+  async create(userId: string, body: { text: string; forId: string; when?: string; section?: string; dueAt?: string }): Promise<ReminderRecordDTO> {
     const target = await crmRepo.getUserById(body.forId);
     if (!target) throw BadRequest('Unknown assignee');
     const doc = await reminderRepo.create({
       text: body.text, section: body.section ?? 'today', forId: body.forId, byId: userId,
-      state: 'pending', whenLabel: body.when ?? null,
+      state: 'pending', whenLabel: body.when ?? null, dueAt: parseDueAt(body.dueAt),
     });
     const meta = await resolveMeta([doc.forId, doc.byId]);
     // Notify the assignee (not self): realtime badge + a push "X created a reminder for you".
@@ -142,16 +154,17 @@ export const remindersService = {
   },
 
   // PATCH /reminders/:id — complete (assignee) / approve (creator) / reassign (creator) / edit (creator).
-  async patch(id: string, body: { action?: 'complete' | 'approve'; forId?: string; text?: string; when?: string; section?: string }, userId: string) {
+  async patch(id: string, body: { action?: 'complete' | 'approve'; forId?: string; text?: string; when?: string; section?: string; dueAt?: string }, userId: string) {
     const r = await reminderRepo.byId(id);
     if (!r) throw NotFound('Reminder not found');
 
     // Reassign: the creator routes it to a (possibly different) assignee and resets it to pending.
+    // dueNotifiedAt resets so the NEW assignee also gets the due-time push.
     if (body.forId && body.forId !== r.forId) {
       if (r.byId !== userId) throw Forbidden('Only the creator can reassign this reminder');
       const target = await crmRepo.getUserById(body.forId);
       if (!target) throw BadRequest('Unknown assignee');
-      await reminderRepo.update(id, { forId: body.forId, state: 'pending', completedAt: null });
+      await reminderRepo.update(id, { forId: body.forId, state: 'pending', completedAt: null, dueNotifiedAt: null });
       if (body.forId !== userId) {
         emitToUser(body.forId, 'reminder:new', { id });
         const meta = await resolveMeta([userId]);
@@ -165,18 +178,45 @@ export const remindersService = {
       const selfAssigned = r.byId === r.forId;
       const now = new Date();
       await reminderRepo.update(id, selfAssigned ? { state: 'approved', completedAt: now, approvedAt: now } : { state: 'review', completedAt: now });
-      if (!selfAssigned) emitToUser(r.byId, 'reminder:update', { id });
+      // Tell the creator their reminder was completed (badge + push), like Apple Reminders' shared-list updates.
+      if (!selfAssigned) {
+        emitToUser(r.byId, 'reminder:update', { id });
+        const meta = await resolveMeta([userId]);
+        void reminderPush.sendCompleted(r.byId, meta.get(userId)?.name ?? 'Someone', r.text, id);
+      }
       return this.result(id, selfAssigned ? 'archived' : 'review');
     }
     if (body.action === 'approve') {
       if (r.byId !== userId) throw Forbidden('Only the creator can approve this reminder');
       await reminderRepo.update(id, { state: 'approved', approvedAt: new Date() });
+      // Tell the assignee their completed work was approved.
+      if (r.forId !== userId) {
+        emitToUser(r.forId, 'reminder:update', { id });
+        const meta = await resolveMeta([userId]);
+        void reminderPush.sendApproved(r.forId, meta.get(userId)?.name ?? 'Someone', r.text, id);
+      }
       return this.result(id, 'approved');
     }
-    // field edit (creator only)
+    // field edit (creator only). A changed due time re-arms the due-time push.
     if (r.byId !== userId) throw Forbidden('Only the creator can edit this reminder');
-    await reminderRepo.update(id, { text: body.text ?? r.text, section: body.section ?? r.section, whenLabel: body.when ?? r.whenLabel });
+    const nextDueAt = body.dueAt !== undefined ? parseDueAt(body.dueAt) : r.dueAt;
+    await reminderRepo.update(id, {
+      text: body.text ?? r.text, section: body.section ?? r.section, whenLabel: body.when ?? r.whenLabel,
+      dueAt: nextDueAt, ...(body.dueAt !== undefined ? { dueNotifiedAt: null } : {}),
+    });
     return this.result(id, 'updated');
+  },
+
+  // Due-time sweep (called on an interval from main): push "⏰ Reminder due" to the assignee of
+  // every pending reminder whose dueAt has passed and hasn't been notified yet.
+  async sweepDue(): Promise<number> {
+    const due = await reminderRepo.listDueUnnotified(new Date());
+    for (const r of due) {
+      await reminderRepo.update(String(r._id), { dueNotifiedAt: new Date(), overdue: true });
+      emitToUser(r.forId, 'reminder:update', { id: String(r._id) });
+      void reminderPush.sendDue(r.forId, r.text, String(r._id));
+    }
+    return due.length;
   },
 
   async result(id: string, result: 'archived' | 'review' | 'approved' | 'updated') {

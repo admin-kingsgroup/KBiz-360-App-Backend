@@ -11,6 +11,7 @@ import { ensureAttendanceIndexes } from './attendance/attendance.model';
 import { ensureOfficeGeofenceIndexes } from './attendance/office.model';
 import { ensureChatIndexes } from './chat/chat.models';
 import { startEmailPolling } from '../email/email.poll';
+import { startReminderDueSweep, stopReminderDueSweep } from './reminders/reminder.sweep';
 
 // Entrypoint for the MongoDB-backed backend (real CRM auth + directory).
 async function bootstrap(): Promise<void> {
@@ -35,8 +36,10 @@ async function bootstrap(): Promise<void> {
   });
 
   startEmailPolling(); // new-mail push (no-op until Microsoft email is configured + a user connects)
+  startReminderDueSweep(); // "⏰ Reminder due" pushes for reminders whose due time arrives
 
   const shutdown = async (): Promise<void> => {
+    stopReminderDueSweep();
     await disconnectMongo();
     httpServer.close(() => process.exit(0));
   };

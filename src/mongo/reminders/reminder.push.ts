@@ -36,29 +36,45 @@ async function postToExpo(messages: ExpoMessage[]): Promise<void> {
   }
 }
 
-export const reminderPush = {
-  // Notify the assignee that `byName` created/assigned a reminder for them. Tapping it (data.type
-  // 'reminder') opens the Reminders tab. Returns the number of devices targeted.
-  async sendAssigned(userId: string, byName: string, text: string, reminderId: string): Promise<number> {
-    const tokens = (await callDeviceRepo.tokensForUser(userId)).filter(isExpoPushToken);
-    if (!tokens.length) return 0;
-    const body = text.length > 90 ? `${text.slice(0, 87)}…` : text;
-    const messages: ExpoMessage[] = tokens.map((to) => ({
-      to,
-      title: `${byName} created a reminder for you`,
-      body,
-      data: { type: 'reminder', id: reminderId },
-      sound: 'default',
-      channelId: 'default',
-      priority: 'high',
-    }));
+// One reminder push to all of a user's devices. Tapping it (data.type 'reminder') opens the
+// Reminders tab. Returns the number of devices targeted.
+async function sendToUser(userId: string, title: string, text: string, reminderId: string): Promise<number> {
+  const tokens = (await callDeviceRepo.tokensForUser(userId)).filter(isExpoPushToken);
+  if (!tokens.length) return 0;
+  const body = text.length > 90 ? `${text.slice(0, 87)}…` : text;
+  const messages: ExpoMessage[] = tokens.map((to) => ({
+    to,
+    title,
+    body,
+    data: { type: 'reminder', id: reminderId },
+    sound: 'default',
+    channelId: 'default',
+    priority: 'high',
+  }));
 
-    if (!config.push.enabled) {
-      // eslint-disable-next-line no-console
-      console.log(`[reminder-push] dry-run reminder push to ${tokens.length} device(s) for ${userId}`);
-      return tokens.length;
-    }
-    await postToExpo(messages);
+  if (!config.push.enabled) {
+    // eslint-disable-next-line no-console
+    console.log(`[reminder-push] dry-run "${title}" to ${tokens.length} device(s) for ${userId}`);
     return tokens.length;
-  },
+  }
+  await postToExpo(messages);
+  return tokens.length;
+}
+
+export const reminderPush = {
+  // Assignee: `byName` created/assigned a reminder for them.
+  sendAssigned: (userId: string, byName: string, text: string, reminderId: string): Promise<number> =>
+    sendToUser(userId, `${byName} created a reminder for you`, text, reminderId),
+
+  // Creator: the assignee finished it and it's awaiting review.
+  sendCompleted: (userId: string, byName: string, text: string, reminderId: string): Promise<number> =>
+    sendToUser(userId, `✓ ${byName} completed a reminder`, text, reminderId),
+
+  // Assignee: the creator approved their completed reminder.
+  sendApproved: (userId: string, byName: string, text: string, reminderId: string): Promise<number> =>
+    sendToUser(userId, `${byName} approved your reminder`, text, reminderId),
+
+  // Assignee: the reminder's due time arrived.
+  sendDue: (userId: string, text: string, reminderId: string): Promise<number> =>
+    sendToUser(userId, '⏰ Reminder due', text, reminderId),
 };

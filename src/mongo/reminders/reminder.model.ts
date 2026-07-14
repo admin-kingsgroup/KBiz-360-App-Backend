@@ -15,6 +15,8 @@ export interface ReminderDoc {
   state: ReminderState;
   whenLabel: string | null; // 'Today · 2:00 PM'
   dueDate: string | null;
+  dueAt: Date | null; // real due timestamp — drives due-time push + overdue
+  dueNotifiedAt: Date | null; // when the "reminder due" push was sent (null = not yet)
   overdue: boolean;
   completedAt: Date | null;
   approvedAt: Date | null;
@@ -31,6 +33,8 @@ const ReminderSchema = new Schema<ReminderDoc>(
     state: { type: String, enum: ['pending', 'review', 'approved'], default: 'pending' },
     whenLabel: { type: String, default: null },
     dueDate: { type: String, default: null },
+    dueAt: { type: Date, default: null },
+    dueNotifiedAt: { type: Date, default: null },
     overdue: { type: Boolean, default: false },
     completedAt: { type: Date, default: null },
     approvedAt: { type: Date, default: null },
@@ -40,6 +44,7 @@ const ReminderSchema = new Schema<ReminderDoc>(
 ReminderSchema.index({ forId: 1, state: 1, createdAt: -1 });
 ReminderSchema.index({ byId: 1, state: 1, createdAt: -1 });
 ReminderSchema.index({ state: 1, createdAt: -1 });
+ReminderSchema.index({ state: 1, dueAt: 1, dueNotifiedAt: 1 }); // due-time sweep
 
 let _Reminder: Model<ReminderDoc> | null = null;
 export function ReminderModel(): Model<ReminderDoc> {

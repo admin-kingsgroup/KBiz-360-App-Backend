@@ -17,4 +17,8 @@ export const reminderRepo = {
     ReminderModel().find({ state: 'approved', $or: [{ forId: userId }, { byId: userId }] }).sort({ approvedAt: -1, createdAt: -1 }).lean<ReminderDoc[]>(),
 
   countReview: (byId: string) => ReminderModel().countDocuments({ state: 'review', byId }),
+
+  // Pending reminders whose due time has passed and no due push was sent yet (due-time sweep).
+  listDueUnnotified: (now: Date) =>
+    ReminderModel().find({ state: 'pending', dueAt: { $ne: null, $lte: now }, dueNotifiedAt: null }).lean<ReminderDoc[]>(),
 };

@@ -18,6 +18,7 @@ const createSchema = z.object({
   forId: z.string().min(1),
   when: z.string().optional(),
   section: z.string().optional(),
+  dueAt: z.string().datetime({ offset: true }).optional(), // real due timestamp (ISO)
 });
 const patchSchema = z.object({
   action: z.enum(['complete', 'approve']).optional(),
@@ -25,6 +26,7 @@ const patchSchema = z.object({
   text: z.string().min(1).optional(),
   when: z.string().optional(),
   section: z.string().optional(),
+  dueAt: z.string().datetime({ offset: true }).optional(),
 });
 
 // GET /api/reminders?tab=forme|iset|review|all|archive

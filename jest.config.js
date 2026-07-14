@@ -5,6 +5,8 @@ module.exports = {
   rootDir: '.',
   roots: ['<rootDir>/src'],
   testMatch: ['**/__tests__/**/*.test.ts', '**/*.spec.ts'],
+  // macOS writes AppleDouble metadata files (._foo.test.ts) on exFAT drives — never real tests.
+  testPathIgnorePatterns: ['/node_modules/', '/\\._'],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
     '^@domain/(.*)$': '<rootDir>/src/domain/$1',
