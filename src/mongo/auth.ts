@@ -7,6 +7,7 @@ import { crmRepo, type CrmUser } from './crm.repo';
 import { accessService, type MongoAccess } from './access';
 import { appAccess } from './appAccess';
 import { userAvatars } from './userAvatars';
+import { alertGrants } from './alerts/alertGrants';
 
 const sha256 = (s: string): string => crypto.createHash('sha256').update(s).digest('hex');
 
@@ -80,6 +81,7 @@ export const mongoAuth = {
       throw Forbidden('Your access to the app has been disabled by an administrator.');
     }
     const tokens = await issueTokens(access.userId, access.roleName);
+    access.alerts = await alertGrants.grantsFor(access.userId);
     return { ...tokens, user: toPublic(user, access, await userAvatars.urlFor(access.userId)), access };
   },
 
@@ -87,6 +89,7 @@ export const mongoAuth = {
     const user = await crmRepo.getUserById(userId);
     if (!user) throw Unauthorized('Session user not found');
     const access = await accessService.accessForUser(user);
+    access.alerts = await alertGrants.grantsFor(access.userId);
     return { user: toPublic(user, access, await userAvatars.urlFor(access.userId)), access };
   },
 

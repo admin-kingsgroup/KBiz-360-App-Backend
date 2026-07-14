@@ -8,6 +8,7 @@ import { chatRouter } from './chat/chat.router';
 import { callsRouter } from './calls/calls.router';
 import { remindersRouter } from './reminders/reminders.router';
 import { attendanceRouter } from './attendance/attendance.router';
+import { alertsRouter } from './alerts/alerts.router';
 import { uploadsRouter } from './uploads.router';
 import { emailRouter } from '../email/email.router';
 import { config } from '../config';
@@ -31,6 +32,7 @@ export function createMongoApp(): Express {
   app.use('/api', callsRouter); // /calls/* (audio calling: signaling REST + history + analytics)
   app.use('/api/reminders', remindersRouter); // reminders (CRUD + review/approval, real users)
   app.use('/api/attendance', attendanceRouter); // attendance (punch in/out + today + team)
+  app.use('/api/alerts', alertsRouter); // system alerts (Home feed, access-filtered per user)
   app.use('/api', uploadsRouter); // /uploads (chat media)
   app.use('/api', emailRouter); // /email/* (Microsoft 365 via Graph)
   app.use('/uploads', express.static(config.storage.localDir)); // serve locally-stored media

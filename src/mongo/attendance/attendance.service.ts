@@ -7,6 +7,7 @@ import { officeRepo } from './office.repository';
 import { userOffices } from './userOffices';
 import { userWorkBranches } from './userWorkBranches';
 import { attendanceExempt } from '../attendanceExempt';
+import { alertService } from '../alerts/alert.service';
 import { userPositions } from '../userPositions';
 import type { OfficeGeofenceDoc } from './office.model';
 import type { AttendanceDoc } from './attendance.model';
@@ -197,6 +198,8 @@ export const attendanceService = {
       wifiSsid: wifiVerified ? cleanSsid(body.wifiSsid) : null,
       faceVerified: body.method === 'face' ? true : null,
     });
+    // System alert ("X checked in") into the branch's attendance channel — fire-and-forget.
+    void alertService.recordAttendancePunch(userId, 'in', now, saved?.method ?? null);
     return mapMe(saved);
   },
 
@@ -218,6 +221,8 @@ export const attendanceService = {
       distanceMeters: distance ?? today.distanceMeters,
       faceVerified: body.method === 'face' ? true : today.faceVerified,
     });
+    // System alert ("X checked out") into the branch's attendance channel — fire-and-forget.
+    void alertService.recordAttendancePunch(userId, 'out', now, saved?.method ?? null);
     return mapMe(saved);
   },
 

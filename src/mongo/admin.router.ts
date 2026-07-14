@@ -2,13 +2,15 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../common/asyncHandler';
 import { validate } from '../common/validate';
-import { Unauthorized } from '../common/errors';
+import { Unauthorized, BadRequest } from '../common/errors';
 import { requireAuth, requireSuper } from './middleware';
 import { accessService } from './access';
 import { directoryService } from './directory.service';
 import { appAccess } from './appAccess';
 import { userPositions } from './userPositions';
 import { attendanceExempt } from './attendanceExempt';
+import { alertGrants } from './alerts/alertGrants';
+import { ALERT_GRANT_IDS } from './alerts/alertChannels';
 import { mongoAuth } from './auth';
 import { emitToUser } from './chat/chat.events';
 
@@ -73,6 +75,39 @@ adminRouter.get(
     if (!access) throw Unauthorized();
     const users = await directoryService.listUsers(access);
     res.json(await attendanceExempt.statesFor(users.map((u) => u.id)));
+  }),
+);
+
+// GET /api/admin/alert-visibility → { [userId]: grants[] } — which system-alert channels each user sees.
+// Grants use the app's access format (e.g. "BOM-hr" = the BOM Attendance channel). Supers see all.
+adminRouter.get(
+  '/alert-visibility',
+  requireAuth,
+  requireSuper,
+  asyncHandler(async (req, res) => {
+    if (!req.auth) throw Unauthorized();
+    const access = await accessService.accessForUserId(req.auth.userId);
+    if (!access) throw Unauthorized();
+    const users = await directoryService.listUsers(access);
+    res.json(await alertGrants.mapFor(users.map((u) => u.id)));
+  }),
+);
+
+// POST /api/admin/alert-visibility { userId, alerts } → replace a user's alert-channel grants.
+// The change is pushed to the user's live app so their Home feed updates immediately.
+adminRouter.post(
+  '/alert-visibility',
+  requireAuth,
+  requireSuper,
+  validate(z.object({ userId: z.string().min(1), alerts: z.array(z.string().min(1)).max(50) })),
+  asyncHandler(async (req, res) => {
+    if (!req.auth) throw Unauthorized();
+    const { userId, alerts } = req.body as { userId: string; alerts: string[] };
+    const unknown = alerts.filter((a) => !ALERT_GRANT_IDS.includes(a));
+    if (unknown.length) throw BadRequest(`Unknown alert grant(s): ${unknown.join(', ')}`);
+    const saved = await alertGrants.setGrants(userId, alerts, req.auth.userId);
+    emitToUser(userId, 'alert:visibility', { alerts: saved });
+    res.json({ ok: true, alerts: saved });
   }),
 );
 

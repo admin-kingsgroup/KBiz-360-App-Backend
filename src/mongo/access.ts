@@ -14,6 +14,9 @@ export interface MongoAccess {
   companyWide: boolean; // sees all branches in the company/tenant (super_admin or company_manager)
   branchIds: string[] | null; // null = all branches (super_admin/company_manager); else assigned
   permissions: string[];
+  // System-alert channel grants ("BOM-hr"…), super-admin managed (kb360_app.alert_grants).
+  // Populated by auth login/me — not by deriveAccess (which stays free of DB I/O).
+  alerts?: string[];
 }
 
 // Pure derivation from a CRM user + their role. No DB I/O.

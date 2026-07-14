@@ -18,6 +18,11 @@ export function emitToUsers(userIds: string[], event: string, payload: unknown):
 export function emitToConversation(conversationId: string, event: string, payload: unknown): void {
   io?.to(convRoom(conversationId)).emit(event, payload);
 }
+// Broadcast to every connected client. Keep payloads to bare ids — receivers refetch through
+// access-filtered REST endpoints, so broadcasting never widens what a user can actually read.
+export function emitToAll(event: string, payload: unknown): void {
+  io?.emit(event, payload);
+}
 
 // ── presence ──
 const onlineCounts = new Map<string, number>();
