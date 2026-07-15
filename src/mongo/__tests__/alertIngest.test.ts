@@ -37,18 +37,41 @@ describe('alert channel registry', () => {
   });
 });
 
+describe('attachmentFilename', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { attachmentFilename } = require('../alerts/alertsIngest.router');
+
+  it('always ends in .pdf, surviving the storage layer safeName slice(0,120)', () => {
+    // The attack: filler + '.html' sized so append-then-truncate would have left the
+    // stored key ending '.html' (served as text/html by express.static = stored XSS).
+    for (const attack of ['a'.repeat(115) + '.html', 'a'.repeat(90) + '.html', 'x.html']) {
+      const out = attachmentFilename(attack);
+      expect(out.endsWith('.pdf')).toBe(true);
+      expect(out.endsWith('.html')).toBe(false);
+      expect(out.length).toBeLessThanOrEqual(104); // ≤100 base + '.pdf' → safeName never truncates
+    }
+  });
+
+  it('sanitizes, dedupes .pdf, and falls back on empty names', () => {
+    expect(attachmentFilename('Invoice-BOM-0726-SF01127.pdf')).toBe('Invoice-BOM-0726-SF01127.pdf');
+    expect(attachmentFilename('inv oice/№1.PDF')).toBe('inv_oice__1.pdf');
+    expect(attachmentFilename('...')).toBe('....pdf'); // dots are legal filename chars
+    expect(attachmentFilename('')).toBe('document.pdf');
+  });
+});
+
 describe('ingestRateLimit', () => {
   it('allows a burst up to capacity then 429s', () => {
     jest.isolateModules(() => {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { ingestRateLimit } = require('../alerts/alertsIngest.router');
       let limited = 0;
-      for (let i = 0; i < 61; i += 1) {
+      for (let i = 0; i < 121; i += 1) {
         const next = jest.fn();
         ingestRateLimit({} as never, {} as never, next);
         if (next.mock.calls[0][0]?.status === 429) limited += 1;
       }
-      expect(limited).toBe(1); // exactly the 61st call in the same instant is limited
+      expect(limited).toBe(1); // exactly the 121st call in the same instant is limited
     });
   });
 });

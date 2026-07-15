@@ -19,6 +19,7 @@ export interface AlertEventDto {
   context: string;
   time: number; // epoch ms
   read: boolean;
+  attachment?: { name: string; url: string }; // e.g. the ERP's invoice PDF (served from /uploads or S3)
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -49,7 +50,11 @@ function fmtWallTime(d: Date): string {
 }
 
 export const alertService = {
-  async record(channelId: string, ev: { source: string; title: string; body: string; context: string }): Promise<void> {
+  async record(
+    channelId: string,
+    // attachment.key = storage key, persisted for future file cleanup; DTO exposes only {name,url}.
+    ev: { source: string; title: string; body: string; context: string; attachment?: { name: string; url: string; key?: string } },
+  ): Promise<void> {
     const now = new Date();
     await col().insertOne({ channelId, ...ev, time: now, readBy: [], createdAt: now, expiresAt: eventExpiry(now) });
     emitToAll('alert:new', { channelId });
@@ -114,7 +119,7 @@ export const alertService = {
     if (!access.isSuper && channelIds.length) visible.push({ channelId: { $in: channelIds } });
     const docs = await col().find({ $or: visible }).sort({ time: -1 }).limit(MAX_EVENTS).toArray();
     return {
-      events: docs.map((d: { _id: unknown; channelId: string; source: string; title: string; body: string; context: string; time: Date; readBy?: string[] }) => ({
+      events: docs.map((d: { _id: unknown; channelId: string; source: string; title: string; body: string; context: string; time: Date; readBy?: string[]; attachment?: { name: string; url: string } }) => ({
         id: String(d._id),
         channelId: d.channelId,
         source: d.source,
@@ -123,6 +128,7 @@ export const alertService = {
         context: d.context,
         time: new Date(d.time).getTime(),
         read: (d.readBy ?? []).includes(userId),
+        ...(d.attachment ? { attachment: { name: d.attachment.name, url: d.attachment.url } } : {}),
       })),
     };
   },
