@@ -18,6 +18,8 @@ export interface AppConfig {
   // Apple VoIP push (PushKit) → native CallKit incoming-call screen on iOS. Token-based auth (.p8).
   apnsVoip: { keyPath?: string; keyId?: string; teamId?: string; bundleId: string; production: boolean };
   msEmail: { clientId: string; tenantId: string; tokenKey: string };
+  // Shared secret the ERP/CRM backends present to POST /api/alerts/ingest. Unset = ingest disabled.
+  alerts: { ingestToken?: string };
   mongo: { uri: string; crmDb: string; appDb: string };
   // Audio-calling: WebRTC ICE servers (STUN always, TURN optional) + ring timeout. Creds from env only.
   calls: {
@@ -74,6 +76,11 @@ export const config: AppConfig = {
     clientId: process.env.MS_CLIENT_ID || '',
     tenantId: process.env.MS_TENANT_ID || 'common',
     tokenKey: process.env.EMAIL_TOKEN_KEY || process.env.JWT_ACCESS_SECRET || 'dev-email-token-key',
+  },
+  alerts: {
+    // Trimmed to mirror the ERP/CRM emitters (which trim theirs) — a padded paste in .env must
+    // not cause unmatchable 401s; whitespace-only collapses to undefined (= ingest disabled).
+    ingestToken: (process.env.ALERTS_INGEST_TOKEN || '').trim() || undefined,
   },
   mongo: {
     uri: process.env.MONGODB_URI ?? '',

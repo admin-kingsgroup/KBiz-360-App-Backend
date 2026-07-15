@@ -10,6 +10,7 @@ import { ensureReminderIndexes } from './reminders/reminder.model';
 import { ensureAttendanceIndexes } from './attendance/attendance.model';
 import { ensureOfficeGeofenceIndexes } from './attendance/office.model';
 import { ensureChatIndexes } from './chat/chat.models';
+import { ensureAlertIndexes } from './alerts/alert.service';
 import { startEmailPolling } from '../email/email.poll';
 import { startReminderDueSweep, stopReminderDueSweep } from './reminders/reminder.sweep';
 
@@ -23,6 +24,7 @@ async function bootstrap(): Promise<void> {
   await ensureAttendanceIndexes(); // attendance indexes
   await ensureOfficeGeofenceIndexes(); // office geofence (per-branch) indexes
   await ensureChatIndexes(); // conversation indexes (drops legacy unique deptKey → many groups per dept)
+  await ensureAlertIndexes(); // alert_events indexes (channel feed + newest-first listing)
 
   const app = createMongoApp();
   const httpServer = createServer(app);

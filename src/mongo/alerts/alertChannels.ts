@@ -1,27 +1,49 @@
-// System-alert channel definitions, shared by the alerts API, the admin visibility routes and the
-// attendance emitter. Channel ids match the frontend's pulse channel ids; `grant` uses the app's
-// existing access-grant format `${branchCode}-${module}` (see Frontend makeAccessFilters.alertOK).
+// System-alert channel definitions, shared by the alerts API, the admin visibility routes, the
+// attendance emitter and the external ERP/CRM ingest route. Channel ids match the frontend's pulse
+// channel ids; `grant` uses the app's existing access-grant format `${branchCode}-${module}` (see
+// Frontend makeAccessFilters.alertOK). `module` uses the frontend ModuleKey vocabulary
+// ('hr' = attendance, 'accounts' = Finance/KBiz Books, 'crm' = CRM).
 export interface AlertChannelDef {
   id: string;
   branchCode: string; // CRM branch code the channel covers (AMD/BOM)
+  module: 'hr' | 'accounts' | 'crm';
   grant: string; // per-user grant string a super-admin assigns
   name: string;
 }
 
 export const ALERT_CHANNELS: AlertChannelDef[] = [
-  { id: 'tk_att_bom', branchCode: 'BOM', grant: 'BOM-hr', name: 'BOM Attendance' },
-  { id: 'tk_att_amd', branchCode: 'AMD', grant: 'AMD-hr', name: 'AMD Attendance' },
+  { id: 'tk_att_bom', branchCode: 'BOM', module: 'hr', grant: 'BOM-hr', name: 'BOM Attendance' },
+  { id: 'tk_att_amd', branchCode: 'AMD', module: 'hr', grant: 'AMD-hr', name: 'AMD Attendance' },
+  // Fed live by the KBiz Books ERP backend via POST /api/alerts/ingest.
+  { id: 'tk_fin_bom', branchCode: 'BOM', module: 'accounts', grant: 'BOM-accounts', name: 'Finance - BOM' },
+  { id: 'tk_fin_amd', branchCode: 'AMD', module: 'accounts', grant: 'AMD-accounts', name: 'Finance - AMD' },
+  // Fed live by the CRM backend via POST /api/alerts/ingest.
+  { id: 'tk_crm_bom', branchCode: 'BOM', module: 'crm', grant: 'BOM-crm', name: 'CRM - BOM' },
+  { id: 'tk_crm_amd', branchCode: 'AMD', module: 'crm', grant: 'AMD-crm', name: 'CRM - AMD' },
 ];
 
 export const ALERT_GRANT_IDS: string[] = ALERT_CHANNELS.map((c) => c.grant);
+
+// Ingest-facing lookup: external systems address a channel by (module, branchCode). The ingest
+// route also accepts 'finance' as an alias for 'accounts' (the ERP's own vocabulary).
+export function channelForModuleBranch(module: string, branchCode: string): AlertChannelDef | null {
+  const mod = module === 'finance' ? 'accounts' : module;
+  return (
+    ALERT_CHANNELS.find(
+      (c) => c.module === mod && c.branchCode.toLowerCase() === (branchCode ?? '').toLowerCase(),
+    ) ?? null
+  );
+}
 
 // Admin-composed announcements. Not grant-based: each EVENT carries its own recipient userId list
 // ('*' = everyone). Supers see the whole channel (their sent history); others only events
 // addressed to them. Id must match the frontend's announcements pulse channel.
 export const ANNOUNCEMENTS_CHANNEL_ID = 'announcements';
 
+// Attendance-emitter lookup: a branch's ATTENDANCE channel (there are now several channels per
+// branch, so this must filter by module, not just branch).
 export const channelForBranchCode = (code: string | null | undefined): AlertChannelDef | null =>
-  ALERT_CHANNELS.find((c) => c.branchCode.toLowerCase() === (code ?? '').toLowerCase()) ?? null;
+  ALERT_CHANNELS.find((c) => c.module === 'hr' && c.branchCode.toLowerCase() === (code ?? '').toLowerCase()) ?? null;
 
 // Channels a user may see: SUPER-ADMINS ONLY. Per-user grants (alertGrants) are no longer
 // honored for visibility — the grant storage/endpoints remain in case channels reopen to staff.

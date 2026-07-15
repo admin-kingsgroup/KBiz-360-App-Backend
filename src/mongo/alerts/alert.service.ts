@@ -25,6 +25,19 @@ export interface AlertEventDto {
 const col = () => appDb().collection('alert_events') as any;
 const MAX_EVENTS = 200;
 
+// listFor filters by channelId (and announcements by recipients) sorted by time — index both paths
+// now that the ERP/CRM ingest can grow this collection much faster than attendance did. Channel
+// events carry expiresAt (90d) so the TTL index bounds storage on the shared Atlas cluster
+// (listFor never shows more than the newest 200 anyway); admin announcements deliberately have no
+// expiresAt — Mongo TTL skips docs missing the indexed field — so their history never expires.
+const EVENT_TTL_DAYS = 90;
+export const eventExpiry = (from: Date): Date => new Date(from.getTime() + EVENT_TTL_DAYS * 24 * 3600 * 1000);
+export async function ensureAlertIndexes(): Promise<void> {
+  await col().createIndex({ channelId: 1, time: -1 });
+  await col().createIndex({ time: -1 });
+  await col().createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+}
+
 // Wall-clock time in the business timezone (same convention as attendance.service).
 const ATTENDANCE_TZ = process.env.ATTENDANCE_TZ || 'Asia/Kolkata';
 function fmtWallTime(d: Date): string {
@@ -38,7 +51,7 @@ function fmtWallTime(d: Date): string {
 export const alertService = {
   async record(channelId: string, ev: { source: string; title: string; body: string; context: string }): Promise<void> {
     const now = new Date();
-    await col().insertOne({ channelId, ...ev, time: now, readBy: [], createdAt: now });
+    await col().insertOne({ channelId, ...ev, time: now, readBy: [], createdAt: now, expiresAt: eventExpiry(now) });
     emitToAll('alert:new', { channelId });
   },
 
