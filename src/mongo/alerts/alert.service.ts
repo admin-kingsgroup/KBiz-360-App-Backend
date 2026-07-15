@@ -5,7 +5,7 @@ import { accessService } from '../access';
 import { userWorkBranches } from '../attendance/userWorkBranches';
 import { emitToAll } from '../chat/chat.events';
 import { alertGrants } from './alertGrants';
-import { ANNOUNCEMENTS_CHANNEL_ID, channelForBranchCode, visibleChannelIds } from './alertChannels';
+import { ANNOUNCEMENTS_CHANNEL_ID, attendanceChannelForBranch, visibleChannelIds } from './alertChannels';
 
 // System-alert EVENTS (kb360_app.alert_events). Events are shared per channel; read-state is
 // per-user (readBy). The realtime signal carries only the channelId — clients refetch GET /alerts,
@@ -71,8 +71,10 @@ export const alertService = {
       const workBranchId = (await userWorkBranches.branchIdFor(userId)) ?? (firstBranch ? String(firstBranch) : null);
       if (!workBranchId || !Types.ObjectId.isValid(workBranchId)) return;
       const [branch] = await crmRepo.branchesByIds([new Types.ObjectId(workBranchId)]);
-      const channel = channelForBranchCode(branch?.code ?? null);
-      if (!channel) return; // only branches with an attendance channel (BOM/AMD) emit alerts
+      // Code → alias (BOMMB/MUM → BOM) → city fallback: real Mumbai staff sit under the
+      // BOMMB branch doc, which has no channel of its own but must feed BOM Attendance.
+      const channel = attendanceChannelForBranch(branch ?? null);
+      if (!channel) return; // only Mumbai/Ahmedabad-resolvable branches emit alerts
       const name = `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim() || user.email || 'Unknown';
       await this.record(channel.id, {
         source: 'Attendance System',

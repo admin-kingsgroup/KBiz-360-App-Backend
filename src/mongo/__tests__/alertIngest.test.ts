@@ -1,6 +1,7 @@
 import {
   ALERT_CHANNELS,
   ALERT_GRANT_IDS,
+  attendanceChannelForBranch,
   channelForBranchCode,
   channelForModuleBranch,
   visibleChannelIds,
@@ -29,6 +30,15 @@ describe('alert channel registry', () => {
   it('keeps channelForBranchCode pinned to ATTENDANCE channels (order-independent)', () => {
     expect(channelForBranchCode('BOM')?.id).toBe('tk_att_bom');
     expect(channelForBranchCode('AMD')?.id).toBe('tk_att_amd');
+  });
+
+  it('resolves attendance channels via code → alias → city (BOMMB staff must hit BOM)', () => {
+    expect(attendanceChannelForBranch({ code: 'BOM' })?.id).toBe('tk_att_bom');
+    expect(attendanceChannelForBranch({ code: 'BOMMB', city: 'Mumbai' })?.id).toBe('tk_att_bom'); // alias
+    expect(attendanceChannelForBranch({ code: 'MUM' })?.id).toBe('tk_att_bom'); // legacy alias
+    expect(attendanceChannelForBranch({ code: 'XYZ', city: 'Ahmedabad' })?.id).toBe('tk_att_amd'); // city fallback
+    expect(attendanceChannelForBranch({ code: 'NBO', city: 'Nairobi' })).toBeNull(); // no channel → skip
+    expect(attendanceChannelForBranch(null)).toBeNull();
   });
 
   it('supers see every channel; non-supers exactly their granted channels', () => {

@@ -45,6 +45,22 @@ export const ANNOUNCEMENTS_CHANNEL_ID = 'announcements';
 export const channelForBranchCode = (code: string | null | undefined): AlertChannelDef | null =>
   ALERT_CHANNELS.find((c) => c.module === 'hr' && c.branchCode.toLowerCase() === (code ?? '').toLowerCase()) ?? null;
 
+// Real branch docs don't always carry the channel's code — Mumbai staff sit under BOMMB
+// ("Mumbai Main Branch", the ERP's head-office branch) and legacy tenants used MUM — so
+// resolve exact code → alias → city. Without this, every BOMMB puncher was silently
+// skipped and the attendance channels stayed empty forever.
+const BRANCH_CODE_ALIASES: Record<string, string> = { BOMMB: 'BOM', MUM: 'BOM' };
+const CITY_TO_CHANNEL_BRANCH: Record<string, string> = { mumbai: 'BOM', ahmedabad: 'AMD' };
+export function attendanceChannelForBranch(branch: { code?: string | null; city?: string | null } | null | undefined): AlertChannelDef | null {
+  if (!branch) return null;
+  const code = String(branch.code ?? '').toUpperCase();
+  return (
+    channelForBranchCode(code)
+    ?? channelForBranchCode(BRANCH_CODE_ALIASES[code] ?? null)
+    ?? channelForBranchCode(CITY_TO_CHANNEL_BRANCH[String(branch.city ?? '').trim().toLowerCase()] ?? null)
+  );
+}
+
 // Channels a user may see: super-admins see every channel; everyone else sees exactly the
 // channels a super-admin granted them (grant strings like "BOM-accounts", assigned via
 // POST /api/admin/alert-visibility and edited from the app's Team & Users screen).
