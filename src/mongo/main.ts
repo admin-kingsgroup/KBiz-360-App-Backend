@@ -10,6 +10,7 @@ import { ensureReminderIndexes } from './reminders/reminder.model';
 import { ensureAttendanceIndexes } from './attendance/attendance.model';
 import { ensureOfficeGeofenceIndexes } from './attendance/office.model';
 import { ensureChatIndexes } from './chat/chat.models';
+import { hydratePresence, startPresenceHeartbeat, stopPresenceHeartbeat } from './chat/chat.events';
 import { ensureAlertIndexes } from './alerts/alert.service';
 import { startEmailPolling } from '../email/email.poll';
 import { startReminderDueSweep, stopReminderDueSweep } from './reminders/reminder.sweep';
@@ -24,6 +25,7 @@ async function bootstrap(): Promise<void> {
   await ensureAttendanceIndexes(); // attendance indexes
   await ensureOfficeGeofenceIndexes(); // office geofence (per-branch) indexes
   await ensureChatIndexes(); // conversation indexes (drops legacy unique deptKey → many groups per dept)
+  await hydratePresence(); // last-seen Map survives restarts (user_presence is its durability)
   await ensureAlertIndexes(); // alert_events indexes (channel feed + newest-first listing)
 
   const app = createMongoApp();
@@ -39,9 +41,11 @@ async function bootstrap(): Promise<void> {
 
   startEmailPolling(); // new-mail push (no-op until Microsoft email is configured + a user connects)
   startReminderDueSweep(); // "⏰ Reminder due" pushes for reminders whose due time arrives
+  startPresenceHeartbeat(); // stamps lastSeenAt for online users every 60s (a crash loses ≤60s)
 
   const shutdown = async (): Promise<void> => {
     stopReminderDueSweep();
+    stopPresenceHeartbeat();
     await disconnectMongo();
     httpServer.close(() => process.exit(0));
   };

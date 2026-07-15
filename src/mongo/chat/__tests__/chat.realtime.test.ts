@@ -27,11 +27,28 @@ let directId = '';
 let groupId = '';
 const createdConvIds: string[] = [];
 
+// Extended receipt payload (chat:delivered / chat:read): at is epoch ms, statuses is the
+// authoritative aggregate status of every affected message.
+interface ReceiptEvt { conversationId: string; by: string; messageIds: string[]; at: number; statuses: { id: string; status: string }[] }
+
 const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
 function waitFor<T = unknown>(sock: ClientSocket, event: string, ms = 5000): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`timeout waiting for ${event}`)), ms);
     sock.once(event, (data: T) => { clearTimeout(timer); resolve(data); });
+  });
+}
+// Like waitFor, but skips non-matching emissions (e.g. delivered-on-connect sweeps of OTHER conversations).
+function waitForMatch<T = unknown>(sock: ClientSocket, event: string, pred: (e: T) => boolean, ms = 5000): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const handler = (data: T): void => {
+      if (!pred(data)) return;
+      clearTimeout(timer);
+      sock.off(event, handler);
+      resolve(data);
+    };
+    const timer = setTimeout(() => { sock.off(event, handler); reject(new Error(`timeout waiting for ${event}`)); }, ms);
+    sock.on(event, handler);
   });
 }
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -96,13 +113,27 @@ describe('Chat realtime — 1:1', () => {
     messageId = res.body.id;
   });
 
-  it('B reads → A gets chat:read', async () => {
+  it('B acks delivery → A gets chat:delivered with statuses + epoch-ms at', async () => {
     if (!ready) return;
-    const read = waitFor<{ by: string; conversationId: string }>(sockA!, 'chat:read');
+    const delivered = waitForMatch<ReceiptEvt>(sockA!, 'chat:delivered', (e) => e.conversationId === directId);
+    sockB!.emit('chat:delivered', { conversationId: directId });
+    const evt = await delivered;
+    expect(evt.by).toBe(idB);
+    expect(evt.messageIds).toContain(messageId);
+    expect(typeof evt.at).toBe('number'); // epoch ms, never a Date/ISO string
+    expect(evt.statuses.find((s) => s.id === messageId)?.status).toBe('delivered'); // direct: single recipient ⇒ aggregate delivered
+  });
+
+  it('B reads → A gets chat:read with statuses + epoch-ms at', async () => {
+    if (!ready) return;
+    const read = waitForMatch<ReceiptEvt>(sockA!, 'chat:read', (e) => e.conversationId === directId);
     sockB!.emit('chat:read', { conversationId: directId });
     const evt = await read;
     expect(evt.by).toBe(idB);
     expect(evt.conversationId).toBe(directId);
+    expect(evt.messageIds).toContain(messageId);
+    expect(typeof evt.at).toBe('number');
+    expect(evt.statuses.find((s) => s.id === messageId)?.status).toBe('read'); // direct: single recipient read ⇒ aggregate read
   });
 
   it('B reacts → A gets chat:reaction', async () => {
@@ -130,12 +161,51 @@ describe('Chat realtime — 1:1', () => {
     expect((await edited).text).toBe('hello B (edited)');
   });
 
-  it('GET /conversations lists the direct conversation for both', async () => {
+  it('GET /conversations lists the direct conversation with lastMessage ticks + ms lastSeen', async () => {
     if (!ready) return;
     const listA = await request(app).get('/api/conversations').set(auth(tokenA));
     const listB = await request(app).get('/api/conversations').set(auth(tokenB));
-    expect(listA.body.some((c: { id: string }) => c.id === directId)).toBe(true);
     expect(listB.body.some((c: { id: string }) => c.id === directId)).toBe(true);
+    const row = listA.body.find((c: { id: string }) => c.id === directId) as { lastMessage: { id: string | null; status: string | null }; lastSeen: number | null };
+    expect(row).toBeTruthy();
+    expect(row.lastMessage.id).toBe(messageId); // additive: id + aggregate status for the chat-list tick
+    expect(row.lastMessage.status).toBe('read');
+    expect(row.lastSeen === null || typeof row.lastSeen === 'number').toBe(true); // epoch ms, never an ISO string
+  });
+});
+
+describe('Chat realtime — presence + delivered-on-connect sweep', () => {
+  it('B disconnects → chat:offline carries epoch-ms lastSeen; reconnect sweeps pending to delivered', async () => {
+    if (!ready) return;
+    const offline = waitForMatch<{ userId: string; lastSeen: number | null }>(sockA!, 'chat:offline', (e) => e.userId === idB);
+    sockB!.close();
+    const off = await offline;
+    expect(typeof off.lastSeen).toBe('number'); // epoch ms, never a Date/ISO string
+
+    // A messages B while B is offline → stays single-tick 'sent'.
+    const res = await request(app).post('/api/messages').set(auth(tokenA)).send({ conversationId: directId, text: 'while you were away' });
+    expect(res.status).toBe(201);
+    expect(res.body.status).toBe('sent');
+
+    // B reconnects → markDeliveredEverywhere double-ticks it WITHOUT B opening the chat.
+    const delivered = waitForMatch<ReceiptEvt>(sockA!, 'chat:delivered', (e) => e.conversationId === directId);
+    sockB = ioClient(`http://localhost:${port}`, { auth: { token: tokenB }, transports: ['websocket'] });
+    await waitFor(sockB, 'connect');
+    const evt = await delivered;
+    expect(evt.by).toBe(idB);
+    expect(evt.messageIds).toContain(res.body.id);
+    expect(typeof evt.at).toBe('number');
+    expect(evt.statuses.find((s) => s.id === res.body.id)?.status).toBe('delivered');
+  });
+
+  it('invalid handshake token → auth:invalid + server-side disconnect', async () => {
+    if (!ready) return;
+    const sock = ioClient(`http://localhost:${port}`, { auth: { token: 'not-a-jwt' }, transports: ['websocket'] });
+    const invalid = waitFor(sock, 'auth:invalid');
+    const disconnected = waitFor(sock, 'disconnect');
+    await invalid;
+    await disconnected;
+    sock.close();
   });
 });
 

@@ -1,4 +1,5 @@
 import type { Server } from 'socket.io';
+import { UserPresenceModel } from './presence.model';
 
 // Holds the Socket.IO server + in-memory presence so the service/REST layer can emit realtime
 // events without importing the socket module (avoids a cycle). Presence is per-instance; for
@@ -25,19 +26,57 @@ export function emitToAll(event: string, payload: unknown): void {
 }
 
 // ── presence ──
+// The Map is the synchronous read path; user_presence is its durability (see presence.model.ts).
 const onlineCounts = new Map<string, number>();
 const lastSeenAt = new Map<string, Date>();
+
+// Fire-and-forget durability for last-seen — presence writes must never crash a handler
+// (appDb() throws synchronously when Mongo is down, hence the try around the query build too).
+function persistLastSeen(userId: string, at: Date): void {
+  try {
+    void UserPresenceModel().updateOne({ _id: userId }, { $set: { lastSeenAt: at } }, { upsert: true }).exec().catch(() => undefined);
+  } catch { /* not connected — best-effort */ }
+}
+
+// Load persisted last-seen into the Map at boot so "last seen" survives restarts.
+export async function hydratePresence(): Promise<void> {
+  const docs = await UserPresenceModel().find({}).select('_id lastSeenAt').lean<{ _id: string; lastSeenAt: Date }[]>();
+  for (const d of docs) if (d.lastSeenAt) lastSeenAt.set(String(d._id), new Date(d.lastSeenAt));
+}
+
+// 60s heartbeat: bulk-stamp lastSeenAt for everyone online so a crash loses ≤60s of accuracy.
+let heartbeat: ReturnType<typeof setInterval> | null = null;
+export function startPresenceHeartbeat(intervalMs = 60_000): void {
+  if (heartbeat) return;
+  heartbeat = setInterval(() => {
+    const ids = onlineUserIds();
+    if (!ids.length) return;
+    const now = new Date();
+    try {
+      void UserPresenceModel()
+        .bulkWrite(ids.map((id) => ({ updateOne: { filter: { _id: id }, update: { $set: { lastSeenAt: now } }, upsert: true } })), { ordered: false })
+        .catch(() => undefined);
+    } catch { /* not connected — best-effort */ }
+  }, intervalMs);
+  heartbeat.unref(); // never keep tests/shutdown alive
+}
+export function stopPresenceHeartbeat(): void {
+  if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
+}
 
 export function markOnline(userId: string): boolean {
   const was = (onlineCounts.get(userId) ?? 0) > 0;
   onlineCounts.set(userId, (onlineCounts.get(userId) ?? 0) + 1);
+  persistLastSeen(userId, new Date()); // stamp on connect too — crash while online stays ≤60s stale
   return !was; // true if this is the first connection (became online)
 }
 export function markOffline(userId: string): boolean {
   const n = (onlineCounts.get(userId) ?? 1) - 1;
   if (n <= 0) {
     onlineCounts.delete(userId);
-    lastSeenAt.set(userId, new Date());
+    const at = new Date();
+    lastSeenAt.set(userId, at);
+    persistLastSeen(userId, at);
     return true; // became offline
   }
   onlineCounts.set(userId, n);

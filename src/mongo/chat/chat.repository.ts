@@ -34,6 +34,58 @@ export interface MessagePage {
   limit?: number;
 }
 
+// ── aggregate receipt status (WhatsApp semantics) ──
+export type ReceiptStatus = MessageDoc['status'];
+export interface ReceiptResult { ids: string[]; statuses: { id: string; status: ReceiptStatus }[] }
+const STATUS_RANK: Record<ReceiptStatus, number> = { sent: 0, delivered: 1, read: 2 };
+
+// 'read' once EVERY other participant read, 'delivered' once every other participant has it,
+// else 'sent'. A read receipt implies delivery. (Also used by scripts/backfill-receipt-status.ts.)
+export function aggregateStatus(
+  m: { senderId: string; deliveredTo?: string[] | null; readBy?: { userId: string }[] | null },
+  participantIds: string[],
+): ReceiptStatus {
+  const others = participantIds.filter((p) => p !== m.senderId);
+  const readSet = new Set((m.readBy ?? []).map((r) => r.userId));
+  const delivSet = new Set([...(m.deliveredTo ?? []), ...readSet]);
+  if (others.every((o) => readSet.has(o))) return 'read';
+  if (others.every((o) => delivSet.has(o))) return 'delivered';
+  return 'sent';
+}
+
+// Recompute + persist the aggregate for a batch of messages. MONOTONIC: stored status only ever
+// moves up (a roster change never downgrades a read tick); deliveredAt/readAt are stamped when the
+// aggregate FIRST reaches that state. Returns the post-update authoritative status of every message.
+async function applyAggregates(ids: Types.ObjectId[], participantIds: string[], at: Date): Promise<ReceiptResult> {
+  const msgs = await MessageModel()
+    .find({ _id: { $in: ids } })
+    .select('_id senderId deliveredTo readBy status deliveredAt readAt')
+    .lean<Pick<MessageDoc, '_id' | 'senderId' | 'deliveredTo' | 'readBy' | 'status' | 'deliveredAt' | 'readAt'>[]>();
+  const statuses: ReceiptResult['statuses'] = [];
+  const buckets = new Map<string, { ids: Types.ObjectId[]; set: Partial<MessageDoc> }>(); // group identical $set docs into one updateMany
+  for (const m of msgs) {
+    const cur: ReceiptStatus = m.status ?? 'sent';
+    const agg = aggregateStatus(m, participantIds);
+    const next = STATUS_RANK[agg] > STATUS_RANK[cur] ? agg : cur;
+    statuses.push({ id: String(m._id), status: next });
+    if (next === cur) continue;
+    const set: Partial<MessageDoc> = { status: next };
+    if (!m.deliveredAt) set.deliveredAt = at; // first time past 'sent' (a sent→read jump stamps both)
+    if (next === 'read' && !m.readAt) set.readAt = at;
+    const key = JSON.stringify(set);
+    const b = buckets.get(key);
+    if (b) b.ids.push(m._id);
+    else buckets.set(key, { ids: [m._id], set });
+  }
+  if (buckets.size) {
+    await MessageModel().bulkWrite(
+      [...buckets.values()].map((b) => ({ updateMany: { filter: { _id: { $in: b.ids } }, update: { $set: b.set } } })),
+      { ordered: false },
+    );
+  }
+  return { ids: statuses.map((s) => s.id), statuses };
+}
+
 export const messageRepo = {
   create: (data: Partial<MessageDoc>) => MessageModel().create(data),
   findByClientId: (conversationId: Types.ObjectId, clientId: string) =>
@@ -65,29 +117,53 @@ export const messageRepo = {
     return MessageModel().find(q).sort({ _id: -1 }).limit(50).lean<MessageDoc[]>();
   },
 
-  // Mark a batch delivered/read for a given recipient (idempotent via $addToSet).
-  async markDelivered(conversationId: string, recipientId: string, at: Date): Promise<string[]> {
+  // Mark a batch delivered/read for a given recipient (idempotent via $addToSet), then recompute
+  // each message's AGGREGATE status against the conversation roster. System messages carry no receipts.
+  async markDelivered(conversationId: string, recipientId: string, participantIds: string[], at: Date): Promise<ReceiptResult> {
     const pending = await MessageModel()
-      .find({ conversationId: oid(conversationId), senderId: { $ne: recipientId }, deliveredTo: { $ne: recipientId } })
+      .find({ conversationId: oid(conversationId), senderId: { $ne: recipientId }, deliveredTo: { $ne: recipientId }, type: { $ne: 'system' } })
       .select('_id')
       .lean<{ _id: Types.ObjectId }[]>();
-    if (!pending.length) return [];
-    await MessageModel().updateMany(
-      { _id: { $in: pending.map((m) => m._id) } },
-      { $addToSet: { deliveredTo: recipientId }, $set: { status: 'delivered', deliveredAt: at } },
-    );
-    return pending.map((m) => String(m._id));
+    if (!pending.length) return { ids: [], statuses: [] };
+    const ids = pending.map((m) => m._id);
+    await MessageModel().updateMany({ _id: { $in: ids } }, { $addToSet: { deliveredTo: recipientId } });
+    return applyAggregates(ids, participantIds, at);
   },
-  async markRead(conversationId: string, recipientId: string, at: Date): Promise<string[]> {
+  async markRead(conversationId: string, recipientId: string, participantIds: string[], at: Date): Promise<ReceiptResult> {
     const pending = await MessageModel()
-      .find({ conversationId: oid(conversationId), senderId: { $ne: recipientId }, 'readBy.userId': { $ne: recipientId } })
+      .find({ conversationId: oid(conversationId), senderId: { $ne: recipientId }, 'readBy.userId': { $ne: recipientId }, type: { $ne: 'system' } })
       .select('_id')
       .lean<{ _id: Types.ObjectId }[]>();
+    if (!pending.length) return { ids: [], statuses: [] };
+    const ids = pending.map((m) => m._id);
+    await MessageModel().updateMany({ _id: { $in: ids } }, { $addToSet: { readBy: { userId: recipientId, at }, deliveredTo: recipientId } });
+    return applyAggregates(ids, participantIds, at);
+  },
+
+  // Delivered-on-connect sweep: mark EVERYTHING pending for this user across their conversations
+  // (one find + one addToSet for the lot), then recompute aggregates per conversation (rosters differ).
+  async markDeliveredAcross(
+    conversations: { id: string; participantIds: string[] }[],
+    recipientId: string,
+    at: Date,
+  ): Promise<{ conversationId: string; ids: string[]; statuses: ReceiptResult['statuses'] }[]> {
+    if (!conversations.length) return [];
+    const pending = await MessageModel()
+      .find({ conversationId: { $in: conversations.map((c) => oid(c.id)) }, senderId: { $ne: recipientId }, deliveredTo: { $ne: recipientId }, type: { $ne: 'system' } })
+      .select('_id conversationId')
+      .lean<{ _id: Types.ObjectId; conversationId: Types.ObjectId }[]>();
     if (!pending.length) return [];
-    await MessageModel().updateMany(
-      { _id: { $in: pending.map((m) => m._id) } },
-      { $addToSet: { readBy: { userId: recipientId, at }, deliveredTo: recipientId }, $set: { status: 'read', readAt: at } },
-    );
-    return pending.map((m) => String(m._id));
+    await MessageModel().updateMany({ _id: { $in: pending.map((m) => m._id) } }, { $addToSet: { deliveredTo: recipientId } });
+    const grouped = new Map<string, Types.ObjectId[]>();
+    for (const m of pending) {
+      const k = String(m.conversationId);
+      const list = grouped.get(k);
+      if (list) list.push(m._id);
+      else grouped.set(k, [m._id]);
+    }
+    const rosters = new Map(conversations.map((c) => [c.id, c.participantIds]));
+    const out: { conversationId: string; ids: string[]; statuses: ReceiptResult['statuses'] }[] = [];
+    for (const [conversationId, ids] of grouped) out.push({ conversationId, ...(await applyAggregates(ids, rosters.get(conversationId) ?? [], at)) });
+    return out;
   },
 };

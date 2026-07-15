@@ -10,6 +10,7 @@
     "start": "node dist/main.js",
     "start:dev": "ts-node src/main.ts",
     "start:mongo": "ts-node src/mongo/main.ts",
+    "backfill:receipts": "ts-node scripts/backfill-receipt-status.ts",
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "test:cov": "jest --coverage",

@@ -150,20 +150,32 @@ export const chatService = {
     const convs = await conversationRepo.listForUser(userId);
     const otherIds = convs.flatMap((c) => c.participantIds.filter((p) => p !== userId));
     const users = await resolveUsers(otherIds);
-    return convs.map((c) => this.buildConvDTO(c, userId, users));
+    const lastStatuses = await this.lastMessageStatuses(convs);
+    return convs.map((c) => this.buildConvDTO(c, userId, users, lastStatuses));
   },
 
   async conversationDTO(conv: ConversationDoc, userId: string) {
     const users = await resolveUsers(conv.participantIds.filter((p) => p !== userId));
-    return this.buildConvDTO(conv, userId, users);
+    return this.buildConvDTO(conv, userId, users, await this.lastMessageStatuses([conv]));
   },
 
-  buildConvDTO(c: ConversationDoc, userId: string, users: Record<string, { id: string; name: string; avatar?: string | null }>) {
+  // ONE query for the whole list: authoritative status of each conversation's lastMessage
+  // (drives the tick on the chat-list row — never fetched per conversation).
+  async lastMessageStatuses(convs: ConversationDoc[]): Promise<Record<string, MessageDoc['status']>> {
+    const ids = convs.map((c) => c.lastMessage?.messageId).filter((id): id is Types.ObjectId => !!id);
+    if (!ids.length) return {};
+    const msgs = await MessageModel().find({ _id: { $in: ids } }).select('_id status').lean<Pick<MessageDoc, '_id' | 'status'>[]>();
+    return Object.fromEntries(msgs.map((m) => [String(m._id), m.status]));
+  },
+
+  buildConvDTO(c: ConversationDoc, userId: string, users: Record<string, { id: string; name: string; avatar?: string | null }>, lastStatuses: Record<string, MessageDoc['status']> = {}) {
     const me = c.members.find((m) => m.userId === userId);
+    const lm = c.lastMessage;
     const base = {
       id: String(c._id),
       type: c.type,
-      lastMessage: c.lastMessage,
+      // additive: id + aggregate status alongside the existing {text,type,senderId,at}
+      lastMessage: lm ? { ...lm, id: lm.messageId ? String(lm.messageId) : null, status: lm.messageId ? lastStatuses[String(lm.messageId)] ?? null : null } : null,
       unread: me?.unread ?? 0,
       muted: me?.muted ?? false,
       archived: me?.archived ?? false,
@@ -172,7 +184,7 @@ export const chatService = {
     if (c.type === 'direct') {
       const otherId = c.participantIds.find((p) => p !== userId) ?? '';
       const other = users[otherId];
-      return { ...base, name: other?.name ?? 'Unknown', image: other?.avatar ?? null, otherUserId: otherId, online: isOnline(otherId), lastSeen: getLastSeen(otherId), memberCount: 2 };
+      return { ...base, name: other?.name ?? 'Unknown', image: other?.avatar ?? null, otherUserId: otherId, online: isOnline(otherId), lastSeen: getLastSeen(otherId)?.getTime() ?? null, memberCount: 2 };
     }
     return {
       ...base,
@@ -320,19 +332,34 @@ export const chatService = {
     if (!conv) throw NotFound('Conversation not found');
     assertMember(conv, userId);
     const now = new Date();
-    const ids = await messageRepo.markRead(conversationId, userId, now);
+    const { ids, statuses } = await messageRepo.markRead(conversationId, userId, conv.participantIds, now);
     await conversationRepo.markRead(conversationId, userId, now);
-    if (ids.length) emitToUsers(conv.participantIds, CHAT_EVENTS.READ, { conversationId, by: userId, messageIds: ids, at: now });
+    if (ids.length) emitToUsers(conv.participantIds, CHAT_EVENTS.READ, { conversationId, by: userId, messageIds: ids, at: now.getTime(), statuses });
     return { read: ids.length };
   },
 
   async markDelivered(userId: string, conversationId: string) {
     const conv = await conversationRepo.findById(conversationId);
-    if (!conv) return { delivered: 0 };
+    if (!conv) throw NotFound('Conversation not found');
+    assertMember(conv, userId);
     const now = new Date();
-    const ids = await messageRepo.markDelivered(conversationId, userId, now);
-    if (ids.length) emitToUsers(conv.participantIds, CHAT_EVENTS.DELIVERED, { conversationId, by: userId, messageIds: ids, at: now });
+    const { ids, statuses } = await messageRepo.markDelivered(conversationId, userId, conv.participantIds, now);
+    if (ids.length) emitToUsers(conv.participantIds, CHAT_EVENTS.DELIVERED, { conversationId, by: userId, messageIds: ids, at: now.getTime(), statuses });
     return { delivered: ids.length };
+  },
+
+  // Delivered-on-connect sweep: double-tick everything pending for this user the moment they come
+  // online (WhatsApp-style, no chat open needed) — one 'chat:delivered' per affected conversation.
+  async markDeliveredEverywhere(userId: string) {
+    const convs = await ConversationModel().find({ participantIds: userId }).select('_id participantIds').lean<Pick<ConversationDoc, '_id' | 'participantIds'>[]>();
+    if (!convs.length) return { conversations: 0, delivered: 0 };
+    const now = new Date();
+    const results = await messageRepo.markDeliveredAcross(convs.map((c) => ({ id: String(c._id), participantIds: c.participantIds })), userId, now);
+    const rosters = new Map(convs.map((c) => [String(c._id), c.participantIds]));
+    for (const r of results) {
+      emitToUsers(rosters.get(r.conversationId) ?? [], CHAT_EVENTS.DELIVERED, { conversationId: r.conversationId, by: userId, messageIds: r.ids, at: now.getTime(), statuses: r.statuses });
+    }
+    return { conversations: results.length, delivered: results.reduce((n, r) => n + r.ids.length, 0) };
   },
 
   async star(userId: string, messageId: string) {
@@ -557,6 +584,3 @@ export const chatService = {
     return conv;
   },
 };
-
-// silence unused import if MessageModel only used indirectly
-void MessageModel;

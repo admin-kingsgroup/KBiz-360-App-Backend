@@ -16,8 +16,16 @@ export function registerChatHandlers(io: Server): void {
     } catch {
       userId = null;
     }
-    if (!userId) return; // unauthenticated sockets get no chat capabilities
+    if (!userId) {
+      // Tell the client its token failed (so it can refresh/re-login) instead of leaving a zombie
+      // socket whose presence and receipts silently freeze.
+      socket.emit('auth:invalid');
+      socket.disconnect(true);
+      return;
+    }
     void socket.join(userRoom(userId));
+    // Delivered-on-connect sweep: double-tick everything pending for this user, WhatsApp-style.
+    void chatService.markDeliveredEverywhere(userId).catch(() => undefined);
 
     if (markOnline(userId)) {
       io.emit(CHAT_EVENTS.ONLINE, { userId });
@@ -69,7 +77,7 @@ export function registerChatHandlers(io: Server): void {
 
     socket.on('disconnect', () => {
       if (markOffline(userId!)) {
-        io.emit(CHAT_EVENTS.OFFLINE, { userId, lastSeen: getLastSeen(userId!) });
+        io.emit(CHAT_EVENTS.OFFLINE, { userId, lastSeen: getLastSeen(userId!)?.getTime() ?? null }); // epoch ms, never a raw Date
         broadcastPresence(userId!); // unified 'presence:update'
       }
     });
