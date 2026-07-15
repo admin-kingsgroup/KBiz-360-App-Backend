@@ -15,12 +15,16 @@ export const ALERT_CHANNELS: AlertChannelDef[] = [
 
 export const ALERT_GRANT_IDS: string[] = ALERT_CHANNELS.map((c) => c.grant);
 
+// Admin-composed announcements. Not grant-based: each EVENT carries its own recipient userId list
+// ('*' = everyone). Supers see the whole channel (their sent history); others only events
+// addressed to them. Id must match the frontend's announcements pulse channel.
+export const ANNOUNCEMENTS_CHANNEL_ID = 'announcements';
+
 export const channelForBranchCode = (code: string | null | undefined): AlertChannelDef | null =>
   ALERT_CHANNELS.find((c) => c.branchCode.toLowerCase() === (code ?? '').toLowerCase()) ?? null;
 
-// Channels a user may see: super-admins see all; others need the channel's grant (or a
-// module-wide 'hr' grant).
-export function visibleChannelIds(isSuper: boolean, grants: string[]): string[] {
-  if (isSuper) return ALERT_CHANNELS.map((c) => c.id);
-  return ALERT_CHANNELS.filter((c) => grants.includes(c.grant) || grants.includes('hr')).map((c) => c.id);
+// Channels a user may see: SUPER-ADMINS ONLY. Per-user grants (alertGrants) are no longer
+// honored for visibility — the grant storage/endpoints remain in case channels reopen to staff.
+export function visibleChannelIds(isSuper: boolean, _grants: string[]): string[] {
+  return isSuper ? ALERT_CHANNELS.map((c) => c.id) : [];
 }

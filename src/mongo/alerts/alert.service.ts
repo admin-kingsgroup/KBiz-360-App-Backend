@@ -5,7 +5,7 @@ import { accessService } from '../access';
 import { userWorkBranches } from '../attendance/userWorkBranches';
 import { emitToAll } from '../chat/chat.events';
 import { alertGrants } from './alertGrants';
-import { channelForBranchCode, visibleChannelIds } from './alertChannels';
+import { ANNOUNCEMENTS_CHANNEL_ID, channelForBranchCode, visibleChannelIds } from './alertChannels';
 
 // System-alert EVENTS (kb360_app.alert_events). Events are shared per channel; read-state is
 // per-user (readBy). The realtime signal carries only the channelId — clients refetch GET /alerts,
@@ -67,14 +67,39 @@ export const alertService = {
     }
   },
 
+  // Super-admin-composed announcement addressed to specific users (or '*' = everyone).
+  async createAnnouncement(byUserId: string, input: { title: string; body: string; recipients: string[] }): Promise<void> {
+    const author = await crmRepo.getUserById(byUserId);
+    const name = author ? `${author.first_name ?? ''} ${author.last_name ?? ''}`.trim() || author.email || 'Admin' : 'Admin';
+    const now = new Date();
+    await col().insertOne({
+      channelId: ANNOUNCEMENTS_CHANNEL_ID,
+      source: name,
+      title: input.title,
+      body: input.body,
+      context: 'Announcement', // no branch token → buckets as company-wide in the app
+      recipients: input.recipients,
+      time: now,
+      readBy: [],
+      createdAt: now,
+      createdBy: byUserId,
+    });
+    emitToAll('alert:new', { channelId: ANNOUNCEMENTS_CHANNEL_ID });
+  },
+
   // The caller's visible events (newest first), with their personal read flag.
   async listFor(userId: string): Promise<{ events: AlertEventDto[] }> {
     const access = await accessService.accessForUserId(userId);
     if (!access) return { events: [] };
     const grants = await alertGrants.grantsFor(userId);
     const channelIds = visibleChannelIds(access.isSuper, grants);
-    if (!channelIds.length) return { events: [] };
-    const docs = await col().find({ channelId: { $in: channelIds } }).sort({ time: -1 }).limit(MAX_EVENTS).toArray();
+    // Supers: every registered channel + the full announcements history.
+    // Everyone else: only announcements addressed to them (directly or via '*').
+    const visible: object[] = access.isSuper
+      ? [{ channelId: { $in: [...channelIds, ANNOUNCEMENTS_CHANNEL_ID] } }]
+      : [{ channelId: ANNOUNCEMENTS_CHANNEL_ID, recipients: { $in: [userId, '*'] } }];
+    if (!access.isSuper && channelIds.length) visible.push({ channelId: { $in: channelIds } });
+    const docs = await col().find({ $or: visible }).sort({ time: -1 }).limit(MAX_EVENTS).toArray();
     return {
       events: docs.map((d: { _id: unknown; channelId: string; source: string; title: string; body: string; context: string; time: Date; readBy?: string[] }) => ({
         id: String(d._id),
