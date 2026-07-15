@@ -31,9 +31,12 @@ describe('alert channel registry', () => {
     expect(channelForBranchCode('AMD')?.id).toBe('tk_att_amd');
   });
 
-  it('supers see every channel; non-supers none (current policy)', () => {
+  it('supers see every channel; non-supers exactly their granted channels', () => {
     expect(visibleChannelIds(true, [])).toEqual(ALERT_CHANNELS.map((c) => c.id));
-    expect(visibleChannelIds(false, ['BOM-accounts'])).toEqual([]);
+    expect(visibleChannelIds(false, [])).toEqual([]);
+    expect(visibleChannelIds(false, ['BOM-accounts'])).toEqual(['tk_fin_bom']);
+    expect(visibleChannelIds(false, ['BOM-accounts', 'BOM-crm', 'AMD-hr'])).toEqual(['tk_att_amd', 'tk_fin_bom', 'tk_crm_bom']);
+    expect(visibleChannelIds(false, ['NBO-accounts', 'bogus'])).toEqual([]); // unknown grants grant nothing
   });
 });
 

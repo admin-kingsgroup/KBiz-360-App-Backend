@@ -45,8 +45,11 @@ export const ANNOUNCEMENTS_CHANNEL_ID = 'announcements';
 export const channelForBranchCode = (code: string | null | undefined): AlertChannelDef | null =>
   ALERT_CHANNELS.find((c) => c.module === 'hr' && c.branchCode.toLowerCase() === (code ?? '').toLowerCase()) ?? null;
 
-// Channels a user may see: SUPER-ADMINS ONLY. Per-user grants (alertGrants) are no longer
-// honored for visibility — the grant storage/endpoints remain in case channels reopen to staff.
-export function visibleChannelIds(isSuper: boolean, _grants: string[]): string[] {
-  return isSuper ? ALERT_CHANNELS.map((c) => c.id) : [];
+// Channels a user may see: super-admins see every channel; everyone else sees exactly the
+// channels a super-admin granted them (grant strings like "BOM-accounts", assigned via
+// POST /api/admin/alert-visibility and edited from the app's Team & Users screen).
+export function visibleChannelIds(isSuper: boolean, grants: string[]): string[] {
+  if (isSuper) return ALERT_CHANNELS.map((c) => c.id);
+  const held = new Set(grants || []);
+  return ALERT_CHANNELS.filter((c) => held.has(c.grant)).map((c) => c.id);
 }

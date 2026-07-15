@@ -112,7 +112,8 @@ export const alertService = {
     const grants = await alertGrants.grantsFor(userId);
     const channelIds = visibleChannelIds(access.isSuper, grants);
     // Supers: every registered channel + the full announcements history.
-    // Everyone else: only announcements addressed to them (directly or via '*').
+    // Everyone else: announcements addressed to them (directly or via '*') PLUS any
+    // channels a super-admin granted them (visibleChannelIds honors alertGrants).
     const visible: object[] = access.isSuper
       ? [{ channelId: { $in: [...channelIds, ANNOUNCEMENTS_CHANNEL_ID] } }]
       : [{ channelId: ANNOUNCEMENTS_CHANNEL_ID, recipients: { $in: [userId, '*'] } }];
