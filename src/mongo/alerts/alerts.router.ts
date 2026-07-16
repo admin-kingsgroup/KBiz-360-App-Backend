@@ -39,6 +39,20 @@ alertsRouter.post(
   }),
 );
 
+// GET /api/alerts/attachment/:eventId → { url } — auth-gated access to an event's PDF.
+// Visibility mirrors the feed (supers / grant holders / addressed announcement recipients);
+// S3 objects get a short-lived presigned URL so the bucket prefix can be private.
+alertsRouter.get(
+  '/attachment/:eventId',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    if (!req.auth) throw Unauthorized();
+    const att = await alertService.attachmentUrlFor(req.auth.userId, req.params.eventId);
+    if (!att) throw BadRequest('No attachment on this event, or it is not visible to you');
+    res.json(att);
+  }),
+);
+
 // POST /api/alerts/read { eventId } | { channelId } → per-user read state.
 alertsRouter.post(
   '/read',

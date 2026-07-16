@@ -13,7 +13,7 @@ export class S3StorageAdapter implements StorageAdapter {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private client: any = null;
 
-  async save({ buffer, filename, mimeType }: StorageSaveInput): Promise<StorageSaveResult> {
+  async save({ buffer, filename, mimeType, prefix }: StorageSaveInput): Promise<StorageSaveResult> {
     const bucket = process.env.S3_BUCKET;
     if (!bucket) throw new Error('S3_BUCKET not configured');
     const region = process.env.S3_REGION ?? 'us-east-1';
@@ -29,7 +29,7 @@ export class S3StorageAdapter implements StorageAdapter {
         ...(accessKeyId && secretAccessKey ? { credentials: { accessKeyId, secretAccessKey } } : {}),
       });
     }
-    const key = `uploads/${crypto.randomUUID()}-${safeName(filename)}`;
+    const key = `${(prefix || 'uploads').replace(/[^a-zA-Z0-9_-]/g, '')}/${crypto.randomUUID()}-${safeName(filename)}`;
     await this.client.send(new PutObjectCommand({
       Bucket: bucket,
       Key: key,
@@ -39,5 +39,40 @@ export class S3StorageAdapter implements StorageAdapter {
     }));
     const base = (process.env.S3_PUBLIC_BASE_URL ?? `https://${bucket}.s3.${region}.amazonaws.com`).replace(/\/+$/, '');
     return { key, url: `${base}/${key}` };
+  }
+
+  async delete(key: string): Promise<void> {
+    const bucket = process.env.S3_BUCKET;
+    if (!bucket || !key) return;
+    const region = process.env.S3_REGION ?? 'us-east-1';
+    const { S3Client, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+    if (!this.client) {
+      const accessKeyId = process.env.S3_ACCESS_KEY_ID;
+      const secretAccessKey = process.env.S3_SECRET_ACCESS_KEY;
+      this.client = new S3Client({
+        region,
+        ...(accessKeyId && secretAccessKey ? { credentials: { accessKeyId, secretAccessKey } } : {}),
+      });
+    }
+    try {
+      await this.client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+    } catch { /* best-effort — a missing object is fine */ }
+  }
+
+  async signedUrl(key: string, ttlSec = 300): Promise<string> {
+    const bucket = process.env.S3_BUCKET;
+    if (!bucket) throw new Error('S3_BUCKET not configured');
+    const region = process.env.S3_REGION ?? 'us-east-1';
+    const { S3Client, GetObjectCommand } = await import('@aws-sdk/client-s3');
+    const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner');
+    if (!this.client) {
+      const accessKeyId = process.env.S3_ACCESS_KEY_ID;
+      const secretAccessKey = process.env.S3_SECRET_ACCESS_KEY;
+      this.client = new S3Client({
+        region,
+        ...(accessKeyId && secretAccessKey ? { credentials: { accessKeyId, secretAccessKey } } : {}),
+      });
+    }
+    return getSignedUrl(this.client, new GetObjectCommand({ Bucket: bucket, Key: key }), { expiresIn: ttlSec });
   }
 }

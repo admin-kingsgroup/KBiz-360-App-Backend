@@ -90,7 +90,10 @@ alertsIngestRouter.post(
       const buffer = Buffer.from(attachment.data, 'base64');
       if (buffer.subarray(0, 5).toString() !== '%PDF-') throw BadRequest('Attachment must be a PDF');
       const filename = attachmentFilename(attachment.name);
-      const saved = await getStorage().save({ buffer, filename, mimeType: 'application/pdf' });
+      // Dedicated S3 prefix: invoice PDFs carry customer GSTIN/amounts — a bucket policy can
+      // make alert-attachments/* private (served via the auth-gated signed-URL endpoint)
+      // without touching the public chat-media uploads/* prefix.
+      const saved = await getStorage().save({ buffer, filename, mimeType: 'application/pdf', prefix: 'alert-attachments' });
       // key is persisted on the event doc so a future reaper can delete the stored file
       // when the event TTL-expires (the DTO exposes only {name,url}).
       stored = { name: filename, url: saved.url, key: saved.key };

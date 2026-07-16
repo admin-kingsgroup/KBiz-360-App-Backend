@@ -17,4 +17,15 @@ export class LocalStorageAdapter implements StorageAdapter {
     await fs.promises.writeFile(path.join(this.dir, key), buffer);
     return { key, url: `${this.publicBase}/${key}` };
   }
+
+  async delete(key: string): Promise<void> {
+    // Keys are single path segments (uuid-name); refuse anything that could escape the dir.
+    if (!key || key.includes('/') || key.includes('..')) return;
+    await fs.promises.unlink(path.join(this.dir, key)).catch(() => undefined);
+  }
+
+  async signedUrl(key: string): Promise<string> {
+    // Local files are served by the public /uploads static mount — nothing to sign in dev.
+    return `${this.publicBase}/${key}`;
+  }
 }

@@ -1,5 +1,7 @@
 import { Types } from 'mongoose';
+import { config } from '../../config';
 import { appDb } from '../connection';
+import { getStorage } from '../../storage';
 import { crmRepo } from '../crm.repo';
 import { accessService } from '../access';
 import { userWorkBranches } from '../attendance/userWorkBranches';
@@ -140,6 +142,30 @@ export const alertService = {
         ...(d.attachment ? { attachment: { name: d.attachment.name, url: d.attachment.url } } : {}),
       })),
     };
+  },
+
+  // Resolve an event's attachment into a short-lived access URL, enforcing the same
+  // visibility as listFor. Legacy events (no storage key) fall back to their stored URL.
+  async attachmentUrlFor(userId: string, eventId: string): Promise<{ url: string; name: string } | null> {
+    if (!Types.ObjectId.isValid(eventId)) return null;
+    const d = await col().findOne({ _id: new Types.ObjectId(eventId) });
+    if (!d?.attachment?.url && !d?.attachment?.key) return null;
+    const access = await accessService.accessForUserId(userId);
+    if (!access) return null;
+    if (!access.isSuper) {
+      const grants = await alertGrants.grantsFor(userId);
+      const channelIds = new Set(visibleChannelIds(false, grants));
+      const isAddressedAnnouncement = d.channelId === ANNOUNCEMENTS_CHANNEL_ID
+        && (d.recipients ?? []).some((r: string) => r === userId || r === '*');
+      if (!channelIds.has(d.channelId) && !isAddressedAnnouncement) return null;
+    }
+    const name = d.attachment.name ?? 'document.pdf';
+    if (d.attachment.key && config.storage.driver === 's3') {
+      try {
+        return { url: await getStorage().signedUrl(String(d.attachment.key), 300), name };
+      } catch { /* fall back to the stored URL below */ }
+    }
+    return { url: String(d.attachment.url), name };
   },
 
   async markRead(userId: string, eventId: string): Promise<void> {
