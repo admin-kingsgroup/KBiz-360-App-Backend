@@ -5,6 +5,7 @@ import { accessService } from '../access';
 import { userWorkBranches } from '../attendance/userWorkBranches';
 import { emitToAll } from '../chat/chat.events';
 import { alertGrants } from './alertGrants';
+import { alertPush } from './alert.push';
 import { ANNOUNCEMENTS_CHANNEL_ID, attendanceChannelForBranch, visibleChannelIds } from './alertChannels';
 
 // System-alert EVENTS (kb360_app.alert_events). Events are shared per channel; read-state is
@@ -54,10 +55,14 @@ export const alertService = {
     channelId: string,
     // attachment.key = storage key, persisted for future file cleanup; DTO exposes only {name,url}.
     ev: { source: string; title: string; body: string; context: string; attachment?: { name: string; url: string; key?: string } },
+    // The user who caused the event (e.g. the puncher) — excluded from the push fan-out.
+    actorUserId?: string | null,
   ): Promise<void> {
     const now = new Date();
     await col().insertOne({ channelId, ...ev, time: now, readBy: [], createdAt: now, expiresAt: eventExpiry(now) });
     emitToAll('alert:new', { channelId });
+    // Closed apps don't hear the socket — push to everyone who can see this channel.
+    void alertPush.sendChannelAlert(channelId, ev.title, ev.body, actorUserId);
   },
 
   // Attendance punch → an event in that branch's attendance channel. Never throws — a failed
@@ -81,7 +86,7 @@ export const alertService = {
         title: `${name} checked ${action}`,
         body: `${fmtWallTime(at)}${via ? ` · via ${via}` : ''}`,
         context: `TK ${channel.branchCode} · Attendance`,
-      });
+      }, userId); // the puncher doesn't need a push about their own punch
     } catch (err) {
       console.error('[alerts] failed to record attendance event', err);
     }
@@ -105,6 +110,7 @@ export const alertService = {
       createdBy: byUserId,
     });
     emitToAll('alert:new', { channelId: ANNOUNCEMENTS_CHANNEL_ID });
+    void alertPush.sendAnnouncement(input.recipients, input.title, input.body, name, byUserId);
   },
 
   // The caller's visible events (newest first), with their personal read flag.
