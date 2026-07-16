@@ -12,6 +12,7 @@ import { ensureOfficeGeofenceIndexes } from './attendance/office.model';
 import { ensureChatIndexes } from './chat/chat.models';
 import { hydratePresence, startPresenceHeartbeat, stopPresenceHeartbeat } from './chat/chat.events';
 import { ensureAlertIndexes } from './alerts/alert.service';
+import { ensureClientErrorIndexes } from './clientErrors.router';
 import { startEmailPolling } from '../email/email.poll';
 import { startReminderDueSweep, stopReminderDueSweep } from './reminders/reminder.sweep';
 import { startAlertAttachmentSweep, stopAlertAttachmentSweep } from './alerts/alert.sweep';
@@ -28,6 +29,7 @@ async function bootstrap(): Promise<void> {
   await ensureChatIndexes(); // conversation indexes (drops legacy unique deptKey → many groups per dept)
   await hydratePresence(); // last-seen Map survives restarts (user_presence is its durability)
   await ensureAlertIndexes(); // alert_events indexes (channel feed + newest-first listing)
+  await ensureClientErrorIndexes(); // client crash reports (30d TTL)
 
   const app = createMongoApp();
   const httpServer = createServer(app);

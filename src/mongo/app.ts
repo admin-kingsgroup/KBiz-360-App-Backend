@@ -10,6 +10,7 @@ import { remindersRouter } from './reminders/reminders.router';
 import { attendanceRouter } from './attendance/attendance.router';
 import { alertsRouter } from './alerts/alerts.router';
 import { alertsIngestRouter } from './alerts/alertsIngest.router';
+import { clientErrorsRouter } from './clientErrors.router';
 import { uploadsRouter } from './uploads.router';
 import { emailRouter } from '../email/email.router';
 import { config } from '../config';
@@ -28,6 +29,7 @@ export function createMongoApp(): Express {
   app.get('/privacy', (_req, res) => res.type('html').send(PRIVACY_HTML)); // public: linked from the Play Store listing
   app.use('/api/auth', mongoAuthRouter);
   app.use('/api/alerts', alertsIngestRouter); // ERP/CRM service-token ingest — MUST precede chatRouter's /api-wide requireAuth
+  app.use('/api/client-errors', clientErrorsRouter); // crash reports (public, rate-limited) — also pre-chatRouter
   app.use('/api/admin', adminRouter); // super-admin: app-access toggles
   app.use('/api', directoryRouter); // /users, /companies, /branches, /departments
   app.use('/api', chatRouter); // /conversations, /messages, /groups
