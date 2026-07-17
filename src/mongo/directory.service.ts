@@ -58,23 +58,27 @@ async function roleMap(): Promise<Map<string, CrmRole>> {
   return new Map(roles.map((r) => [String(r._id), r]));
 }
 
-// The KBiz360 business keeps exactly ONE branch — BOM. Membership in the business = having that
-// branch id in the user's branch_ids. Finds the KBiz360 company (name match, tenant-scoped) and
-// creates the BOM branch under it on first use; existing extra branches are left untouched.
+// The KBiz360 business keeps exactly ONE branch — its Mumbai HQ. Membership in the business =
+// having that branch id in the user's branch_ids. Finds the KBiz360 company (name match,
+// tenant-scoped) and creates the branch under it on first use; if the company already has any
+// branch, that one is adopted. The branch code MUST NOT be 'BOM': the shared branches collection
+// carries the ERP's unique index on `code` and Travkings owns BOM — creating a duplicate threw
+// E11000 on every load, which is why the KBiz members screen (and group creation) never worked.
+const KBIZ_BRANCH_CODE = 'KBIZ';
 const squash = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 async function ensureKbizBom(access: MongoAccess, adminId: string): Promise<{ company: CrmCompany; branch: CrmBranch }> {
   const companies = await crmRepo.listCompanies(tenantFilter(access));
   const company = companies.find((c) => squash(c.name).includes('kbiz360')) ?? companies.find((c) => squash(c.name).includes('kbiz'));
   if (!company) throw BadRequest('KBiz360 business not found — create the business first');
   const branches = await crmRepo.listBranches({ company_id: company._id });
-  let branch = branches.find((b) => (b.code ?? '').trim().toUpperCase() === 'BOM' || (b.name ?? '').trim().toUpperCase() === 'BOM');
+  let branch = branches.find((b) => (b.code ?? '').trim().toUpperCase() === KBIZ_BRANCH_CODE) ?? branches[0];
   if (!branch) {
     const now = new Date();
     branch = await crmRepo.createBranch({
       tenant_id: company.tenant_id ?? null,
       company_id: company._id,
-      name: 'BOM',
-      code: 'BOM',
+      name: 'KBiz360 – Mumbai',
+      code: KBIZ_BRANCH_CODE,
       city: 'Mumbai',
       country: 'India',
       isHO: true,
