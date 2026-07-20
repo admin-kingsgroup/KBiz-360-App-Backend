@@ -228,3 +228,31 @@ describe('Chat realtime — group', () => {
     expect(evt.conversationId).toBe(groupId);
   });
 });
+
+describe('Chat — delete group', () => {
+  it('creator/super deletes the group + its messages; non-admins are refused', async () => {
+    if (!ready) return;
+    // Throwaway group with a message.
+    const g = await request(app).post('/api/groups').set(auth(tokenA)).send({ name: 'Delete Me', memberIds: [idB] });
+    expect(g.status).toBe(201);
+    const gid = g.body.id as string;
+    createdConvIds.push(gid); // afterAll cleanup is a no-op if already deleted
+    await request(app).post('/api/messages').set(auth(tokenA)).send({ conversationId: gid, text: 'bye soon' });
+    expect(await MessageModel().countDocuments({ conversationId: new Types.ObjectId(gid) })).toBeGreaterThan(0);
+
+    // A plain member (non-admin, non-creator, non-super) cannot delete.
+    const forbidden = await request(app).delete(`/api/groups/${gid}`).set(auth(tokenB));
+    expect(forbidden.status).toBe(403);
+
+    // The creator (super admin) can — returns { ok: true }.
+    const del = await request(app).delete(`/api/groups/${gid}`).set(auth(tokenA));
+    expect(del.status).toBe(200);
+    expect(del.body.ok).toBe(true);
+
+    // Conversation + all its messages are gone; fetching it 404s.
+    expect(await ConversationModel().findById(gid)).toBeNull();
+    expect(await MessageModel().countDocuments({ conversationId: new Types.ObjectId(gid) })).toBe(0);
+    const fetch = await request(app).get(`/api/groups/${gid}`).set(auth(tokenA));
+    expect(fetch.status).toBe(404);
+  });
+});

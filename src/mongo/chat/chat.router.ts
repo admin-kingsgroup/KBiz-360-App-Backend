@@ -71,6 +71,7 @@ chatRouter.post('/groups', requireSuper, validate(z.object({ name: z.string().mi
 chatRouter.post('/groups/department', validate(z.object({ branchId: z.string().min(1), departmentId: z.string().min(1), name: z.string().min(1) })), asyncHandler(async (req, res) => res.json(await chatService.getOrCreateDepartmentGroup(uid(req), req.body))));
 chatRouter.get('/groups/:id', asyncHandler(async (req, res) => { const c = await chatService.assertAccess(uid(req), req.params.id); res.json(await chatService.conversationDTO(c, uid(req))); }));
 chatRouter.put('/groups/:id', validate(z.object({ name: z.string().optional(), description: z.string().optional(), image: z.string().optional() })), asyncHandler(async (req, res) => res.json(await chatService.updateGroup(uid(req), req.params.id, req.body))));
+chatRouter.delete('/groups/:id', asyncHandler(async (req, res) => res.json(await chatService.deleteGroup(uid(req), req.params.id))));
 chatRouter.post('/groups/:id/members', validate(z.object({ memberIds: z.array(z.string()).min(1) })), asyncHandler(async (req, res) => res.json(await chatService.addMembers(uid(req), req.params.id, req.body.memberIds))));
 chatRouter.delete('/groups/:id/members/:memberId', asyncHandler(async (req, res) => res.json(await chatService.removeMember(uid(req), req.params.id, req.params.memberId))));
 chatRouter.post('/groups/:id/admins', validate(z.object({ memberId: z.string().min(1) })), asyncHandler(async (req, res) => res.json(await chatService.promoteAdmin(uid(req), req.params.id, req.body.memberId))));

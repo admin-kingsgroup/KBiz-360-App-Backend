@@ -23,6 +23,7 @@ export const CHAT_EVENTS = {
   STARRED: 'chat:messageStarred',
   CONVERSATION_NEW: 'chat:conversationNew',
   CONVERSATION_UPDATED: 'chat:conversationUpdated',
+  CONVERSATION_DELETED: 'chat:conversationDeleted',
 } as const;
 
 const EDIT_WINDOW_MS = 15 * 60 * 1000; // 15 min
@@ -558,6 +559,19 @@ export const chatService = {
       const text = memberId === userId ? `${await displayName(userId)} left` : `${await displayName(userId)} removed ${await displayName(memberId)}`;
       await postSystemMessage(conv, userId, text, conv.participantIds); // conv.participantIds still includes the removed member → they see the notice
     }
+    return { ok: true };
+  },
+
+  // Delete a group entirely (admins/creator/super) — removes the conversation and all its messages,
+  // and tells every (former) member to drop it from their list.
+  async deleteGroup(userId: string, conversationId: string) {
+    const conv = await conversationRepo.findById(conversationId);
+    if (!conv || conv.type !== 'group') throw NotFound('Group not found');
+    await assertManageGroup(conv, userId);
+    const participantIds = [...conv.participantIds];
+    await MessageModel().deleteMany({ conversationId: conv._id });
+    await ConversationModel().deleteOne({ _id: conv._id });
+    emitToUsers(participantIds, CHAT_EVENTS.CONVERSATION_DELETED, { conversationId });
     return { ok: true };
   },
 
