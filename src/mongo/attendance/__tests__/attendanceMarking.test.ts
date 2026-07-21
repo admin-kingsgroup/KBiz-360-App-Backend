@@ -1,5 +1,18 @@
 import { connectMongo, disconnectMongo, appDb } from '../../connection';
 import { attendanceService, geofenceExitStillInside, GEOFENCE_EXIT_BUFFER_M } from '../attendance.service';
+import { punchSchema } from '../attendance.router';
+
+// Regression: validate() replaces req.body with the parsed schema, dropping unknown keys. If
+// `source` isn't in the schema it is stripped before checkOut runs and the drift guard is dead.
+describe('punchSchema preserves source (drift-guard regression)', () => {
+  it('keeps source:"geofence" after parsing', () => {
+    const parsed = punchSchema.parse({ method: 'auto', coords: { lat: 19.1, lng: 72.8 }, source: 'geofence' });
+    expect(parsed.source).toBe('geofence');
+  });
+  it('rejects an unknown source value', () => {
+    expect(punchSchema.safeParse({ source: 'spoofed' }).success).toBe(false);
+  });
+});
 
 // Attendance marking: (1) pure drift guard for geofence exits, (2) DB-backed re-entry state
 // machine using a SYNTHETIC user id (no offices configured → punches allowed unverified; no real

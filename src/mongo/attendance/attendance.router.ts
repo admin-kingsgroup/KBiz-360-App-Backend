@@ -10,11 +10,15 @@ import { attendanceService, type PunchBody } from './attendance.service';
 // the backend persists them and serves today's status + a role-scoped team view.
 export const attendanceRouter: Router = Router();
 
-const punchSchema = z.object({
+// Exported for the router-schema regression test (source must survive validation).
+export const punchSchema = z.object({
   wifiOn: z.boolean().optional(), // legacy, ignored
   wifiSsid: z.string().max(64).nullable().optional(),
   coords: z.object({ lat: z.number(), lng: z.number() }).nullable().optional(),
   method: z.enum(['auto', 'face']).optional(),
+  // 'geofence' = punch fired by the headless OS geofence task; drives the check-out drift guard.
+  // MUST be listed here — validate() strips unknown keys, so omitting it silently disabled the guard.
+  source: z.enum(['geofence']).optional(),
 });
 
 attendanceRouter.post('/check-in', requireAuth, validate(punchSchema), asyncHandler(async (req, res) => {

@@ -378,6 +378,11 @@ export const chatService = {
   async star(userId: string, messageId: string) {
     const m = await messageRepo.findById(messageId);
     if (!m) throw NotFound('Message not found');
+    // Membership gate: only a participant of the message's conversation may star it (otherwise a
+    // user could star an arbitrary message id and read its content back via GET /messages/starred).
+    const conv = await conversationRepo.findById(String(m.conversationId));
+    if (!conv) throw NotFound('Conversation not found');
+    assertMember(conv, userId);
     const on = m.starredBy.includes(userId);
     m.starredBy = on ? m.starredBy.filter((u) => u !== userId) : [...m.starredBy, userId];
     await m.save();
@@ -402,6 +407,11 @@ export const chatService = {
   async forward(userId: string, messageId: string, toConversationIds: string[]) {
     const src = await messageRepo.findByIdLean(messageId);
     if (!src) throw NotFound('Message not found');
+    // Membership gate on the SOURCE conversation: you can only forward a message you were allowed
+    // to see. Without this, a user could forward any message id into their own chat and read its
+    // text + attachments (IDOR). Destination membership is checked per-target in the loop below.
+    const srcConv = await conversationRepo.findById(String(src.conversationId));
+    if (!srcConv || !srcConv.participantIds.includes(userId)) throw NotFound('Message not found');
     const results = [];
     for (const cid of toConversationIds) {
       const conv = await conversationRepo.findById(cid);
