@@ -246,7 +246,7 @@ export const directoryService = {
   // Super-admin: create a BRANCH under a specific business. Branch code is globally unique across the
   // shared branches collection (the ERP relies on that), so we validate up-front and also catch the
   // duplicate-key error in case of a race.
-  async createBranch(adminId: string, input: { companyId: string; name: string; code: string; city?: string; country?: string; isHO?: boolean }) {
+  async createBranch(adminId: string, input: { companyId: string; name: string; code: string; city?: string; country?: string; isHO?: boolean; userIds?: string[] }) {
     const access = await accessService.accessForUserId(adminId);
     if (!access) throw Forbidden('Session user not found');
     const name = input.name.trim();
@@ -277,7 +277,20 @@ export const directoryService = {
         updated_at: now,
         __v: 0,
       });
-      return mapBranch(created);
+      // Optional team members: add the new branch to each user's branch_ids ($addToSet — never
+      // disturbs their existing memberships). Only users inside the admin's tenant scope count;
+      // unknown/out-of-scope ids are skipped silently rather than failing the whole create.
+      let membersAdded = 0;
+      const requested = [...new Set(input.userIds ?? [])].filter((u) => Types.ObjectId.isValid(u));
+      if (requested.length) {
+        const inScope = new Set((await crmRepo.listUsers(tenantFilter(access))).map((u) => String(u._id)));
+        for (const userId of requested) {
+          if (!inScope.has(userId)) continue;
+          await crmRepo.addUserBranch(userId, created._id);
+          membersAdded++;
+        }
+      }
+      return { ...mapBranch(created), membersAdded };
     } catch (e) {
       if ((e as { code?: number }).code === 11000) throw BadRequest(`Branch code "${code}" is already in use — pick another`);
       throw e;

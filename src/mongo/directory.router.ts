@@ -85,6 +85,7 @@ directoryRouter.post('/companies', requireAuth, requireSuper, validate(z.object(
   asyncHandler(async (req, res) => res.status(201).json(await directoryService.createCompany(uid(req), req.body))));
 
 // Super-admin: create a branch under a business (writes to the CRM branches collection).
+// userIds: optional team members to add to the new branch at creation time.
 directoryRouter.post('/branches', requireAuth, requireSuper, validate(z.object({
   companyId: z.string().min(1),
   name: z.string().min(1).max(120),
@@ -92,6 +93,7 @@ directoryRouter.post('/branches', requireAuth, requireSuper, validate(z.object({
   city: z.string().max(80).optional(),
   country: z.string().max(80).optional(),
   isHO: z.boolean().optional(),
+  userIds: z.array(z.string()).max(500).optional(),
 })), asyncHandler(async (req, res) => res.status(201).json(await directoryService.createBranch(uid(req), req.body))));
 
 // ── User provisioning (super-admin; writes to the CRM users collection) ──
