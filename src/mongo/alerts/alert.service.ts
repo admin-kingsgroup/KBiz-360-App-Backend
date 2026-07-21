@@ -8,7 +8,7 @@ import { userWorkBranches } from '../attendance/userWorkBranches';
 import { emitToAll } from '../chat/chat.events';
 import { alertGrants } from './alertGrants';
 import { alertPush } from './alert.push';
-import { ANNOUNCEMENTS_CHANNEL_ID, attendanceChannelForBranch, visibleChannelIds } from './alertChannels';
+import { ANNOUNCEMENTS_CHANNEL_ID, USER_ALERTS_CHANNEL_ID, attendanceChannelForBranch, visibleChannelIds } from './alertChannels';
 
 // System-alert EVENTS (kb360_app.alert_events). Events are shared per channel; read-state is
 // per-user (readBy). The realtime signal carries only the channelId — clients refetch GET /alerts,
@@ -67,10 +67,28 @@ export const alertService = {
     void alertPush.sendChannelAlert(channelId, ev.title, ev.body, actorUserId);
   },
 
-  // Attendance punch → an event in that branch's attendance channel. Never throws — a failed
-  // alert must not fail the punch.
+  // Personal "User Alerts" event addressed to a single user, with a push to just them.
+  async recordUserAlert(userId: string, ev: { source: string; title: string; body: string; context: string }): Promise<void> {
+    const now = new Date();
+    await col().insertOne({ channelId: USER_ALERTS_CHANNEL_ID, ...ev, recipients: [userId], time: now, readBy: [], createdAt: now, expiresAt: eventExpiry(now) });
+    emitToAll('alert:new', { channelId: USER_ALERTS_CHANNEL_ID });
+    void alertPush.sendUserAlert(userId, ev.title, ev.body);
+  },
+
+  // Attendance punch → (1) a personal "User Alerts" event for the puncher (always, with a push),
+  // and (2) an event in that branch's attendance channel (HR feed). Never throws — a failed alert
+  // must not fail the punch.
   async recordAttendancePunch(userId: string, action: 'in' | 'out', at: Date, via: string | null): Promise<void> {
     try {
+      // (1) Personal alert — fires for every puncher regardless of branch resolution.
+      await this.recordUserAlert(userId, {
+        source: 'Attendance',
+        title: `You checked ${action}`,
+        body: `${fmtWallTime(at)}${via ? ` · via ${via}` : ''}`,
+        context: 'Your attendance',
+      });
+
+      // (2) Branch attendance channel (managers' HR feed).
       const user = await crmRepo.getUserById(userId);
       if (!user) return;
       // The user's WORKING branch: explicit assignment → first CRM access branch (same rule as team view).
@@ -128,6 +146,8 @@ export const alertService = {
       ? [{ channelId: { $in: [...channelIds, ANNOUNCEMENTS_CHANNEL_ID] } }]
       : [{ channelId: ANNOUNCEMENTS_CHANNEL_ID, recipients: { $in: [userId, '*'] } }];
     if (!access.isSuper && channelIds.length) visible.push({ channelId: { $in: channelIds } });
+    // Personal "User Alerts" — every user (supers included) sees only their own, by recipient.
+    visible.push({ channelId: USER_ALERTS_CHANNEL_ID, recipients: userId });
     const docs = await col().find({ $or: visible }).sort({ time: -1 }).limit(MAX_EVENTS).toArray();
     return {
       events: docs.map((d: { _id: unknown; channelId: string; source: string; title: string; body: string; context: string; time: Date; readBy?: string[]; attachment?: { name: string; url: string } }) => ({
@@ -174,6 +194,8 @@ export const alertService = {
   },
 
   async markChannelRead(userId: string, channelId: string): Promise<void> {
-    await col().updateMany({ channelId }, { $addToSet: { readBy: userId } });
+    // User Alerts is a shared channel of per-user events — only mark the caller's own read.
+    const filter = channelId === USER_ALERTS_CHANNEL_ID ? { channelId, recipients: userId } : { channelId };
+    await col().updateMany(filter, { $addToSet: { readBy: userId } });
   },
 };

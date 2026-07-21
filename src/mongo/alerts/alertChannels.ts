@@ -40,6 +40,11 @@ export function channelForModuleBranch(module: string, branchCode: string): Aler
 // addressed to them. Id must match the frontend's announcements pulse channel.
 export const ANNOUNCEMENTS_CHANNEL_ID = 'announcements';
 
+// Personal "User Alerts" — every user has one. Not grant-based: each EVENT carries a single
+// recipient (the user it's about), and a user only ever sees their own (see alertService.listFor).
+// Fed by the attendance emitter (check-in / check-out) and pushed only to that user.
+export const USER_ALERTS_CHANNEL_ID = 'user_alerts';
+
 // Attendance-emitter lookup: a branch's ATTENDANCE channel (there are now several channels per
 // branch, so this must filter by module, not just branch).
 export const channelForBranchCode = (code: string | null | undefined): AlertChannelDef | null =>

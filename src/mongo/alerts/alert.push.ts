@@ -2,7 +2,7 @@ import { config } from '../../config';
 import { callDeviceRepo } from '../calls/call.repository';
 import { crmRepo } from '../crm.repo';
 import { appDb } from '../connection';
-import { ALERT_CHANNELS } from './alertChannels';
+import { ALERT_CHANNELS, USER_ALERTS_CHANNEL_ID } from './alertChannels';
 
 // Push notifications for system alerts. The socket 'alert:new' only reaches OPEN apps —
 // this is what taps people on the shoulder when the app is closed. Audience per channel
@@ -127,6 +127,19 @@ export const alertPush = {
     } catch (e) {
       // eslint-disable-next-line no-console
       console.warn('[alert-push] announcement push failed:', (e as Error).message);
+    }
+  },
+
+  // Personal "User Alerts" event → push to just that one user (their own attendance etc.).
+  // Unlike a channel event, the subject IS the recipient, so we never exclude them.
+  async sendUserAlert(userId: string, title: string, body: string): Promise<void> {
+    try {
+      const { disabled } = await baseAudience();
+      if (disabled.has(String(userId))) return; // app access revoked → no push
+      await sendToUsers([userId], 'My Alerts', body ? `${title} — ${body}` : title, USER_ALERTS_CHANNEL_ID);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[alert-push] user alert push failed:', (e as Error).message);
     }
   },
 };
