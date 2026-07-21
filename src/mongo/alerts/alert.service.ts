@@ -36,6 +36,8 @@ const MAX_EVENTS = 200;
 // expiresAt — Mongo TTL skips docs missing the indexed field — so their history never expires.
 const EVENT_TTL_DAYS = 90;
 export const eventExpiry = (from: Date): Date => new Date(from.getTime() + EVENT_TTL_DAYS * 24 * 3600 * 1000);
+// Marker `source` for the daily attendance day-close summary (used for per-day idempotency).
+const DAY_CLOSE_SOURCE = 'Attendance Day-Close';
 export async function ensureAlertIndexes(): Promise<void> {
   await col().createIndex({ channelId: 1, time: -1 });
   await col().createIndex({ time: -1 });
@@ -65,6 +67,19 @@ export const alertService = {
     emitToAll('alert:new', { channelId });
     // Closed apps don't hear the socket — push to everyone who can see this channel.
     void alertPush.sendChannelAlert(channelId, ev.title, ev.body, actorUserId);
+  },
+
+  // Daily attendance "day-close" summary posted to a branch's attendance channel. Idempotent per
+  // (channel, dayKey): reportKey carries the day so the 10pm sweep can safely re-run without
+  // double-posting (a restart between 10pm and midnight won't duplicate it).
+  async hasDayCloseReport(channelId: string, dayKey: string): Promise<boolean> {
+    return !!(await col().findOne({ channelId, source: DAY_CLOSE_SOURCE, reportKey: dayKey }));
+  },
+  async recordDayClose(channelId: string, dayKey: string, ev: { title: string; body: string; context: string }): Promise<void> {
+    const now = new Date();
+    await col().insertOne({ channelId, source: DAY_CLOSE_SOURCE, reportKey: dayKey, ...ev, time: now, readBy: [], createdAt: now, expiresAt: eventExpiry(now) });
+    emitToAll('alert:new', { channelId });
+    void alertPush.sendChannelAlert(channelId, ev.title, ev.body, null);
   },
 
   // Personal "User Alerts" event addressed to a single user, with a push to just them.

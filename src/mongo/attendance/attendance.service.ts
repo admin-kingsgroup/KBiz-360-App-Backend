@@ -1,13 +1,14 @@
 import { Types } from 'mongoose';
 import { BadRequest, Forbidden } from '../../common/errors';
 import { crmRepo, type CrmUser, type CrmBranch } from '../crm.repo';
-import { accessService } from '../access';
+import { accessService, type MongoAccess } from '../access';
 import { attendanceRepo } from './attendance.repository';
 import { officeRepo } from './office.repository';
 import { userOffices } from './userOffices';
 import { userWorkBranches } from './userWorkBranches';
 import { attendanceExempt } from '../attendanceExempt';
 import { alertService } from '../alerts/alert.service';
+import { attendanceChannelForBranch } from '../alerts/alertChannels';
 import { userPositions } from '../userPositions';
 import type { OfficeGeofenceDoc } from './office.model';
 import type { AttendanceDoc } from './attendance.model';
@@ -31,6 +32,8 @@ const initialsOf = (name: string): string => name.split(/\s+/).filter(Boolean).s
 // timezone (default IST) so a punch at e.g. 1 AM IST files under the correct local day (not the previous
 // UTC day), and times read as the real wall-clock. Override with the ATTENDANCE_TZ env var if HQ moves.
 const ATTENDANCE_TZ = process.env.ATTENDANCE_TZ || 'Asia/Kolkata';
+// CRM role level 3 — sees the team, but only within their own branch_ids (see `team`).
+const BRANCH_MANAGER_LEVEL = 3;
 // 'YYYY-MM-DD' for the given instant in the business timezone (en-CA yields that exact format).
 const dayKeyInTz = (d: Date): string => {
   try {
@@ -91,6 +94,20 @@ export function geofenceExitStillInside(
     if (!best || d < best.d) best = { d, r: o.radius };
   }
   return !!best && best.d <= best.r + GEOFENCE_EXIT_BUFFER_M;
+}
+
+// Pure decision for who the team view covers (GET /attendance/team).
+//   seesTeam  — false = the viewer only ever sees their own record.
+//   branchIds — null = every branch in the tenant; otherwise narrow to these WORKING branches.
+// Company-wide roles (super_admin, company_manager) get the tenant; a branch manager gets exactly
+// their assigned branches; hod/employee — and a branch manager with no branches — get themselves.
+export function teamScope(
+  viewer: Pick<MongoAccess, 'canManage' | 'companyWide' | 'level' | 'branchIds'>,
+): { seesTeam: boolean; branchIds: string[] | null } {
+  if (viewer.canManage) return { seesTeam: true, branchIds: viewer.companyWide ? null : (viewer.branchIds ?? []) };
+  const own = viewer.branchIds ?? [];
+  if (viewer.level <= BRANCH_MANAGER_LEVEL && own.length > 0) return { seesTeam: true, branchIds: own };
+  return { seesTeam: false, branchIds: null };
 }
 
 function viaFor(body: PunchBody, wifiVerified: boolean): string {
@@ -516,7 +533,8 @@ export const attendanceService = {
 
   // GET /attendance/team — attendance for the people the viewer oversees, for one calendar
   // day (?date=YYYY-MM-DD, business-tz; defaults to today — lets the admin browse past days).
-  // Managers (super_admin / company_manager) see their tenant; others see just themselves.
+  // Company-wide managers (super_admin / company_manager) see their whole tenant; branch managers
+  // see only the people whose WORKING branch is one of theirs; everyone else sees just themselves.
   async team(userId: string, dateKey?: string) {
     if (dateKey !== undefined && (!DAY_KEY_RE.test(dateKey) || dateKey > todayKey())) {
       throw BadRequest('Invalid date — expected YYYY-MM-DD, not in the future');
@@ -525,8 +543,9 @@ export const attendanceService = {
     const viewer = await accessService.accessForUserId(userId);
     if (!viewer) throw Forbidden('Session user not found');
 
+    const { seesTeam, branchIds: visibleBranchIds } = teamScope(viewer);
     let users: CrmUser[];
-    if (viewer.canManage) {
+    if (seesTeam) {
       const filter: Record<string, unknown> = { status: 'active' };
       if (viewer.tenantId && Types.ObjectId.isValid(viewer.tenantId)) filter.tenant_id = new Types.ObjectId(viewer.tenantId);
       users = await crmRepo.listUsers(filter);
@@ -539,16 +558,21 @@ export const attendanceService = {
     const exempt = await attendanceExempt.exemptSet();
     users = users.filter((u) => !exempt.has(String(u._id)));
 
-    const ids = users.map((u) => String(u._id));
-    const records = await attendanceRepo.forUsersOnDay(day, ids);
-    const byUser = new Map(records.map((r) => [r.userId, r]));
-
-    // Each user's WORKING branch: explicit assignment → first CRM access branch.
-    const workBranches = await userWorkBranches.mapFor(ids);
+    // Each user's WORKING branch: explicit assignment → first CRM access branch. Resolved BEFORE
+    // the attendance read so a branch manager's narrowing happens before we fetch punch records.
+    const workBranches = await userWorkBranches.mapFor(users.map((u) => String(u._id)));
     const workBranchOf = (u: CrmUser): string => {
       const id = String(u._id);
       return workBranches[id] ?? ((u.branch_ids ?? [])[0] ? String((u.branch_ids ?? [])[0]) : '');
     };
+    if (visibleBranchIds) {
+      const mine = new Set(visibleBranchIds);
+      users = users.filter((u) => mine.has(workBranchOf(u)) || String(u._id) === userId);
+    }
+
+    const ids = users.map((u) => String(u._id));
+    const records = await attendanceRepo.forUsersOnDay(day, ids);
+    const byUser = new Map(records.map((r) => [r.userId, r]));
 
     // Resolve branch labels for the displayed users.
     const branchIds = [...new Set(users.map(workBranchOf).filter(Boolean))]
@@ -592,5 +616,65 @@ export const attendanceService = {
         };
       })
       .sort((a, b) => (b.in ? 1 : 0) - (a.in ? 1 : 0) || a.name.localeCompare(b.name)); // present first
+  },
+
+  // Daily attendance DAY-CLOSE report, branch-wise. Groups every tracked (active, non-exempt) user
+  // by the attendance channel of their working branch (BOM/AMD), tallies present vs absent for the
+  // day, and posts one summary to each branch's attendance channel. Idempotent per (channel, day)
+  // via alertService, so the 10pm sweep may safely re-run. Returns which channels it posted.
+  async dayCloseReport(dateKey?: string): Promise<{ day: string; posted: { channelId: string; branch: string; present: number; total: number }[] }> {
+    const day = dateKey ?? todayKey();
+    const users = (await crmRepo.listUsers({ status: 'active' })) as CrmUser[];
+    const exempt = await attendanceExempt.exemptSet();
+    const tracked = users.filter((u) => !exempt.has(String(u._id)));
+
+    // Working branch per user: explicit assignment → first CRM branch (same rule as the punch emitter).
+    const workBranches = await userWorkBranches.mapFor(tracked.map((u) => String(u._id)));
+    const branchIdOf = (u: CrmUser): string => {
+      const id = String(u._id);
+      const first = (u.branch_ids ?? [])[0];
+      return workBranches[id] ?? (first ? String(first) : '');
+    };
+    const branchOids = [...new Set(tracked.map(branchIdOf).filter((v) => Types.ObjectId.isValid(v)))].map((v) => new Types.ObjectId(v));
+    const branches: CrmBranch[] = branchOids.length ? await crmRepo.branchesByIds(branchOids) : [];
+    const branchById = new Map(branches.map((b) => [String(b._id), b]));
+
+    // Bucket users by their branch's attendance channel (BOMMB/city aliases resolve to BOM/AMD).
+    const buckets = new Map<string, { branchCode: string; users: CrmUser[] }>();
+    for (const u of tracked) {
+      const channel = attendanceChannelForBranch(branchById.get(branchIdOf(u)) ?? null);
+      if (!channel) continue;
+      const b = buckets.get(channel.id) ?? { branchCode: channel.branchCode, users: [] };
+      b.users.push(u);
+      buckets.set(channel.id, b);
+    }
+
+    const records = await attendanceRepo.forUsersOnDay(day, tracked.map((u) => String(u._id)));
+    const byUser = new Map(records.map((r) => [r.userId, r]));
+    const posted: { channelId: string; branch: string; present: number; total: number }[] = [];
+
+    for (const [channelId, { branchCode, users: chUsers }] of buckets) {
+      if (await alertService.hasDayCloseReport(channelId, day)) continue; // already posted today
+      const present: string[] = [];
+      const absent: string[] = [];
+      const stillIn: string[] = [];
+      for (const u of chUsers) {
+        const name = nameOf(u);
+        const rec = byUser.get(String(u._id));
+        if (rec?.checkInAt) { present.push(name); if (!rec.checkOutAt) stillIn.push(name); }
+        else absent.push(name);
+      }
+      const total = chUsers.length;
+      const lines = [`✅ Present ${present.length} · ❌ Absent ${absent.length}`];
+      if (absent.length) lines.push(`Absent: ${absent.sort().join(', ')}`);
+      if (stillIn.length) lines.push(`Not checked out: ${stillIn.sort().join(', ')}`);
+      await alertService.recordDayClose(channelId, day, {
+        title: `Day close · ${branchCode} · ${present.length}/${total} present`,
+        body: lines.join('\n'),
+        context: `TK ${branchCode} · Attendance`,
+      });
+      posted.push({ channelId, branch: branchCode, present: present.length, total });
+    }
+    return { day, posted };
   },
 };

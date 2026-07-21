@@ -15,6 +15,7 @@ import { ensureAlertIndexes } from './alerts/alert.service';
 import { ensureClientErrorIndexes } from './clientErrors.router';
 import { startEmailPolling } from '../email/email.poll';
 import { startReminderDueSweep, stopReminderDueSweep } from './reminders/reminder.sweep';
+import { startAttendanceDayClose, stopAttendanceDayClose } from './attendance/attendance.dayclose';
 import { startAlertAttachmentSweep, stopAlertAttachmentSweep } from './alerts/alert.sweep';
 
 // Entrypoint for the MongoDB-backed backend (real CRM auth + directory).
@@ -46,11 +47,13 @@ async function bootstrap(): Promise<void> {
   startReminderDueSweep(); // "⏰ Reminder due" pushes for reminders whose due time arrives
   startAlertAttachmentSweep(); // reap stored alert PDFs before their event docs TTL out
   startPresenceHeartbeat(); // stamps lastSeenAt for online users every 60s (a crash loses ≤60s)
+  startAttendanceDayClose(); // 10pm branch-wise attendance day-close summary to each attendance channel
 
   const shutdown = async (): Promise<void> => {
     stopReminderDueSweep();
     stopAlertAttachmentSweep();
     stopPresenceHeartbeat();
+    stopAttendanceDayClose();
     await disconnectMongo();
     httpServer.close(() => process.exit(0));
   };
