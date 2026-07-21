@@ -17,6 +17,9 @@ export interface PunchBody {
   wifiSsid?: string | null; // the Wi-Fi network the device is actually connected to
   coords?: { lat: number; lng: number } | null;
   method?: 'auto' | 'face';
+  // 'geofence' = the headless OS geofence task fired this punch. Only these check-outs get the
+  // "still inside the office" drift rejection — user-initiated punches are never second-guessed.
+  source?: 'geofence';
 }
 
 const PALETTE = ['#9A6CF0', '#4F8BFF', '#37B6A4', '#E8A13A', '#E3674E', '#0C0E14'];
@@ -65,6 +68,29 @@ function fmtTime(d: Date | null): string | null {
   } catch {
     return null;
   }
+}
+
+// Hysteresis for geofence exits: an OS Exit only closes the day when the punch's own fix is at
+// least this far BEYOND the office radius. Indoor GPS drift of 30–80 m is routine.
+export const GEOFENCE_EXIT_BUFFER_M = 50;
+
+// Pure decision for the geofence-exit drift guard: is this punch still provably at the office?
+// wifiVerified = connected to an office SSID (strongest signal); otherwise the punch's own fix must
+// be beyond radius + buffer of its nearest office. No offices configured / no coords → not provable.
+export function geofenceExitStillInside(
+  offices: { lat: number; lng: number; radius: number }[],
+  coords: { lat: number; lng: number } | null | undefined,
+  wifiVerified: boolean,
+): boolean {
+  if (!offices.length) return false;
+  if (wifiVerified) return true;
+  if (!coords) return false;
+  let best: { d: number; r: number } | null = null;
+  for (const o of offices) {
+    const d = haversine(coords, { lat: o.lat, lng: o.lng });
+    if (!best || d < best.d) best = { d, r: o.radius };
+  }
+  return !!best && best.d <= best.r + GEOFENCE_EXIT_BUFFER_M;
 }
 
 function viaFor(body: PunchBody, wifiVerified: boolean): string {
@@ -179,24 +205,29 @@ export const attendanceService = {
     return { distance: near.distance, wifiVerified: false };
   },
 
-  // POST /attendance/check-in — first punch of the day. Validated against the user's office geofence.
+  // POST /attendance/check-in — first punch of the day, OR a re-entry after a check-out.
+  // Re-entry model: first-in stays, last-out wins. A check-in on an already-closed day (e.g. the
+  // geofence drifted you out at lunch, or you left and came back) RE-OPENS it — checkOutAt clears,
+  // presence resumes, the original checkInAt is preserved. This makes the day self-healing: any
+  // spurious check-out is undone the moment presence at the office is proven again.
   async checkIn(userId: string, body: PunchBody) {
     if (await attendanceExempt.isExempt(userId)) throw BadRequest('Attendance is not tracked for your account');
     const key = todayKey();
     const today = await attendanceRepo.findToday(userId, key);
-    if (today?.checkInAt) throw BadRequest('Already checked in today');
+    if (today?.checkInAt && !today.checkOutAt) throw BadRequest('Already checked in today');
+    const reopening = !!(today?.checkInAt && today.checkOutAt);
     const { distance, wifiVerified } = await this.assertAtOffice(userId, body);
     const now = new Date();
     const saved = await attendanceRepo.upsert(userId, key, {
-      date: todayDate(),
-      checkInAt: now,
+      ...(reopening ? {} : { date: todayDate(), checkInAt: now }),
+      checkOutAt: null,
       method: viaFor(body, wifiVerified),
       present: true,
       latitude: body.coords?.lat ?? null,
       longitude: body.coords?.lng ?? null,
       distanceMeters: distance,
       wifiSsid: wifiVerified ? cleanSsid(body.wifiSsid) : null,
-      faceVerified: body.method === 'face' ? true : null,
+      faceVerified: body.method === 'face' ? true : (reopening ? today?.faceVerified ?? null : null),
     });
     // System alert ("X checked in") into the branch's attendance channel — fire-and-forget.
     void alertService.recordAttendancePunch(userId, 'in', now, saved?.method ?? null);
@@ -214,6 +245,13 @@ export const attendanceService = {
     const offices = await officesForUser(userId);
     const wifiVerified = wifiVerifiedFor(offices, body.wifiSsid);
     const distance = body.coords && offices.length ? (nearestOffice(offices, body.coords)?.distance ?? null) : null;
+    // Drift rejection for GEOFENCE-fired check-outs only: GPS wobble indoors routinely produces OS
+    // Exit events while the person is still at their desk. If the punch's own coordinates (or the
+    // office Wi-Fi) prove they are still inside the fence (+hysteresis), the exit is noise — refuse
+    // it. User-initiated check-outs are never blocked (leaving early from your desk is legitimate).
+    if (body.source === 'geofence' && geofenceExitStillInside(offices, body.coords, wifiVerified)) {
+      throw BadRequest('Still at the office — auto check-out ignored');
+    }
     const saved = await attendanceRepo.upsert(userId, key, {
       checkOutAt: now,
       method: viaFor(body, wifiVerified),
