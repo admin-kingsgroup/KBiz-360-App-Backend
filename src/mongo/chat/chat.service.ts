@@ -56,6 +56,25 @@ async function assertManageGroup(conv: ConversationDoc, userId: string): Promise
   throw Forbidden('Requires group admin');
 }
 
+// Add-only allowlist: these users may ADD people to any group they are a MEMBER of, without being a
+// group admin/creator (they still cannot remove members, rename, or delete the group — that stays
+// with assertManageGroup). Emails are the source of truth so it survives user-id changes.
+const GROUP_ADD_MEMBER_EMAILS = new Set(['faiz@travkings.com', 'pravesh@travkings.com', 'farhan@travkings.com']);
+
+async function assertCanAddMembers(conv: ConversationDoc, userId: string): Promise<void> {
+  // Full managers (creator / group admin / super-admin) can always add.
+  const m = conv.members.find((x) => x.userId === userId);
+  if (conv.createdBy === userId || m?.role === 'admin') return;
+  const access = await accessService.accessForUserId(userId);
+  if (access?.isSuper) return;
+  // Otherwise the allowlisted users may add — but only to a group they actually belong to.
+  if (conv.participantIds.includes(userId)) {
+    const user = await crmRepo.getUserById(userId);
+    if (user && GROUP_ADD_MEMBER_EMAILS.has((user.email ?? '').toLowerCase().trim())) return;
+  }
+  throw Forbidden('Requires group admin');
+}
+
 // Base message payload broadcast over sockets (clients derive `mine`/`starred` locally).
 function toMessageBase(m: MessageDoc) {
   const deleted = m.deletedForEveryone;
@@ -552,7 +571,7 @@ export const chatService = {
   async addMembers(userId: string, conversationId: string, memberIds: string[]) {
     const conv = await conversationRepo.findById(conversationId);
     if (!conv || conv.type !== 'group') throw NotFound('Group not found');
-    await assertManageGroup(conv, userId);
+    await assertCanAddMembers(conv, userId);
     const toAdd = memberIds.filter((id) => !conv.participantIds.includes(id));
     if (toAdd.length) {
       await ConversationModel().updateOne(
