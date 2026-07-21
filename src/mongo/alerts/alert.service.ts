@@ -75,11 +75,13 @@ export const alertService = {
   async hasDayCloseReport(channelId: string, dayKey: string): Promise<boolean> {
     return !!(await col().findOne({ channelId, source: DAY_CLOSE_SOURCE, reportKey: dayKey }));
   },
-  async recordDayClose(channelId: string, dayKey: string, ev: { title: string; body: string; context: string }): Promise<void> {
+  // pushBody (optional) is the SHORT text sent in the heads-up notification; the full detailed
+  // ev.body (the per-user table) is stored on the event and shown in the alert detail screen.
+  async recordDayClose(channelId: string, dayKey: string, ev: { title: string; body: string; context: string }, pushBody?: string): Promise<void> {
     const now = new Date();
     await col().insertOne({ channelId, source: DAY_CLOSE_SOURCE, reportKey: dayKey, ...ev, time: now, readBy: [], createdAt: now, expiresAt: eventExpiry(now) });
     emitToAll('alert:new', { channelId });
-    void alertPush.sendChannelAlert(channelId, ev.title, ev.body, null);
+    void alertPush.sendChannelAlert(channelId, ev.title, pushBody ?? ev.body, null);
   },
 
   // Personal "User Alerts" event addressed to a single user, with a push to just them.

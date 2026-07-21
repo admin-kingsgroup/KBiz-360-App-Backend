@@ -655,25 +655,40 @@ export const attendanceService = {
 
     for (const [channelId, { branchCode, users: chUsers }] of buckets) {
       if (await alertService.hasDayCloseReport(channelId, day)) continue; // already posted today
-      const present: string[] = [];
-      const absent: string[] = [];
-      const stillIn: string[] = [];
+      // Per-user detail: name · check-in → check-out (or "still in") · via method.
+      const presentRows: { name: string; line: string }[] = [];
+      const absentNames: string[] = [];
       for (const u of chUsers) {
         const name = nameOf(u);
         const rec = byUser.get(String(u._id));
-        if (rec?.checkInAt) { present.push(name); if (!rec.checkOutAt) stillIn.push(name); }
-        else absent.push(name);
+        if (rec?.checkInAt) {
+          const inT = fmtTime(rec.checkInAt) ?? '—';
+          const outT = rec.checkOutAt ? `out ${fmtTime(rec.checkOutAt)}` : 'still in';
+          const via = rec.method ? ` · ${rec.method}` : '';
+          presentRows.push({ name, line: `• ${name} — in ${inT} → ${outT}${via}` });
+        } else {
+          absentNames.push(name);
+        }
       }
+      presentRows.sort((a, b) => a.name.localeCompare(b.name));
+      absentNames.sort();
       const total = chUsers.length;
-      const lines = [`✅ Present ${present.length} · ❌ Absent ${absent.length}`];
-      if (absent.length) lines.push(`Absent: ${absent.sort().join(', ')}`);
-      if (stillIn.length) lines.push(`Not checked out: ${stillIn.sort().join(', ')}`);
+      const presentCount = presentRows.length;
+
+      // Detailed report body (rendered in the alert detail screen): a per-user table split into
+      // PRESENT (with times + method) and ABSENT.
+      const bodyLines: string[] = [`✅ Present ${presentCount}/${total}    ❌ Absent ${absentNames.length}`];
+      if (presentRows.length) bodyLines.push('', 'PRESENT', ...presentRows.map((r) => r.line));
+      if (absentNames.length) bodyLines.push('', 'ABSENT', ...absentNames.map((n) => `• ${n}`));
+      // The heads-up push stays short — the full table would be noise in a notification.
+      const pushBody = `${presentCount}/${total} present · ${absentNames.length} absent — tap for the full report`;
+
       await alertService.recordDayClose(channelId, day, {
-        title: `Day close · ${branchCode} · ${present.length}/${total} present`,
-        body: lines.join('\n'),
+        title: `Day close · ${branchCode} · ${presentCount}/${total} present`,
+        body: bodyLines.join('\n'),
         context: `TK ${branchCode} · Attendance`,
-      });
-      posted.push({ channelId, branch: branchCode, present: present.length, total });
+      }, pushBody);
+      posted.push({ channelId, branch: branchCode, present: presentCount, total });
     }
     return { day, posted };
   },
