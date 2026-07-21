@@ -269,7 +269,19 @@ export const chatService = {
         const senderName = sender ? `${sender.first_name ?? ''} ${sender.last_name ?? ''}`.trim() || sender.email : 'New message';
         const title = conv.type === 'group' ? (conv.name ?? 'Group') : senderName;
         const body = conv.type === 'group' ? `${senderName}: ${preview}` : preview;
-        await Promise.all(recipients.map((r) => chatPush.notifyNewMessage(r, { title, body, conversationId })));
+        await Promise.all(recipients.map((r) => chatPush.notifyNewMessage(r, {
+          title,
+          body,
+          conversationId,
+          messageId: String(created._id),
+          senderId: userId,
+          senderName,
+          convType: conv.type,
+          convName: conv.name ?? '',
+          preview,
+          msgType: type,
+          sentAt: now.toISOString(),
+        })));
       } catch {
         /* push is best-effort */
       }
