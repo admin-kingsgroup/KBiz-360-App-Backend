@@ -243,6 +243,47 @@ export const directoryService = {
     return mapCompany(created);
   },
 
+  // Super-admin: create a BRANCH under a specific business. Branch code is globally unique across the
+  // shared branches collection (the ERP relies on that), so we validate up-front and also catch the
+  // duplicate-key error in case of a race.
+  async createBranch(adminId: string, input: { companyId: string; name: string; code: string; city?: string; country?: string; isHO?: boolean }) {
+    const access = await accessService.accessForUserId(adminId);
+    if (!access) throw Forbidden('Session user not found');
+    const name = input.name.trim();
+    const code = input.code.trim().toUpperCase();
+    if (!name) throw BadRequest('Branch name is required');
+    if (!code) throw BadRequest('Branch code is required');
+    if (!Types.ObjectId.isValid(input.companyId)) throw BadRequest('Select a business for this branch');
+    // The branch must belong to a real business in the admin's scope.
+    const companies = await crmRepo.listCompanies(tenantFilter(access));
+    const company = companies.find((c) => String(c._id) === input.companyId);
+    if (!company) throw BadRequest('Business not found — pick a valid business');
+    // Codes are unique across ALL branches (shared with the ERP) — reject a clash early.
+    const clash = (await crmRepo.listBranches({})).some((b) => (b.code ?? '').trim().toUpperCase() === code);
+    if (clash) throw BadRequest(`Branch code "${code}" is already in use — pick another`);
+    const now = new Date();
+    try {
+      const created = await crmRepo.createBranch({
+        tenant_id: company.tenant_id ?? null,
+        company_id: company._id,
+        name,
+        code,
+        city: input.city?.trim() || null,
+        country: input.country?.trim() || 'India',
+        isHO: !!input.isHO,
+        status: 'active',
+        created_by: Types.ObjectId.isValid(adminId) ? new Types.ObjectId(adminId) : null,
+        created_at: now,
+        updated_at: now,
+        __v: 0,
+      });
+      return mapBranch(created);
+    } catch (e) {
+      if ((e as { code?: number }).code === 11000) throw BadRequest(`Branch code "${code}" is already in use — pick another`);
+      throw e;
+    }
+  },
+
   // ── User provisioning (writes to the CRM users collection so the account can log in normally) ──
   async createUser(adminId: string, input: { email: string; password: string; firstName?: string; lastName?: string; phone?: string; roleId?: string; branchIds?: string[] }) {
     const access = await accessService.accessForUserId(adminId);
