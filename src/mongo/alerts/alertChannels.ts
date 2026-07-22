@@ -5,11 +5,12 @@
 // ('hr' = attendance, 'accounts' = Finance/KBiz Books, 'crm' = CRM, 'sales' = ERP sales invoices,
 // 'receivables' = Clients Receivables / Onboarding, 'payables' = Supplier Payables / Onboarding,
 // 'bookings' = SO/PO/GP / INB approval GP summaries, 'acct' = Accounts — the finance-voucher
-// transaction feed; NOT 'accounts', which the legacy Finance BOM/AMD channels own).
+// transaction feed; NOT 'accounts', which the legacy Finance BOM/AMD channels own,
+// 'bankcash' = Bank & Cash — the 11:00 IST balance snapshot).
 export interface AlertChannelDef {
   id: string;
   branchCode: string; // ERP/CRM branch code the channel covers (BOM/AMD/NBO/DAR/FBM)
-  module: 'hr' | 'accounts' | 'crm' | 'sales' | 'receivables' | 'payables' | 'bookings' | 'acct';
+  module: 'hr' | 'accounts' | 'crm' | 'sales' | 'receivables' | 'payables' | 'bookings' | 'acct' | 'bankcash';
   grant: string; // per-user grant string a super-admin assigns
   name: string;
 }
@@ -57,6 +58,12 @@ export const ALERT_CHANNELS: AlertChannelDef[] = [
   { id: 'tk_acc_nbo', branchCode: 'NBO', module: 'acct', grant: 'NBO-acct', name: 'Accounts - NBO' },
   { id: 'tk_acc_dar', branchCode: 'DAR', module: 'acct', grant: 'DAR-acct', name: 'Accounts - DAR' },
   { id: 'tk_acc_fbm', branchCode: 'FBM', module: 'acct', grant: 'FBM-acct', name: 'Accounts - FBM' },
+  // Bank & Cash — the ERP's 11:00 IST snapshot of every bank + cash ledger balance, per branch.
+  { id: 'tk_bc_bom', branchCode: 'BOM', module: 'bankcash', grant: 'BOM-bankcash', name: 'Bank & Cash - BOM' },
+  { id: 'tk_bc_amd', branchCode: 'AMD', module: 'bankcash', grant: 'AMD-bankcash', name: 'Bank & Cash - AMD' },
+  { id: 'tk_bc_nbo', branchCode: 'NBO', module: 'bankcash', grant: 'NBO-bankcash', name: 'Bank & Cash - NBO' },
+  { id: 'tk_bc_dar', branchCode: 'DAR', module: 'bankcash', grant: 'DAR-bankcash', name: 'Bank & Cash - DAR' },
+  { id: 'tk_bc_fbm', branchCode: 'FBM', module: 'bankcash', grant: 'FBM-bankcash', name: 'Bank & Cash - FBM' },
 ];
 
 export const ALERT_GRANT_IDS: string[] = ALERT_CHANNELS.map((c) => c.grant);
