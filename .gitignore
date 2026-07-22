@@ -8,7 +8,9 @@ dist/
 coverage/
 .DS_Store
 prisma/*.db
-uploads/
+# runtime user-file storage at the repo ROOT only — unanchored `uploads/` also swallowed the
+# src/modules/uploads source module (CI-breaking: fresh clones missed it entirely)
+/uploads/
 
 # SECRETS — never commit
 firebase-service-account.json
