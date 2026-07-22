@@ -252,26 +252,32 @@ export const graph = {
   // (resolved from parentFolderId) so the detail view shows the right actions. $search returns by
   // relevance and cannot be combined with $orderby.
   async search(userId: string, query: string): Promise<EmailDTO[]> {
-    const q = query.replace(/"/g, '').trim();
+    const q = query.replace(/["*]/g, '').trim();
     if (!q) return [];
     const idMap = await folderIdMap(userId);
+    const page = async (url: string): Promise<any[]> => (await graphFetch(userId, url))?.value ?? [];
+    const sel = `$select=${SELECT},parentFolderId&$top=50`;
     let results: any[] = [];
+    // 1. Plain full-text $search — whole-word matches across subject/body/participants, by relevance.
     try {
-      const url = `/me/messages?$search=${encodeURIComponent(`"${q}"`)}&$select=${SELECT},parentFolderId&$top=50`;
-      results = (await graphFetch(userId, url))?.value ?? [];
-    } catch { /* $search unavailable/errored — the prefix fallback below still answers */ }
-    // Contact-style prefix fallback: $search is whole-word full-text, so a partial name ("suj" for
-    // Sujeet) or a quiet $search failure returns nothing. $filter startswith on the sender's
-    // name/address + contains on subject catches those. (No $orderby — Graph rejects it on these
-    // filtered properties — so sort by date here.)
+      results = await page(`/me/messages?$search=${encodeURIComponent(`"${q}"`)}&${sel}`);
+    } catch (e) { console.warn('[email.search] $search failed:', (e as Error).message); }
+    // 2. KQL prefix fallback — a partial contact name ("suj" for Sujeet) isn't a whole word, so try
+    //    prefix wildcards on participants (from/to/cc — mail SENT TO the person counts) + subject.
+    if (!results.length) {
+      try {
+        results = await page(`/me/messages?$search=${encodeURIComponent(`"participants:${q}* OR subject:${q}*"`)}&${sel}`);
+      } catch (e) { console.warn('[email.search] KQL prefix failed:', (e as Error).message); }
+    }
+    // 3. $filter last resort (works even where $search is disabled): sender name/address prefix.
+    //    (toRecipients can't be $filtered on messages; no $orderby with these filters → sort here.)
     if (!results.length) {
       const esc = q.replace(/'/g, "''");
-      const filter = `startswith(from/emailAddress/name,'${esc}') or startswith(from/emailAddress/address,'${esc}') or contains(subject,'${esc}')`;
-      const url = `/me/messages?$filter=${encodeURIComponent(filter)}&$select=${SELECT},parentFolderId&$top=50`;
+      const filter = `startswith(from/emailAddress/name,'${esc}') or startswith(from/emailAddress/address,'${esc}')`;
       try {
-        results = ((await graphFetch(userId, url))?.value ?? [])
+        results = (await page(`/me/messages?$filter=${encodeURIComponent(filter)}&${sel}`))
           .sort((a: any, b: any) => String(b.receivedDateTime ?? '').localeCompare(String(a.receivedDateTime ?? '')));
-      } catch { /* fall through with whatever $search produced */ }
+      } catch (e) { console.warn('[email.search] $filter fallback failed:', (e as Error).message); }
     }
     return results.map((m: any) => mapMessage(m, idMap[m.parentFolderId] ?? 'inbox'));
   },
