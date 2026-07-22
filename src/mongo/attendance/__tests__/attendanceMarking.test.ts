@@ -1,5 +1,5 @@
 import { connectMongo, disconnectMongo, appDb } from '../../connection';
-import { attendanceService, geofenceExitStillInside, GEOFENCE_EXIT_BUFFER_M } from '../attendance.service';
+import { attendanceService, geofenceExitStillInside, teamScope, superUserIds, GEOFENCE_EXIT_BUFFER_M } from '../attendance.service';
 import { punchSchema } from '../attendance.router';
 
 // Regression: validate() replaces req.body with the parsed schema, dropping unknown keys. If
@@ -39,6 +39,58 @@ describe('geofenceExitStillInside (drift guard, pure)', () => {
     expect(geofenceExitStillInside([], at(0), false)).toBe(false);
     expect(geofenceExitStillInside([OFFICE], null, false)).toBe(false);
   });
+});
+
+// Branch-wise team view: who sees whom (pure). A leaked branch here = one branch's attendance
+// visible to another branch's manager, so every role tier is pinned.
+describe('teamScope (team-view branch scoping, pure)', () => {
+  const v = (o: Partial<Parameters<typeof teamScope>[0]>) =>
+    teamScope({ canManage: false, companyWide: false, level: 5, branchIds: [], ...o });
+
+  it('super_admin / company_manager → the whole tenant, unnarrowed', () => {
+    expect(v({ canManage: true, companyWide: true, level: 1, branchIds: null })).toEqual({ seesTeam: true, branchIds: null });
+    expect(v({ canManage: true, companyWide: true, level: 2, branchIds: null })).toEqual({ seesTeam: true, branchIds: null });
+  });
+  it('branch_manager → their own branches only', () => {
+    expect(v({ level: 3, branchIds: ['bom', 'amd'] })).toEqual({ seesTeam: true, branchIds: ['bom', 'amd'] });
+  });
+  it('branch_manager with no branches → self only (never the whole tenant)', () => {
+    expect(v({ level: 3, branchIds: [] })).toEqual({ seesTeam: false, branchIds: null });
+    expect(v({ level: 3, branchIds: null })).toEqual({ seesTeam: false, branchIds: null });
+  });
+  it('hod / employee → self only, whatever branches they hold', () => {
+    expect(v({ level: 4, branchIds: ['bom'] })).toEqual({ seesTeam: false, branchIds: null });
+    expect(v({ level: 5, branchIds: ['bom'] })).toEqual({ seesTeam: false, branchIds: null });
+  });
+  it('a manager flagged canManage but not companyWide is still narrowed', () => {
+    expect(v({ canManage: true, companyWide: false, level: 2, branchIds: ['nbo'] })).toEqual({ seesTeam: true, branchIds: ['nbo'] });
+  });
+});
+
+// Super-admins are never attendance-tracked: no punches, hidden from team view and day-close.
+describe('superUserIds (supers are untracked, pure)', () => {
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const roles = [
+    { _id: 'r-super', level: 1, permissions: [] },
+    { _id: 'r-star', level: 4, permissions: ['*'] }, // '*' permission = super regardless of level
+    { _id: 'r-mgr', level: 2, permissions: [] },
+    { _id: 'r-emp', level: 5 },
+  ];
+  const users = [
+    { _id: 'dev', role_id: 'r-super' },
+    { _id: 'wild', role_id: 'r-star' },
+    { _id: 'mgr', role_id: 'r-mgr' },
+    { _id: 'emp', role_id: 'r-emp' },
+    { _id: 'norole', role_id: null },
+  ] as any[];
+
+  it('flags level-1 and "*"-permission roles, nobody else', () => {
+    expect([...superUserIds(users, roles as any)].sort()).toEqual(['dev', 'wild']);
+  });
+  it('a user with no role is tracked (defaults to employee)', () => {
+    expect(superUserIds(users, roles as any).has('norole')).toBe(false);
+  });
+  /* eslint-enable @typescript-eslint/no-explicit-any */
 });
 
 // ── DB-backed re-entry state machine ──

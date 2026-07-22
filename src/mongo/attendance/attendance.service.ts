@@ -110,6 +110,27 @@ export function teamScope(
   return { seesTeam: false, branchIds: null };
 }
 
+// ── who is tracked at all ──
+// Super-admins are NEVER tracked (the developer/owner accounts shouldn't produce punches or
+// pollute the team view), on top of the explicit per-user attendance_exempt list.
+// Pure so it's testable: mirrors deriveAccess's isSuper rule (level 1 or the '*' permission).
+export function superUserIds(
+  users: Pick<CrmUser, '_id' | 'role_id'>[],
+  roles: { _id: unknown; level?: number; permissions?: string[] }[],
+): Set<string> {
+  const superRoles = new Set(
+    roles.filter((r) => (r.level ?? 5) === 1 || (r.permissions ?? []).includes('*')).map((r) => String(r._id)),
+  );
+  return new Set(users.filter((u) => u.role_id && superRoles.has(String(u.role_id))).map((u) => String(u._id)));
+}
+
+// Single-user form, for the punch/me paths.
+async function isUntracked(userId: string): Promise<boolean> {
+  if (await attendanceExempt.isExempt(userId)) return true;
+  const access = await accessService.accessForUserId(userId);
+  return !!access?.isSuper;
+}
+
 function viaFor(body: PunchBody, wifiVerified: boolean): string {
   if (body.method === 'face') return 'Face';
   if (wifiVerified) return 'Wi-Fi';
@@ -228,7 +249,7 @@ export const attendanceService = {
   // presence resumes, the original checkInAt is preserved. This makes the day self-healing: any
   // spurious check-out is undone the moment presence at the office is proven again.
   async checkIn(userId: string, body: PunchBody) {
-    if (await attendanceExempt.isExempt(userId)) throw BadRequest('Attendance is not tracked for your account');
+    if (await isUntracked(userId)) throw BadRequest('Attendance is not tracked for your account');
     const key = todayKey();
     const today = await attendanceRepo.findToday(userId, key);
     if (today?.checkInAt && !today.checkOutAt) throw BadRequest('Already checked in today');
@@ -253,7 +274,7 @@ export const attendanceService = {
 
   // POST /attendance/check-out — closes the day. Allowed off-site (you may leave first), distance recorded.
   async checkOut(userId: string, body: PunchBody) {
-    if (await attendanceExempt.isExempt(userId)) throw BadRequest('Attendance is not tracked for your account');
+    if (await isUntracked(userId)) throw BadRequest('Attendance is not tracked for your account');
     const key = todayKey();
     const today = await attendanceRepo.findToday(userId, key);
     if (!today?.checkInAt) throw BadRequest('Not checked in');
@@ -528,7 +549,7 @@ export const attendanceService = {
   // GET /attendance/me — today's status.
   async me(userId: string) {
     const base = mapMe(await attendanceRepo.findToday(userId, todayKey()));
-    return { ...base, exempt: await attendanceExempt.isExempt(userId) };
+    return { ...base, exempt: await isUntracked(userId) };
   },
 
   // GET /attendance/team — attendance for the people the viewer oversees, for one calendar
@@ -554,9 +575,10 @@ export const attendanceService = {
       users = self ? [self] : [];
     }
 
-    // Drop attendance-exempt people (owners/directors who don't punch) from the tracked team list.
+    // Drop untracked people from the team list: explicit exemptions + every super-admin.
     const exempt = await attendanceExempt.exemptSet();
-    users = users.filter((u) => !exempt.has(String(u._id)));
+    const supers = superUserIds(users, await crmRepo.listRoles());
+    users = users.filter((u) => !exempt.has(String(u._id)) && !supers.has(String(u._id)));
 
     // Each user's WORKING branch: explicit assignment → first CRM access branch. Resolved BEFORE
     // the attendance read so a branch manager's narrowing happens before we fetch punch records.
@@ -626,7 +648,8 @@ export const attendanceService = {
     const day = dateKey ?? todayKey();
     const users = (await crmRepo.listUsers({ status: 'active' })) as CrmUser[];
     const exempt = await attendanceExempt.exemptSet();
-    const tracked = users.filter((u) => !exempt.has(String(u._id)));
+    const supers = superUserIds(users, await crmRepo.listRoles());
+    const tracked = users.filter((u) => !exempt.has(String(u._id)) && !supers.has(String(u._id)));
 
     // Working branch per user: explicit assignment → first CRM branch (same rule as the punch emitter).
     const workBranches = await userWorkBranches.mapFor(tracked.map((u) => String(u._id)));
