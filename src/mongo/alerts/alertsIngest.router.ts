@@ -65,7 +65,7 @@ alertsIngestRouter.post(
   requireServiceToken,
   ingestRateLimit,
   validate(z.object({
-    module: z.enum(['finance', 'accounts', 'crm', 'sales', 'sales-invoice', 'receivables', 'payables']),
+    module: z.enum(['finance', 'accounts', 'crm', 'sales', 'sales-invoice', 'receivables', 'payables', 'bookings']),
     branchCode: z.string().trim().min(2).max(10),
     title: z.string().trim().min(1).max(160),
     body: z.string().trim().max(2000).optional(),
@@ -112,6 +112,7 @@ alertsIngestRouter.post(
     // Default context embeds the branch code — the app buckets events into branch sections by it.
     const MODULE_LABEL: Record<string, string> = {
       accounts: 'Finance', sales: 'Sales Invoice', receivables: 'Clients Receivables', payables: 'Supplier Payables',
+      bookings: 'SO/PO/GP / INB',
     };
     const label = MODULE_LABEL[channel.module] ?? channel.module.toUpperCase();
     await alertService.record(channel.id, {

@@ -16,6 +16,7 @@ describe('alert channel registry', () => {
       'tk_si_bom', 'tk_si_amd', 'tk_si_nbo', 'tk_si_dar', 'tk_si_fbm',
       'tk_ar_bom', 'tk_ar_amd', 'tk_ar_nbo', 'tk_ar_dar', 'tk_ar_fbm',
       'tk_ap_bom', 'tk_ap_amd', 'tk_ap_nbo', 'tk_ap_dar', 'tk_ap_fbm',
+      'tk_bkg_bom', 'tk_bkg_amd', 'tk_bkg_nbo', 'tk_bkg_dar', 'tk_bkg_fbm',
     ]);
     expect(ALERT_GRANT_IDS).toEqual(
       expect.arrayContaining([
@@ -23,6 +24,7 @@ describe('alert channel registry', () => {
         'BOM-sales', 'AMD-sales', 'NBO-sales', 'DAR-sales', 'FBM-sales',
         'BOM-receivables', 'NBO-receivables', 'FBM-receivables',
         'BOM-payables', 'DAR-payables', 'FBM-payables',
+        'BOM-bookings', 'NBO-bookings', 'FBM-bookings',
       ]),
     );
   });
@@ -49,6 +51,13 @@ describe('alert channel registry', () => {
     expect(channelForModuleBranch('payables', 'NBO')?.id).toBe('tk_ap_nbo');
     expect(channelForModuleBranch('payables', 'FBM')?.grant).toBe('FBM-payables');
     expect(channelForModuleBranch('receivables', 'TKHO')).toBeNull();
+  });
+
+  it('maps bookings to the SO/PO/GP / INB channels (all 5 branches)', () => {
+    expect(channelForModuleBranch('bookings', 'BOM')?.id).toBe('tk_bkg_bom');
+    expect(channelForModuleBranch('bookings', 'nbo')?.id).toBe('tk_bkg_nbo');
+    expect(channelForModuleBranch('bookings', 'FBM')?.grant).toBe('FBM-bookings');
+    expect(channelForModuleBranch('bookings', 'TKHO')).toBeNull();
   });
 
   it('keeps channelForBranchCode pinned to ATTENDANCE channels (order-independent)', () => {
