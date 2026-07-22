@@ -165,7 +165,21 @@ export const graph = {
   },
   async getMessage(userId: string, id: string, folder: EmailFolder = 'inbox'): Promise<EmailDTO> {
     const json = await graphFetch(userId, `/me/messages/${id}?$select=${SELECT},body`);
-    return mapMessage(json, folder);
+    const dto = mapMessage(json, folder);
+    // Outlook signatures/pasted images arrive as INLINE attachments referenced by `src="cid:…"`.
+    // A WebView can't resolve cid: URIs (they render as broken images), so swap each reference
+    // for a data: URI built from the attachment bytes. Best-effort: on any failure the body goes
+    // out unchanged rather than failing the whole message fetch.
+    if (dto.bodyType === 'html' && dto.body.includes('cid:')) {
+      try {
+        const atts = await graphFetch(userId, `/me/messages/${id}/attachments`);
+        for (const a of atts?.value ?? []) {
+          if (!a?.contentId || !a?.contentBytes) continue;
+          dto.body = dto.body.split(`cid:${a.contentId}`).join(`data:${a.contentType ?? 'image/png'};base64,${a.contentBytes}`);
+        }
+      } catch { /* leave cid: refs — the text still renders */ }
+    }
+    return dto;
   },
   async sendMail(userId: string, draft: EmailDraftInput, id?: string): Promise<EmailDTO> {
     if (id) {
@@ -313,7 +327,9 @@ export const graph = {
     }));
   },
   async listAttachments(userId: string, id: string): Promise<AttachmentMeta[]> {
-    const json = await graphFetch(userId, `/me/messages/${id}/attachments?$select=id,name,contentType,size`);
+    // isInline must be in the $select or the filter below sees `undefined` and keeps signature
+    // images (they belong in the rendered body, not the attachment chips).
+    const json = await graphFetch(userId, `/me/messages/${id}/attachments?$select=id,name,contentType,size,isInline`);
     return (json?.value ?? [])
       .filter((a: any) => !a.isInline)
       .map((a: any) => ({ id: a.id, name: a.name ?? 'attachment', contentType: a.contentType ?? 'application/octet-stream', size: a.size ?? 0 }));
