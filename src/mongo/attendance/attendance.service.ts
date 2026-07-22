@@ -78,22 +78,25 @@ function fmtTime(d: Date | null): string | null {
 export const GEOFENCE_EXIT_BUFFER_M = 50;
 
 // Pure decision for the geofence-exit drift guard: is this punch still provably at the office?
-// wifiVerified = connected to an office SSID (strongest signal); otherwise the punch's own fix must
-// be beyond radius + buffer of its nearest office. No offices configured / no coords → not provable.
+// STRICT presence = inside the fence AND on the office Wi-Fi (when the office has an SSID), so a
+// geofence-fired exit is rejected as drift ONLY while both legs still hold:
+//   - no fix + still on office Wi-Fi → drift (Wi-Fi anchors them on-site; GPS silence isn't leaving)
+//   - fix inside radius+buffer AND (office has no SSID OR still on office Wi-Fi) → drift
+//   - anything else → the exit stands (either leg provably broke).
 export function geofenceExitStillInside(
-  offices: { lat: number; lng: number; radius: number }[],
+  offices: { lat: number; lng: number; radius: number; wifiSsid?: string | null }[],
   coords: { lat: number; lng: number } | null | undefined,
   wifiVerified: boolean,
 ): boolean {
   if (!offices.length) return false;
-  if (wifiVerified) return true;
-  if (!coords) return false;
-  let best: { d: number; r: number } | null = null;
+  if (!coords) return wifiVerified;
+  let best: { d: number; r: number; ssid: string | null } | null = null;
   for (const o of offices) {
     const d = haversine(coords, { lat: o.lat, lng: o.lng });
-    if (!best || d < best.d) best = { d, r: o.radius };
+    if (!best || d < best.d) best = { d, r: o.radius, ssid: normalizeSsid(o.wifiSsid) };
   }
-  return !!best && best.d <= best.r + GEOFENCE_EXIT_BUFFER_M;
+  if (!best || best.d > best.r + GEOFENCE_EXIT_BUFFER_M) return false; // clearly beyond the fence
+  return best.ssid ? wifiVerified : true; // inside the fence: Wi-Fi leg must hold too when required
 }
 
 // Pure decision for who the team view covers (GET /attendance/team).
@@ -227,20 +230,25 @@ function mapMe(doc: AttendanceDoc | null) {
 }
 
 export const attendanceService = {
-  // Anti-spoofing gate for CHECK-IN: when offices are configured for the user, the punch must come
-  // either from the office Wi-Fi (device SSID matches the office's configured SSID) or from inside
-  // one of their geofences. Wi-Fi match alone is enough — indoor GPS is often off by more than the
-  // radius. If no office is configured yet, the punch is allowed unverified so attendance isn't bricked.
+  // Anti-spoofing gate for CHECK-IN — STRICT: the punch must come from INSIDE one of the user's
+  // office geofences AND, when that office has a Wi-Fi SSID configured, from that office's Wi-Fi.
+  // An office with no configured SSID stays geofence-only (so attendance isn't bricked before the
+  // network is set up). If no office is configured at all, the punch is allowed unverified.
   async assertAtOffice(userId: string, body: PunchBody): Promise<{ distance: number | null; wifiVerified: boolean }> {
     const offices = await officesForUser(userId);
     if (!offices.length) return { distance: null, wifiVerified: false }; // nothing to validate against yet
-    const near = body.coords ? nearestOffice(offices, body.coords) : null;
-    if (wifiVerifiedFor(offices, body.wifiSsid)) return { distance: near?.distance ?? null, wifiVerified: true };
     if (!body.coords) throw Forbidden('Location is required to record attendance — enable location and try again');
+    const near = nearestOffice(offices, body.coords);
     if (!near || !near.within) {
       throw Forbidden(near ? `You must be at the office to check in — you are ${near.distance} m away` : 'You are not at a registered office');
     }
-    return { distance: near.distance, wifiVerified: false };
+    // Wi-Fi leg: judge against the offices the user is actually INSIDE (overlapping fences count).
+    const reported = normalizeSsid(body.wifiSsid);
+    const insideOffices = offices.filter((o) => haversine(body.coords as Coords, { lat: o.lat, lng: o.lng }) <= o.radius);
+    const wifiVerified = insideOffices.some((o) => !!normalizeSsid(o.wifiSsid) && normalizeSsid(o.wifiSsid) === reported);
+    const wifiOk = insideOffices.some((o) => !normalizeSsid(o.wifiSsid) || normalizeSsid(o.wifiSsid) === reported);
+    if (!wifiOk) throw Forbidden('You must be on the office Wi-Fi to check in');
+    return { distance: near.distance, wifiVerified };
   },
 
   // POST /attendance/check-in — first punch of the day, OR a re-entry after a check-out.

@@ -22,22 +22,29 @@ const OFFICE = { lat: 19.1466, lng: 72.8293, radius: 100 };
 // ~0.00045° latitude ≈ 50 m; inside/outside points derived from the office anchor.
 const at = (dLatM: number) => ({ lat: OFFICE.lat + dLatM / 111_320, lng: OFFICE.lng });
 
-describe('geofenceExitStillInside (drift guard, pure)', () => {
-  it('fix inside the radius → still inside (the 82 m drift case)', () => {
+const WIFI_OFFICE = { ...OFFICE, wifiSsid: 'Office 5G' };
+
+describe('geofenceExitStillInside (drift guard, pure — strict Wi-Fi + geofence)', () => {
+  it('geofence-only office: fix inside the radius → still inside (the 82 m drift case)', () => {
     expect(geofenceExitStillInside([OFFICE], at(82), false)).toBe(true);
   });
-  it('fix within radius + buffer hysteresis → still inside', () => {
+  it('geofence-only office: fix within radius + buffer hysteresis → still inside', () => {
     expect(geofenceExitStillInside([OFFICE], at(OFFICE.radius + GEOFENCE_EXIT_BUFFER_M - 5), false)).toBe(true);
   });
-  it('fix clearly beyond radius + buffer → genuinely left', () => {
+  it('fix clearly beyond radius + buffer → genuinely left, even on office Wi-Fi (strict)', () => {
     expect(geofenceExitStillInside([OFFICE], at(OFFICE.radius + GEOFENCE_EXIT_BUFFER_M + 40), false)).toBe(false);
+    expect(geofenceExitStillInside([WIFI_OFFICE], at(OFFICE.radius + GEOFENCE_EXIT_BUFFER_M + 40), true)).toBe(false);
   });
-  it('office Wi-Fi match overrides any coords', () => {
-    expect(geofenceExitStillInside([OFFICE], at(500), true)).toBe(true);
+  it('SSID-configured office: drift fix inside needs the Wi-Fi leg too', () => {
+    expect(geofenceExitStillInside([WIFI_OFFICE], at(82), true)).toBe(true); // both legs hold → drift
+    expect(geofenceExitStillInside([WIFI_OFFICE], at(82), false)).toBe(false); // Wi-Fi broke → exit stands
   });
-  it('no offices / no coords → not provable, exit stands', () => {
+  it('no fix: office Wi-Fi anchors them on-site; without it the exit stands', () => {
+    expect(geofenceExitStillInside([WIFI_OFFICE], null, true)).toBe(true);
+    expect(geofenceExitStillInside([WIFI_OFFICE], null, false)).toBe(false);
+  });
+  it('no offices → not provable, exit stands', () => {
     expect(geofenceExitStillInside([], at(0), false)).toBe(false);
-    expect(geofenceExitStillInside([OFFICE], null, false)).toBe(false);
   });
 });
 
