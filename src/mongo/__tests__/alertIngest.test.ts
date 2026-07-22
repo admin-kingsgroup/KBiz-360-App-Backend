@@ -10,12 +10,16 @@ import {
 // Pure unit tests — no DB. The live ingest path is exercised by the smoke/e2e flow.
 
 describe('alert channel registry', () => {
-  it('registers the four external channels next to attendance', () => {
+  it('registers the external channels next to attendance', () => {
     expect(ALERT_CHANNELS.map((c) => c.id)).toEqual([
       'tk_att_bom', 'tk_att_amd', 'tk_fin_bom', 'tk_fin_amd', 'tk_crm_bom', 'tk_crm_amd',
+      'tk_si_bom', 'tk_si_amd', 'tk_si_nbo', 'tk_si_dar', 'tk_si_fbm',
     ]);
     expect(ALERT_GRANT_IDS).toEqual(
-      expect.arrayContaining(['BOM-accounts', 'AMD-accounts', 'BOM-crm', 'AMD-crm']),
+      expect.arrayContaining([
+        'BOM-accounts', 'AMD-accounts', 'BOM-crm', 'AMD-crm',
+        'BOM-sales', 'AMD-sales', 'NBO-sales', 'DAR-sales', 'FBM-sales',
+      ]),
     );
   });
 
@@ -24,7 +28,15 @@ describe('alert channel registry', () => {
     expect(channelForModuleBranch('accounts', 'AMD')?.id).toBe('tk_fin_amd');
     expect(channelForModuleBranch('crm', 'bom')?.id).toBe('tk_crm_bom'); // case-insensitive branch
     expect(channelForModuleBranch('crm', 'AMD')?.id).toBe('tk_crm_amd');
-    expect(channelForModuleBranch('finance', 'NBO')).toBeNull(); // no channel → emitters must skip
+    expect(channelForModuleBranch('finance', 'NBO')).toBeNull(); // Finance stays BOM/AMD → emitters must skip
+  });
+
+  it('maps sales to the per-branch Sales Invoice channels (all 5 branches)', () => {
+    expect(channelForModuleBranch('sales', 'BOM')?.id).toBe('tk_si_bom');
+    expect(channelForModuleBranch('sales', 'nbo')?.id).toBe('tk_si_nbo'); // case-insensitive branch
+    expect(channelForModuleBranch('sales-invoice', 'FBM')?.id).toBe('tk_si_fbm'); // ERP vocabulary alias
+    expect(channelForModuleBranch('sales', 'DAR')?.grant).toBe('DAR-sales');
+    expect(channelForModuleBranch('sales', 'TKHO')).toBeNull(); // no channel → emitters must skip
   });
 
   it('keeps channelForBranchCode pinned to ATTENDANCE channels (order-independent)', () => {
@@ -46,6 +58,7 @@ describe('alert channel registry', () => {
     expect(visibleChannelIds(false, [])).toEqual([]);
     expect(visibleChannelIds(false, ['BOM-accounts'])).toEqual(['tk_fin_bom']);
     expect(visibleChannelIds(false, ['BOM-accounts', 'BOM-crm', 'AMD-hr'])).toEqual(['tk_att_amd', 'tk_fin_bom', 'tk_crm_bom']);
+    expect(visibleChannelIds(false, ['NBO-sales', 'FBM-sales'])).toEqual(['tk_si_nbo', 'tk_si_fbm']);
     expect(visibleChannelIds(false, ['NBO-accounts', 'bogus'])).toEqual([]); // unknown grants grant nothing
   });
 });

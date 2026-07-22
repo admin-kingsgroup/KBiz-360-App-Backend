@@ -10,7 +10,7 @@ import { channelForModuleBranch } from './alertChannels';
 import { alertService } from './alert.service';
 
 // POST /api/alerts/ingest — external systems (KBiz Books ERP, CRM) push events into the
-// Finance/CRM branch channels. Authenticated by the ALERTS_INGEST_TOKEN shared secret, NOT a user
+// Finance/CRM/Sales-Invoice branch channels. Authenticated by the ALERTS_INGEST_TOKEN shared secret, NOT a user
 // JWT — which is why this lives on its own router mounted BEFORE the /api-wide chatRouter in
 // app.ts: chatRouter applies user-JWT requireAuth to every /api/* request that reaches it, and a
 // service call carries no user JWT. The channel is addressed by (module, branch); unknown pairs
@@ -65,7 +65,7 @@ alertsIngestRouter.post(
   requireServiceToken,
   ingestRateLimit,
   validate(z.object({
-    module: z.enum(['finance', 'accounts', 'crm']),
+    module: z.enum(['finance', 'accounts', 'crm', 'sales', 'sales-invoice']),
     branchCode: z.string().trim().min(2).max(10),
     title: z.string().trim().min(1).max(160),
     body: z.string().trim().max(2000).optional(),
@@ -100,7 +100,9 @@ alertsIngestRouter.post(
     }
 
     // Default context embeds the branch code — the app buckets events into branch sections by it.
-    const label = channel.module === 'accounts' ? 'Finance' : channel.module.toUpperCase();
+    const label = channel.module === 'accounts' ? 'Finance'
+      : channel.module === 'sales' ? 'Sales Invoice'
+        : channel.module.toUpperCase();
     await alertService.record(channel.id, {
       source,
       title,

@@ -2,11 +2,11 @@
 // attendance emitter and the external ERP/CRM ingest route. Channel ids match the frontend's pulse
 // channel ids; `grant` uses the app's existing access-grant format `${branchCode}-${module}` (see
 // Frontend makeAccessFilters.alertOK). `module` uses the frontend ModuleKey vocabulary
-// ('hr' = attendance, 'accounts' = Finance/KBiz Books, 'crm' = CRM).
+// ('hr' = attendance, 'accounts' = Finance/KBiz Books, 'crm' = CRM, 'sales' = ERP sales invoices).
 export interface AlertChannelDef {
   id: string;
-  branchCode: string; // CRM branch code the channel covers (AMD/BOM)
-  module: 'hr' | 'accounts' | 'crm';
+  branchCode: string; // ERP/CRM branch code the channel covers (BOM/AMD/NBO/DAR/FBM)
+  module: 'hr' | 'accounts' | 'crm' | 'sales';
   grant: string; // per-user grant string a super-admin assigns
   name: string;
 }
@@ -20,14 +20,22 @@ export const ALERT_CHANNELS: AlertChannelDef[] = [
   // Fed live by the CRM backend via POST /api/alerts/ingest.
   { id: 'tk_crm_bom', branchCode: 'BOM', module: 'crm', grant: 'BOM-crm', name: 'CRM - BOM' },
   { id: 'tk_crm_amd', branchCode: 'AMD', module: 'crm', grant: 'AMD-crm', name: 'CRM - AMD' },
+  // Sales Invoice — the ERP pushes the approved sale invoice PDF here (module 'sales'), one
+  // channel per live Books branch. All 5 branches, unlike Finance/CRM which are BOM/AMD only.
+  { id: 'tk_si_bom', branchCode: 'BOM', module: 'sales', grant: 'BOM-sales', name: 'Sales Invoice - BOM' },
+  { id: 'tk_si_amd', branchCode: 'AMD', module: 'sales', grant: 'AMD-sales', name: 'Sales Invoice - AMD' },
+  { id: 'tk_si_nbo', branchCode: 'NBO', module: 'sales', grant: 'NBO-sales', name: 'Sales Invoice - NBO' },
+  { id: 'tk_si_dar', branchCode: 'DAR', module: 'sales', grant: 'DAR-sales', name: 'Sales Invoice - DAR' },
+  { id: 'tk_si_fbm', branchCode: 'FBM', module: 'sales', grant: 'FBM-sales', name: 'Sales Invoice - FBM' },
 ];
 
 export const ALERT_GRANT_IDS: string[] = ALERT_CHANNELS.map((c) => c.grant);
 
 // Ingest-facing lookup: external systems address a channel by (module, branchCode). The ingest
-// route also accepts 'finance' as an alias for 'accounts' (the ERP's own vocabulary).
+// route also accepts 'finance' as an alias for 'accounts' and 'sales-invoice' for 'sales'
+// (the ERP's own vocabulary).
 export function channelForModuleBranch(module: string, branchCode: string): AlertChannelDef | null {
-  const mod = module === 'finance' ? 'accounts' : module;
+  const mod = module === 'finance' ? 'accounts' : module === 'sales-invoice' ? 'sales' : module;
   return (
     ALERT_CHANNELS.find(
       (c) => c.module === mod && c.branchCode.toLowerCase() === (branchCode ?? '').toLowerCase(),
