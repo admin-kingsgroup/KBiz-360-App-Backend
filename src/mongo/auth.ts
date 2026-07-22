@@ -11,6 +11,11 @@ import { alertGrants } from './alerts/alertGrants';
 
 const sha256 = (s: string): string => crypto.createHash('sha256').update(s).digest('hex');
 
+// How long a ROTATED refresh token stays usable (see `refresh`). Long enough to cover an app
+// killed before it persisted the new pair — even if relaunched days later — short enough that a
+// leaked old token doesn't live to its full TTL.
+const ROTATION_GRACE_MS = 48 * 60 * 60 * 1000;
+
 // App-owned session store (in kb360_app — NEVER the CRM). Refresh tokens kept hashed.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sessions = () => appDb().collection('app_sessions') as any;
@@ -112,7 +117,15 @@ export const mongoAuth = {
     if (await appAccess.isDisabled(String(claims.sub))) throw Unauthorized('Access disabled');
     if (user.access?.app !== true) throw Unauthorized('Access disabled');
     const access = await accessService.accessForUser(user);
-    await sessions().updateOne({ _id: stored._id }, { $set: { revokedAt: new Date() } });
+    // Rotate with a GRACE WINDOW instead of instant revocation. The mobile client persists the
+    // new pair to AsyncStorage *after* the network call; if the app is killed in between, the
+    // next launch replays the OLD refresh token — instant revocation made that a forced logout
+    // (the "randomly logged out" bug). The old token instead keeps working for a short overlap
+    // and dies on its own. Logout and revokeAllSessions still hard-revoke immediately.
+    const graceUntil = new Date(Date.now() + ROTATION_GRACE_MS);
+    if (new Date(stored.expiresAt).getTime() > graceUntil.getTime()) {
+      await sessions().updateOne({ _id: stored._id }, { $set: { expiresAt: graceUntil, rotatedAt: new Date() } });
+    }
     return issueTokens(access.userId, access.roleName);
   },
 

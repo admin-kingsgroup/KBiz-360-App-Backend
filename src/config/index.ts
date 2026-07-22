@@ -41,7 +41,9 @@ export const config: AppConfig = {
     accessSecret: process.env.JWT_ACCESS_SECRET ?? 'change-me-access',
     refreshSecret: process.env.JWT_REFRESH_SECRET ?? 'change-me-refresh',
     accessTtl: process.env.JWT_ACCESS_TTL ?? '900s',
-    refreshTtl: process.env.JWT_REFRESH_TTL ?? '30d',
+    // Sliding session: every app use rotates the pair with a fresh TTL, so this is INACTIVITY
+    // time before a forced re-login — not an absolute session cap. A year ≈ "until manual logout".
+    refreshTtl: process.env.JWT_REFRESH_TTL ?? '365d',
   },
   redis: {
     host: process.env.REDIS_HOST ?? 'localhost',
