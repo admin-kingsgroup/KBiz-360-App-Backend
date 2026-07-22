@@ -1,5 +1,6 @@
 import { BadRequest } from '../common/errors';
 import { msOAuth } from './oauth';
+import { SIG_LOGO_CID, SIG_LOGO_CONTENT_TYPE, SIG_LOGO_B64 } from './sigLogo';
 
 // Microsoft Graph proxy. Maps Graph messages → the app's Email shape (see Frontend src/types/email).
 export type EmailFolder = 'inbox' | 'sent' | 'drafts' | 'deleted' | 'spam';
@@ -121,6 +122,24 @@ async function addAttachments(userId: string, messageId: string, atts?: OutAttac
   for (const a of atts ?? []) await addAttachment(userId, messageId, a);
 }
 
+// The app's signature HTML references the Travkings logo as `cid:tk-sig-logo`. Attach the logo
+// bytes INLINE (isInline + contentId) whenever an outgoing body carries that reference, so the
+// signature banner renders in every recipient's client — same mechanism Outlook itself uses.
+async function attachSignatureLogo(userId: string, messageId: string, body?: string): Promise<void> {
+  if (!body?.includes(`cid:${SIG_LOGO_CID}`)) return;
+  await graphFetch(userId, `/me/messages/${messageId}/attachments`, {
+    method: 'POST',
+    body: JSON.stringify({
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: 'travkings-logo.png',
+      contentType: SIG_LOGO_CONTENT_TYPE,
+      contentBytes: SIG_LOGO_B64,
+      isInline: true,
+      contentId: SIG_LOGO_CID,
+    }),
+  });
+}
+
 // Map a user's well-known folder ids → our EmailFolder (for stamping mailbox-wide search results).
 // Cached per user — well-known folder ids are stable for the life of the mailbox.
 const wkFolderCache = new Map<string, Record<string, EmailFolder>>();
@@ -187,12 +206,14 @@ export const graph = {
       // removes it from Drafts — no stray draft copy left behind).
       await graphFetch(userId, `/me/messages/${id}`, { method: 'PATCH', body: JSON.stringify(buildMessage(draft)) });
       await addAttachments(userId, id, draft.attachments);
+      await attachSignatureLogo(userId, id, draft.body);
       await graphFetch(userId, `/me/messages/${id}/send`, { method: 'POST' });
       return mapMessage({ id, subject: draft.subject, toRecipients: parseAddrs(draft.to), sentDateTime: new Date().toISOString(), isRead: true }, 'sent');
     }
     // create draft → attach files → send: gives a real id and lands in Sent Items.
     const created = await graphFetch(userId, '/me/messages', { method: 'POST', body: JSON.stringify(buildMessage(draft)) });
     await addAttachments(userId, created.id, draft.attachments);
+    await attachSignatureLogo(userId, created.id, draft.body);
     await graphFetch(userId, `/me/messages/${created.id}/send`, { method: 'POST' });
     return mapMessage({ ...created, sentDateTime: new Date().toISOString() }, 'sent');
   },
