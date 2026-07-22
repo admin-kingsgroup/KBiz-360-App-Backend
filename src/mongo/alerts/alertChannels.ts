@@ -2,11 +2,12 @@
 // attendance emitter and the external ERP/CRM ingest route. Channel ids match the frontend's pulse
 // channel ids; `grant` uses the app's existing access-grant format `${branchCode}-${module}` (see
 // Frontend makeAccessFilters.alertOK). `module` uses the frontend ModuleKey vocabulary
-// ('hr' = attendance, 'accounts' = Finance/KBiz Books, 'crm' = CRM, 'sales' = ERP sales invoices).
+// ('hr' = attendance, 'accounts' = Finance/KBiz Books, 'crm' = CRM, 'sales' = ERP sales invoices,
+// 'receivables' = Clients Receivables / Onboarding, 'payables' = Supplier Payables / Onboarding).
 export interface AlertChannelDef {
   id: string;
   branchCode: string; // ERP/CRM branch code the channel covers (BOM/AMD/NBO/DAR/FBM)
-  module: 'hr' | 'accounts' | 'crm' | 'sales';
+  module: 'hr' | 'accounts' | 'crm' | 'sales' | 'receivables' | 'payables';
   grant: string; // per-user grant string a super-admin assigns
   name: string;
 }
@@ -27,6 +28,19 @@ export const ALERT_CHANNELS: AlertChannelDef[] = [
   { id: 'tk_si_nbo', branchCode: 'NBO', module: 'sales', grant: 'NBO-sales', name: 'Sales Invoice - NBO' },
   { id: 'tk_si_dar', branchCode: 'DAR', module: 'sales', grant: 'DAR-sales', name: 'Sales Invoice - DAR' },
   { id: 'tk_si_fbm', branchCode: 'FBM', module: 'sales', grant: 'FBM-sales', name: 'Sales Invoice - FBM' },
+  // Clients Receivables / Onboarding — the ERP's daily 11:00 IST Receivables "Ageing & Settlement"
+  // PDF (plus the weekly overdue nudge) lands here per branch.
+  { id: 'tk_ar_bom', branchCode: 'BOM', module: 'receivables', grant: 'BOM-receivables', name: 'Clients Receivables - BOM' },
+  { id: 'tk_ar_amd', branchCode: 'AMD', module: 'receivables', grant: 'AMD-receivables', name: 'Clients Receivables - AMD' },
+  { id: 'tk_ar_nbo', branchCode: 'NBO', module: 'receivables', grant: 'NBO-receivables', name: 'Clients Receivables - NBO' },
+  { id: 'tk_ar_dar', branchCode: 'DAR', module: 'receivables', grant: 'DAR-receivables', name: 'Clients Receivables - DAR' },
+  { id: 'tk_ar_fbm', branchCode: 'FBM', module: 'receivables', grant: 'FBM-receivables', name: 'Clients Receivables - FBM' },
+  // Supplier Payables / Onboarding — the ERP's daily Payables "Ageing & Settlement" PDF per branch.
+  { id: 'tk_ap_bom', branchCode: 'BOM', module: 'payables', grant: 'BOM-payables', name: 'Supplier Payables - BOM' },
+  { id: 'tk_ap_amd', branchCode: 'AMD', module: 'payables', grant: 'AMD-payables', name: 'Supplier Payables - AMD' },
+  { id: 'tk_ap_nbo', branchCode: 'NBO', module: 'payables', grant: 'NBO-payables', name: 'Supplier Payables - NBO' },
+  { id: 'tk_ap_dar', branchCode: 'DAR', module: 'payables', grant: 'DAR-payables', name: 'Supplier Payables - DAR' },
+  { id: 'tk_ap_fbm', branchCode: 'FBM', module: 'payables', grant: 'FBM-payables', name: 'Supplier Payables - FBM' },
 ];
 
 export const ALERT_GRANT_IDS: string[] = ALERT_CHANNELS.map((c) => c.grant);

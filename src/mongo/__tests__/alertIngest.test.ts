@@ -14,11 +14,15 @@ describe('alert channel registry', () => {
     expect(ALERT_CHANNELS.map((c) => c.id)).toEqual([
       'tk_att_bom', 'tk_att_amd', 'tk_fin_bom', 'tk_fin_amd', 'tk_crm_bom', 'tk_crm_amd',
       'tk_si_bom', 'tk_si_amd', 'tk_si_nbo', 'tk_si_dar', 'tk_si_fbm',
+      'tk_ar_bom', 'tk_ar_amd', 'tk_ar_nbo', 'tk_ar_dar', 'tk_ar_fbm',
+      'tk_ap_bom', 'tk_ap_amd', 'tk_ap_nbo', 'tk_ap_dar', 'tk_ap_fbm',
     ]);
     expect(ALERT_GRANT_IDS).toEqual(
       expect.arrayContaining([
         'BOM-accounts', 'AMD-accounts', 'BOM-crm', 'AMD-crm',
         'BOM-sales', 'AMD-sales', 'NBO-sales', 'DAR-sales', 'FBM-sales',
+        'BOM-receivables', 'NBO-receivables', 'FBM-receivables',
+        'BOM-payables', 'DAR-payables', 'FBM-payables',
       ]),
     );
   });
@@ -37,6 +41,14 @@ describe('alert channel registry', () => {
     expect(channelForModuleBranch('sales-invoice', 'FBM')?.id).toBe('tk_si_fbm'); // ERP vocabulary alias
     expect(channelForModuleBranch('sales', 'DAR')?.grant).toBe('DAR-sales');
     expect(channelForModuleBranch('sales', 'TKHO')).toBeNull(); // no channel → emitters must skip
+  });
+
+  it('maps receivables/payables to the AR/AP channels (all 5 branches, independent families)', () => {
+    expect(channelForModuleBranch('receivables', 'BOM')?.id).toBe('tk_ar_bom');
+    expect(channelForModuleBranch('receivables', 'dar')?.id).toBe('tk_ar_dar');
+    expect(channelForModuleBranch('payables', 'NBO')?.id).toBe('tk_ap_nbo');
+    expect(channelForModuleBranch('payables', 'FBM')?.grant).toBe('FBM-payables');
+    expect(channelForModuleBranch('receivables', 'TKHO')).toBeNull();
   });
 
   it('keeps channelForBranchCode pinned to ATTENDANCE channels (order-independent)', () => {
