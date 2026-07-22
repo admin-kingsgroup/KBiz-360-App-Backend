@@ -17,6 +17,7 @@ describe('alert channel registry', () => {
       'tk_ar_bom', 'tk_ar_amd', 'tk_ar_nbo', 'tk_ar_dar', 'tk_ar_fbm',
       'tk_ap_bom', 'tk_ap_amd', 'tk_ap_nbo', 'tk_ap_dar', 'tk_ap_fbm',
       'tk_bkg_bom', 'tk_bkg_amd', 'tk_bkg_nbo', 'tk_bkg_dar', 'tk_bkg_fbm',
+      'tk_acc_bom', 'tk_acc_amd', 'tk_acc_nbo', 'tk_acc_dar', 'tk_acc_fbm',
     ]);
     expect(ALERT_GRANT_IDS).toEqual(
       expect.arrayContaining([
@@ -25,6 +26,7 @@ describe('alert channel registry', () => {
         'BOM-receivables', 'NBO-receivables', 'FBM-receivables',
         'BOM-payables', 'DAR-payables', 'FBM-payables',
         'BOM-bookings', 'NBO-bookings', 'FBM-bookings',
+        'BOM-acct', 'DAR-acct', 'FBM-acct',
       ]),
     );
   });
@@ -58,6 +60,14 @@ describe('alert channel registry', () => {
     expect(channelForModuleBranch('bookings', 'nbo')?.id).toBe('tk_bkg_nbo');
     expect(channelForModuleBranch('bookings', 'FBM')?.grant).toBe('FBM-bookings');
     expect(channelForModuleBranch('bookings', 'TKHO')).toBeNull();
+  });
+
+  it("maps acct to the Accounts channels, distinct from the legacy 'accounts' Finance family", () => {
+    expect(channelForModuleBranch('acct', 'BOM')?.id).toBe('tk_acc_bom');
+    expect(channelForModuleBranch('acct', 'dar')?.id).toBe('tk_acc_dar');
+    expect(channelForModuleBranch('acct', 'NBO')?.grant).toBe('NBO-acct');
+    expect(channelForModuleBranch('accounts', 'BOM')?.id).toBe('tk_fin_bom'); // Finance untouched
+    expect(channelForModuleBranch('acct', 'TKHO')).toBeNull();
   });
 
   it('keeps channelForBranchCode pinned to ATTENDANCE channels (order-independent)', () => {

@@ -4,11 +4,12 @@
 // Frontend makeAccessFilters.alertOK). `module` uses the frontend ModuleKey vocabulary
 // ('hr' = attendance, 'accounts' = Finance/KBiz Books, 'crm' = CRM, 'sales' = ERP sales invoices,
 // 'receivables' = Clients Receivables / Onboarding, 'payables' = Supplier Payables / Onboarding,
-// 'bookings' = SO/PO/GP / INB approval GP summaries).
+// 'bookings' = SO/PO/GP / INB approval GP summaries, 'acct' = Accounts — the finance-voucher
+// transaction feed; NOT 'accounts', which the legacy Finance BOM/AMD channels own).
 export interface AlertChannelDef {
   id: string;
   branchCode: string; // ERP/CRM branch code the channel covers (BOM/AMD/NBO/DAR/FBM)
-  module: 'hr' | 'accounts' | 'crm' | 'sales' | 'receivables' | 'payables' | 'bookings';
+  module: 'hr' | 'accounts' | 'crm' | 'sales' | 'receivables' | 'payables' | 'bookings' | 'acct';
   grant: string; // per-user grant string a super-admin assigns
   name: string;
 }
@@ -49,6 +50,13 @@ export const ALERT_CHANNELS: AlertChannelDef[] = [
   { id: 'tk_bkg_nbo', branchCode: 'NBO', module: 'bookings', grant: 'NBO-bookings', name: 'SO/PO/GP / INB - NBO' },
   { id: 'tk_bkg_dar', branchCode: 'DAR', module: 'bookings', grant: 'DAR-bookings', name: 'SO/PO/GP / INB - DAR' },
   { id: 'tk_bkg_fbm', branchCode: 'FBM', module: 'bookings', grant: 'FBM-bookings', name: 'SO/PO/GP / INB - FBM' },
+  // Accounts — every posted finance voucher (receipt/payment/contra/journal/notes/refunds/
+  // memos): how much was received or sent, per branch.
+  { id: 'tk_acc_bom', branchCode: 'BOM', module: 'acct', grant: 'BOM-acct', name: 'Accounts - BOM' },
+  { id: 'tk_acc_amd', branchCode: 'AMD', module: 'acct', grant: 'AMD-acct', name: 'Accounts - AMD' },
+  { id: 'tk_acc_nbo', branchCode: 'NBO', module: 'acct', grant: 'NBO-acct', name: 'Accounts - NBO' },
+  { id: 'tk_acc_dar', branchCode: 'DAR', module: 'acct', grant: 'DAR-acct', name: 'Accounts - DAR' },
+  { id: 'tk_acc_fbm', branchCode: 'FBM', module: 'acct', grant: 'FBM-acct', name: 'Accounts - FBM' },
 ];
 
 export const ALERT_GRANT_IDS: string[] = ALERT_CHANNELS.map((c) => c.grant);
