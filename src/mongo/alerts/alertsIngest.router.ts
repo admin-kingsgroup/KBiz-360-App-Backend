@@ -93,7 +93,17 @@ alertsIngestRouter.post(
       // Dedicated S3 prefix: invoice PDFs carry customer GSTIN/amounts — a bucket policy can
       // make alert-attachments/* private (served via the auth-gated signed-URL endpoint)
       // without touching the public chat-media uploads/* prefix.
-      const saved = await getStorage().save({ buffer, filename, mimeType: 'application/pdf', prefix: 'alert-attachments' });
+      let saved;
+      try {
+        saved = await getStorage().save({ buffer, filename, mimeType: 'application/pdf', prefix: 'alert-attachments' });
+      } catch (e) {
+        // The private prefix needs the bucket user to hold s3:Put/Get/DeleteObject on
+        // alert-attachments/* — until IAM grants that, store under the public-but-unguessable
+        // uploads/ prefix (the chat-media model, where these PDFs lived pre-2026-07-16) instead
+        // of dropping the attachment. Once IAM is fixed the primary path takes over silently.
+        console.error('[alerts-ingest] alert-attachments save failed — falling back to uploads/:', (e as Error).message);
+        saved = await getStorage().save({ buffer, filename, mimeType: 'application/pdf' });
+      }
       // key is persisted on the event doc so a future reaper can delete the stored file
       // when the event TTL-expires (the DTO exposes only {name,url}).
       stored = { name: filename, url: saved.url, key: saved.key };

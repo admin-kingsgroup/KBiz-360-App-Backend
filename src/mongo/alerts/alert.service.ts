@@ -197,7 +197,10 @@ export const alertService = {
       if (!channelIds.has(d.channelId) && !isAddressedAnnouncement) return null;
     }
     const name = d.attachment.name ?? 'document.pdf';
-    if (d.attachment.key && config.storage.driver === 's3') {
+    // uploads/* objects are public (chat-media model; also the ingest's fallback prefix when IAM
+    // denies alert-attachments/*) — their stored URL is the reliable one, and a presigned GET
+    // signed by a user without GetObject there would 403 at fetch time. Sign only private keys.
+    if (d.attachment.key && config.storage.driver === 's3' && !String(d.attachment.key).startsWith('uploads/')) {
       try {
         return { url: await getStorage().signedUrl(String(d.attachment.key), 300), name };
       } catch { /* fall back to the stored URL below */ }
