@@ -255,9 +255,25 @@ export const graph = {
     const q = query.replace(/"/g, '').trim();
     if (!q) return [];
     const idMap = await folderIdMap(userId);
-    const url = `/me/messages?$search=${encodeURIComponent(`"${q}"`)}&$select=${SELECT},parentFolderId&$top=50`;
-    const json = await graphFetch(userId, url);
-    return (json?.value ?? []).map((m: any) => mapMessage(m, idMap[m.parentFolderId] ?? 'inbox'));
+    let results: any[] = [];
+    try {
+      const url = `/me/messages?$search=${encodeURIComponent(`"${q}"`)}&$select=${SELECT},parentFolderId&$top=50`;
+      results = (await graphFetch(userId, url))?.value ?? [];
+    } catch { /* $search unavailable/errored — the prefix fallback below still answers */ }
+    // Contact-style prefix fallback: $search is whole-word full-text, so a partial name ("suj" for
+    // Sujeet) or a quiet $search failure returns nothing. $filter startswith on the sender's
+    // name/address + contains on subject catches those. (No $orderby — Graph rejects it on these
+    // filtered properties — so sort by date here.)
+    if (!results.length) {
+      const esc = q.replace(/'/g, "''");
+      const filter = `startswith(from/emailAddress/name,'${esc}') or startswith(from/emailAddress/address,'${esc}') or contains(subject,'${esc}')`;
+      const url = `/me/messages?$filter=${encodeURIComponent(filter)}&$select=${SELECT},parentFolderId&$top=50`;
+      try {
+        results = ((await graphFetch(userId, url))?.value ?? [])
+          .sort((a: any, b: any) => String(b.receivedDateTime ?? '').localeCompare(String(a.receivedDateTime ?? '')));
+      } catch { /* fall through with whatever $search produced */ }
+    }
+    return results.map((m: any) => mapMessage(m, idMap[m.parentFolderId] ?? 'inbox'));
   },
   // Mark every unread message in a folder as read (Graph has no bulk endpoint, so we page through the
   // unread ones and PATCH them). Capped to avoid a runaway loop on huge mailboxes.
