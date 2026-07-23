@@ -164,6 +164,21 @@ async function folderIdMap(userId: string): Promise<Record<string, EmailFolder>>
   return map;
 }
 
+// Ids of the built-in system folders (Inbox, Sent, Archive, …) — used to exclude them from the
+// user-folder list so only folders the user created remain. Cached per user (ids are stable).
+const DEFAULT_WK = ['inbox', 'sentitems', 'drafts', 'deleteditems', 'junkemail', 'archive', 'outbox', 'conversationhistory', 'clutter', 'scheduled'];
+const defaultIdCache = new Map<string, Set<string>>();
+async function defaultFolderIds(userId: string): Promise<Set<string>> {
+  const cached = defaultIdCache.get(userId);
+  if (cached) return cached;
+  const ids = await Promise.all(DEFAULT_WK.map(async (wk) => {
+    try { return (await graphFetch(userId, `/me/mailFolders/${wk}?$select=id`))?.id as string | undefined; } catch { return undefined; }
+  }));
+  const set = new Set(ids.filter((x): x is string => !!x));
+  defaultIdCache.set(userId, set);
+  return set;
+}
+
 // Used during connect, with a freshly-exchanged token (before the account is stored).
 export async function fetchMe(accessToken: string): Promise<{ id: string; email: string; name: string }> {
   const resp = await fetch(`${GRAPH}/me?$select=id,mail,userPrincipalName,displayName`, { headers: { Authorization: `Bearer ${accessToken}` } });
@@ -243,6 +258,21 @@ export const graph = {
     return { id: j?.id ?? id };
   },
   // ── custom (smart) folders ──
+  // Every folder the user created in Outlook (top level + under Inbox, the two places Outlook
+  // creates them), with live counts. System folders are excluded by id — displayName can't be
+  // trusted (it is localized per mailbox).
+  async listMailFolders(userId: string): Promise<{ id: string; name: string; total: number; unread: number }[]> {
+    const sel = '$select=id,displayName,totalItemCount,unreadItemCount&$top=100';
+    const [top, inboxKids, defaults] = await Promise.all([
+      graphFetch(userId, `/me/mailFolders?${sel}`),
+      graphFetch(userId, `/me/mailFolders/inbox/childFolders?${sel}`).catch(() => null),
+      defaultFolderIds(userId),
+    ]);
+    const all: any[] = [...(top?.value ?? []), ...(inboxKids?.value ?? [])];
+    return all
+      .filter((f) => f?.id && !defaults.has(f.id))
+      .map((f) => ({ id: f.id, name: f.displayName ?? 'Folder', total: f.totalItemCount ?? 0, unread: f.unreadItemCount ?? 0 }));
+  },
   // Create a real Outlook mail folder; returns its id (used as the smart folder's destination).
   async createFolder(userId: string, displayName: string): Promise<{ id: string; displayName: string }> {
     const j = await graphFetch(userId, '/me/mailFolders', { method: 'POST', body: JSON.stringify({ displayName }) });
@@ -256,8 +286,10 @@ export const graph = {
     const json = await graphFetch(userId, `/me/mailFolders/${folderId}/messages${q}`);
     return (json?.value ?? []).map((m: any) => mapMessage(m, 'inbox'));
   },
-  async moveToFolderId(userId: string, id: string, folderId: string): Promise<void> {
-    await graphFetch(userId, `/me/messages/${id}/move`, { method: 'POST', body: JSON.stringify({ destinationId: folderId }) });
+  // Returns the moved copy's NEW id (Graph re-keys on move) so clients can re-address the message.
+  async moveToFolderId(userId: string, id: string, folderId: string): Promise<{ id: string }> {
+    const j = await graphFetch(userId, `/me/messages/${id}/move`, { method: 'POST', body: JSON.stringify({ destinationId: folderId }) });
+    return { id: j?.id ?? id };
   },
   // One-time: move existing inbox mail whose sender matches into the folder. Capped to avoid runaway.
   async backfillIntoFolder(userId: string, folderId: string, matches: string[]): Promise<number> {

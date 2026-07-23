@@ -62,6 +62,10 @@ emailRouter.post('/email/send', validate(draftSchema), asyncHandler(async (req, 
 emailRouter.post('/email/drafts', validate(draftSchema), asyncHandler(async (req, res) => res.status(201).json(await graph.saveDraft(uid(req), req.body, req.body.id))));
 // Returns { id: newId } — Graph re-keys a message on move; the client must adopt the new id.
 emailRouter.post('/email/messages/:id/move', validate(z.object({ folder: z.string() })), asyncHandler(async (req, res) => { res.json(await graph.move(uid(req), req.params.id, asFolder(req.body.folder))); }));
+// Move into an arbitrary Outlook folder by its Graph id (file a message into a user folder).
+emailRouter.post('/email/messages/:id/move-to', validate(z.object({ folderId: z.string().min(1) })), asyncHandler(async (req, res) => {
+  res.json(await graph.moveToFolderId(uid(req), req.params.id, req.body.folderId));
+}));
 emailRouter.post('/email/messages/:id/read', validate(z.object({ read: z.boolean() })), asyncHandler(async (req, res) => { await graph.setRead(uid(req), req.params.id, req.body.read); res.status(204).send(); }));
 // POST /api/email/mark-all-read — mark every unread message in a folder as read.
 emailRouter.post('/email/mark-all-read', validate(z.object({ folder: z.string() })), asyncHandler(async (req, res) => {
@@ -92,6 +96,14 @@ emailRouter.get('/email/folders/:id/messages', asyncHandler(async (req, res) => 
   const sf = await smartFolderRepo.byId(uid(req), req.params.id);
   if (!sf) throw BadRequest('Folder not found');
   res.json(await graph.listFolderMessages(uid(req), sf.graphFolderId, Number(req.query.skip) || 0));
+}));
+
+// ── real Outlook folders (created by the user in Outlook, or by smart folders) — BEFORE /:folder ──
+// GET /api/email/outlook-folders — every user-created folder with live message/unread counts.
+emailRouter.get('/email/outlook-folders', asyncHandler(async (req, res) => res.json(await graph.listMailFolders(uid(req)))));
+// GET /api/email/outlook-folders/:id/messages?skip=N — messages in that folder (paged).
+emailRouter.get('/email/outlook-folders/:id/messages', asyncHandler(async (req, res) => {
+  res.json(await graph.listFolderMessages(uid(req), req.params.id, Number(req.query.skip) || 0));
 }));
 
 // GET /api/email/:folder?skip=N — inbox | sent | drafts | deleted (keep LAST). skip drives paging.
