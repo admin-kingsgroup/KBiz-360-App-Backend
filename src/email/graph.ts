@@ -1,5 +1,6 @@
 import { BadRequest } from '../common/errors';
 import { msOAuth } from './oauth';
+import { rewriteRemoteImages } from './imageProxy';
 import { SIG_LOGO_CID, SIG_LOGO_CONTENT_TYPE, SIG_LOGO_B64 } from './sigLogo';
 
 // Microsoft Graph proxy. Maps Graph messages → the app's Email shape (see Frontend src/types/email).
@@ -198,6 +199,11 @@ export const graph = {
         }
       } catch { /* leave cid: refs — the text still renders */ }
     }
+    // Remote images go through our signed proxy (see imageProxy.ts): senders that serve images
+    // with Cross-Origin-Resource-Policy: same-origin (e.g. claude.ai) make browsers refuse to
+    // embed them in any other origin — the proxy re-serves the bytes from OUR origin, exactly
+    // like Outlook's and Gmail's image proxies.
+    if (dto.bodyType === 'html') dto.body = rewriteRemoteImages(dto.body);
     return dto;
   },
   async sendMail(userId: string, draft: EmailDraftInput, id?: string): Promise<EmailDTO> {

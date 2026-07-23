@@ -6,10 +6,14 @@ import { Unauthorized, BadRequest } from '../common/errors';
 import { requireAuth } from '../mongo/middleware';
 import { msOAuth } from './oauth';
 import { fetchMe, graph, type EmailFolder } from './graph';
+import { proxyEmailImage } from './imageProxy';
 import { emailAccountRepo } from './account.model';
 import { smartFolderRepo } from './smartFolder.model';
 
 export const emailRouter: Router = Router();
+// Signed image proxy — MUST sit before requireAuth: <img> tags in the mail WebView cannot attach
+// the JWT. Auth is the HMAC signature minted server-side when the body was rewritten.
+emailRouter.get('/email/img', asyncHandler(proxyEmailImage));
 emailRouter.use(requireAuth);
 const uid = (req: { auth?: { userId: string } }): string => { if (!req.auth) throw Unauthorized(); return req.auth.userId; };
 const FOLDERS = new Set<EmailFolder>(['inbox', 'sent', 'drafts', 'deleted', 'spam']);
