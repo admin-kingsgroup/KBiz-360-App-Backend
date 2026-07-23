@@ -13,6 +13,8 @@ import { alertsIngestRouter } from './alerts/alertsIngest.router';
 import { clientErrorsRouter } from './clientErrors.router';
 import { uploadsRouter } from './uploads.router';
 import { emailRouter } from '../email/email.router';
+import { proxyEmailImage } from '../email/imageProxy';
+import { asyncHandler } from '../common/asyncHandler';
 import { config } from '../config';
 import { errorHandler, NotFound } from '../common/errors';
 import { PRIVACY_HTML } from './privacy';
@@ -30,6 +32,9 @@ export function createMongoApp(): Express {
   app.use('/api/auth', mongoAuthRouter);
   app.use('/api/alerts', alertsIngestRouter); // ERP/CRM service-token ingest — MUST precede chatRouter's /api-wide requireAuth
   app.use('/api/client-errors', clientErrorsRouter); // crash reports (public, rate-limited) — also pre-chatRouter
+  // Signed email-image proxy — also pre-chatRouter: <img> tags in the mail WebView cannot attach
+  // the JWT; the HMAC in the URL (minted server-side in getMessage) is the auth.
+  app.get('/api/email/img', asyncHandler(proxyEmailImage));
   app.use('/api/admin', adminRouter); // super-admin: app-access toggles
   app.use('/api', directoryRouter); // /users, /companies, /branches, /departments
   app.use('/api', chatRouter); // /conversations, /messages, /groups
