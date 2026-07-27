@@ -20,7 +20,10 @@ export interface AppConfig {
   msEmail: { clientId: string; tenantId: string; tokenKey: string };
   // Shared secret the ERP/CRM backends present to POST /api/alerts/ingest. Unset = ingest disabled.
   alerts: { ingestToken?: string };
-  mongo: { uri: string; crmDb: string; appDb: string };
+  // uri = the app connection (readWrite kb360_app, read-only CRM under least-privilege). crmWriteUri
+  // (optional) = a separately-credentialed connection used ONLY for sanctioned CRM provisioning writes;
+  // unset falls back to `uri`. See DB_LEAST_PRIVILEGE.md.
+  mongo: { uri: string; crmDb: string; appDb: string; crmWriteUri: string };
   // Audio-calling: WebRTC ICE servers (STUN always, TURN optional) + ring timeout. Creds from env only.
   calls: {
     stunUrl: string;
@@ -93,6 +96,9 @@ export const config: AppConfig = {
     uri: process.env.MONGODB_URI ?? '',
     crmDb: process.env.CRM_DB ?? 'test', // READ-ONLY source (CRM/ERP)
     appDb: process.env.APP_DB ?? 'kb360_app', // app's own writes (isolated)
+    // Optional dedicated write connection for CRM provisioning (see DB_LEAST_PRIVILEGE.md); unset =
+    // fall back to `uri` (backward compatible).
+    crmWriteUri: process.env.CRM_WRITE_MONGODB_URI ?? '',
   },
   calls: {
     stunUrl: process.env.STUN_URL ?? 'stun:stun.l.google.com:19302',

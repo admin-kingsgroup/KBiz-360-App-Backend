@@ -1,5 +1,5 @@
 import { Types } from 'mongoose';
-import { crmDb } from './connection';
+import { crmDb, crmWriteDb } from './connection';
 
 // Shapes of the CRM collections we READ (only the fields we use). Read-only — no write models.
 export interface CrmUser {
@@ -55,8 +55,40 @@ export interface CrmDepartment {
 }
 
 const oid = (id: string): Types.ObjectId | null => (Types.ObjectId.isValid(id) ? new Types.ObjectId(id) : null);
+
+// The CRM is READ-ONLY from this app. `guardReadOnly` wraps a collection so any write op throws
+// instead of silently mutating the shared CRM/ERP source-of-truth — a defence that holds even if the
+// DB credential still allows writes. The few sanctioned provisioning writes bypass it via `writeCol`.
+const CRM_WRITE_METHODS = new Set([
+  'insertOne', 'insertMany', 'updateOne', 'updateMany', 'replaceOne',
+  'deleteOne', 'deleteMany', 'findOneAndUpdate', 'findOneAndReplace', 'findOneAndDelete',
+  'findOneAndModify', 'bulkWrite', 'drop', 'rename',
+  'createIndex', 'createIndexes', 'dropIndex', 'dropIndexes', 'insert', 'update', 'remove', 'save',
+]);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const col = (name: string) => crmDb().collection(name) as any;
+export function guardReadOnly(collection: any): any {
+  return new Proxy(collection, {
+    get(target, prop, receiver) {
+      if (typeof prop === 'string' && CRM_WRITE_METHODS.has(prop)) {
+        return () => {
+          throw new Error(
+            `CRM is read-only from this app — refused '${prop}' on a CRM collection. ` +
+              'Sanctioned provisioning writes must use crmRepo write methods (crmWriteDb).',
+          );
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+// READ-ONLY CRM access (write ops throw). Used by every read below.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const col = (name: string) => guardReadOnly(crmDb().collection(name)) as any;
+// SANCTIONED CRM WRITE access — the only place CRM writes are allowed (user/branch/role provisioning).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const writeCol = (name: string) => crmWriteDb().collection(name) as any;
 
 export const crmRepo = {
   async findUserByEmail(email: string): Promise<CrmUser | null> {
@@ -95,40 +127,40 @@ export const crmRepo = {
     return col('departments').find(filter).toArray() as Promise<CrmDepartment[]>;
   },
 
-  // ── WRITES (user provisioning — explicitly authorized to write to the CRM users collection) ──
+  // ── WRITES (user provisioning — the ONLY sanctioned CRM writes; routed through crmWriteDb) ──
   async createUser(doc: Record<string, unknown>): Promise<CrmUser> {
-    const res = await col('users').insertOne(doc);
-    return col('users').findOne({ _id: res.insertedId }) as Promise<CrmUser>;
+    const res = await writeCol('users').insertOne(doc);
+    return writeCol('users').findOne({ _id: res.insertedId }) as Promise<CrmUser>;
   },
   async updateUser(id: string, set: Record<string, unknown>): Promise<CrmUser | null> {
     const _id = oid(id);
     if (!_id) return null;
-    await col('users').updateOne({ _id }, { $set: set });
-    return col('users').findOne({ _id }) as Promise<CrmUser | null>;
+    await writeCol('users').updateOne({ _id }, { $set: set });
+    return writeCol('users').findOne({ _id }) as Promise<CrmUser | null>;
   },
   async createCompany(doc: Record<string, unknown>): Promise<CrmCompany> {
-    const res = await col('companies').insertOne(doc);
-    return col('companies').findOne({ _id: res.insertedId }) as Promise<CrmCompany>;
+    const res = await writeCol('companies').insertOne(doc);
+    return writeCol('companies').findOne({ _id: res.insertedId }) as Promise<CrmCompany>;
   },
   async createBranch(doc: Record<string, unknown>): Promise<CrmBranch> {
-    const res = await col('branches').insertOne(doc);
-    return col('branches').findOne({ _id: res.insertedId }) as Promise<CrmBranch>;
+    const res = await writeCol('branches').insertOne(doc);
+    return writeCol('branches').findOne({ _id: res.insertedId }) as Promise<CrmBranch>;
   },
   // Membership toggles: add/remove one branch id on a user without touching the rest of the array.
   async addUserBranch(userId: string, branchId: Types.ObjectId): Promise<void> {
     const _id = oid(userId);
     if (!_id) return;
-    await col('users').updateOne({ _id }, { $addToSet: { branch_ids: branchId }, $set: { updated_at: new Date() } });
+    await writeCol('users').updateOne({ _id }, { $addToSet: { branch_ids: branchId }, $set: { updated_at: new Date() } });
   },
   async removeUserBranch(userId: string, branchId: Types.ObjectId): Promise<void> {
     const _id = oid(userId);
     if (!_id) return;
-    await col('users').updateOne({ _id }, { $pull: { branch_ids: branchId }, $set: { updated_at: new Date() } });
+    await writeCol('users').updateOne({ _id }, { $pull: { branch_ids: branchId }, $set: { updated_at: new Date() } });
   },
   async setRolePermissions(id: string, permissions: string[]): Promise<CrmRole | null> {
     const _id = oid(id);
     if (!_id) return null;
-    await col('roles').updateOne({ _id }, { $set: { permissions } });
-    return col('roles').findOne({ _id }) as Promise<CrmRole | null>;
+    await writeCol('roles').updateOne({ _id }, { $set: { permissions } });
+    return writeCol('roles').findOne({ _id }) as Promise<CrmRole | null>;
   },
 };
