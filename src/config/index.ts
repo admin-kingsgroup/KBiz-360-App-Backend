@@ -38,8 +38,11 @@ export const config: AppConfig = {
   port: parseInt(process.env.PORT ?? '4000', 10),
   database: { url: process.env.DATABASE_URL ?? '' },
   jwt: {
-    accessSecret: process.env.JWT_ACCESS_SECRET ?? 'change-me-access',
-    refreshSecret: process.env.JWT_REFRESH_SECRET ?? 'change-me-refresh',
+    // No fallback secret by design — an unset/weak value is rejected at startup by validateAuthConfig
+    // (src/config/validateEnv.ts). The '' placeholder only satisfies the type; the server exits
+    // before any signing happens if the real secret is missing.
+    accessSecret: process.env.JWT_ACCESS_SECRET ?? '',
+    refreshSecret: process.env.JWT_REFRESH_SECRET ?? '',
     accessTtl: process.env.JWT_ACCESS_TTL ?? '900s',
     // Sliding session: every app use rotates the pair with a fresh TTL, so this is INACTIVITY
     // time before a forced re-login — not an absolute session cap. A year ≈ "until manual logout".
@@ -73,11 +76,13 @@ export const config: AppConfig = {
     production: process.env.APNS_PRODUCTION === 'true', // false → sandbox (dev builds); auto-fallback either way
   },
   // Microsoft 365 email (Graph) — per-user delegated OAuth (PKCE public client). clientId/tenantId
-  // come from the Azure app registration; tokenKey encrypts stored refresh tokens at rest.
+  // come from the Azure app registration; tokenKey encrypts stored refresh tokens at rest. When
+  // EMAIL_TOKEN_KEY is unset it reuses JWT_ACCESS_SECRET (validated strong at startup) — no weak
+  // fallback; validateAuthConfig rejects a weak EMAIL_TOKEN_KEY if one is explicitly provided.
   msEmail: {
     clientId: process.env.MS_CLIENT_ID || '',
     tenantId: process.env.MS_TENANT_ID || 'common',
-    tokenKey: process.env.EMAIL_TOKEN_KEY || process.env.JWT_ACCESS_SECRET || 'dev-email-token-key',
+    tokenKey: process.env.EMAIL_TOKEN_KEY || process.env.JWT_ACCESS_SECRET || '',
   },
   alerts: {
     // Trimmed to mirror the ERP/CRM emitters (which trim theirs) — a padded paste in .env must

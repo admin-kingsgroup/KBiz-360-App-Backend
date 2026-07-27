@@ -1,6 +1,7 @@
 import { createServer } from 'http';
 import { createMongoApp } from './app';
 import { config } from '../config';
+import { validateAuthConfig } from '../config/validateEnv';
 import { connectMongo, disconnectMongo } from './connection';
 import { initRealtime } from '../realtime/socket';
 import { registerChatHandlers } from './chat/chat.socket';
@@ -20,6 +21,7 @@ import { startAlertAttachmentSweep, stopAlertAttachmentSweep } from './alerts/al
 
 // Entrypoint for the MongoDB-backed backend (real CRM auth + directory).
 async function bootstrap(): Promise<void> {
+  validateAuthConfig(); // refuse to start with a missing/weak/empty JWT (or email) secret — before any I/O
   await connectMongo();
   // eslint-disable-next-line no-console
   console.log(`[kb360] mongo connected (crm=${config.mongo.crmDb}, app=${config.mongo.appDb})`);
