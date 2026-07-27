@@ -2,6 +2,7 @@ import { createServer } from 'http';
 import { createMongoApp } from './app';
 import { config } from '../config';
 import { validateAuthConfig } from '../config/validateEnv';
+import { ensureSessionIndexes } from './auth';
 import { connectMongo, disconnectMongo } from './connection';
 import { initRealtime } from '../realtime/socket';
 import { registerChatHandlers } from './chat/chat.socket';
@@ -25,6 +26,7 @@ async function bootstrap(): Promise<void> {
   await connectMongo();
   // eslint-disable-next-line no-console
   console.log(`[kb360] mongo connected (crm=${config.mongo.crmDb}, app=${config.mongo.appDb})`);
+  await ensureSessionIndexes(); // app_sessions: unique tokenHash + userId + TTL on expiresAt (indexed lookups, bounded growth)
   await ensureCallIndexes(); // call_logs / active_calls (TTL) / push_devices indexes
   await ensureReminderIndexes(); // reminders indexes
   await ensureAttendanceIndexes(); // attendance indexes

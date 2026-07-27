@@ -20,6 +20,17 @@ const ROTATION_GRACE_MS = 48 * 60 * 60 * 1000;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sessions = () => appDb().collection('app_sessions') as any;
 
+// Indexes for app_sessions. Without them, refresh/logout/revoke were full collection scans and the
+// collection grew one doc per login + per refresh forever. tokenHash (unique — it is the sha256 of a
+// token with a random jti) serves the per-refresh and logout lookups; userId serves revokeAllSessions;
+// the expiresAt TTL auto-reaps expired/rotated sessions so the collection stays bounded. Idempotent —
+// a no-op once the indexes exist. Called at boot from main.ts.
+export async function ensureSessionIndexes(): Promise<void> {
+  await sessions().createIndex({ tokenHash: 1 }, { unique: true });
+  await sessions().createIndex({ userId: 1 });
+  await sessions().createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+}
+
 export interface PublicUser {
   id: string;
   email: string;
