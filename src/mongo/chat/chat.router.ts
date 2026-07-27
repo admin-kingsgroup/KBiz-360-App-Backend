@@ -1,10 +1,11 @@
 import { Router } from 'express';
+import type { RequestHandler } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../../common/asyncHandler';
 import { validate } from '../../common/validate';
-import { Unauthorized } from '../../common/errors';
+import { Unauthorized, Forbidden } from '../../common/errors';
 import { requireAuth, requireSuper } from '../middleware';
-import { chatService } from './chat.service';
+import { chatService, canCreateGroup } from './chat.service';
 import { chatAnalytics } from './chat.analytics';
 import { presenceStatusOf, getLastSeen } from './chat.events';
 
@@ -24,6 +25,21 @@ chatRouter.get('/chat/presence', asyncHandler(async (req, res) => {
 const uid = (req: { auth?: { userId: string } }): string => {
   if (!req.auth) throw Unauthorized();
   return req.auth.userId;
+};
+
+// Group creation is allowed for super-admins PLUS the delegated group-creator allowlist
+// (see canCreateGroup in chat.service). Enforced server-side even though the app hides the entry
+// points for everyone else.
+const requireCanCreateGroup: RequestHandler = (req, _res, next) => {
+  void (async () => {
+    try {
+      if (!req.auth) throw Unauthorized();
+      if (await canCreateGroup(req.auth.userId)) { next(); return; }
+      throw Forbidden('Requires super_admin');
+    } catch (err) {
+      next(err);
+    }
+  })();
 };
 
 const attachmentSchema = z.object({
@@ -64,9 +80,9 @@ chatRouter.get('/messages/starred', asyncHandler(async (req, res) => res.json(aw
 chatRouter.get('/messages/search', asyncHandler(async (req, res) => res.json(await chatService.search(uid(req), (req.query.q as string) ?? '', { senderId: req.query.senderId as string | undefined }))));
 
 // ── groups ──
-// Creating a group is Super-Admin only (the app hides the entry points for everyone else,
-// but the API must enforce it too).
-chatRouter.post('/groups', requireSuper, validate(z.object({ name: z.string().min(1), memberIds: z.array(z.string()).default([]), description: z.string().optional(), image: z.string().optional(), companyId: z.string().optional(), branchId: z.string().optional(), departmentId: z.string().optional() })), asyncHandler(async (req, res) => res.status(201).json(await chatService.createGroup(uid(req), req.body))));
+// Creating a group is Super-Admin OR a delegated group creator (the app hides the entry points for
+// everyone else, but the API must enforce it too).
+chatRouter.post('/groups', requireCanCreateGroup, validate(z.object({ name: z.string().min(1), memberIds: z.array(z.string()).default([]), description: z.string().optional(), image: z.string().optional(), companyId: z.string().optional(), branchId: z.string().optional(), departmentId: z.string().optional() })), asyncHandler(async (req, res) => res.status(201).json(await chatService.createGroup(uid(req), req.body))));
 // Auto branch-department group (members = the whole branch). Get-or-create, then open it.
 chatRouter.post('/groups/department', validate(z.object({ branchId: z.string().min(1), departmentId: z.string().min(1), name: z.string().min(1) })), asyncHandler(async (req, res) => res.json(await chatService.getOrCreateDepartmentGroup(uid(req), req.body))));
 chatRouter.get('/groups/:id', asyncHandler(async (req, res) => { const c = await chatService.assertAccess(uid(req), req.params.id); res.json(await chatService.conversationDTO(c, uid(req))); }));

@@ -61,6 +61,21 @@ async function assertManageGroup(conv: ConversationDoc, userId: string): Promise
 // with assertManageGroup). Emails are the source of truth so it survives user-id changes.
 const GROUP_ADD_MEMBER_EMAILS = new Set(['faiz@travkings.com', 'pravesh@travkings.com', 'farhan@travkings.com']);
 
+// Group-CREATE allowlist: super-admins may always create groups; in addition these emails are
+// delegated group creators (they can create groups without full super rights, and are treated like
+// a super for the per-branch create guard so they can create in any branch). Emails are the source
+// of truth so it survives user-id changes. Keep in sync with the frontend list in
+// Frontend/src/logic/groupCreate.ts.
+const GROUP_CREATE_EMAILS = new Set(['farhan@travkings.com', 'faiz@travkings.com']);
+
+// True if the user may create groups: a super-admin, or an allowlisted delegated creator.
+export async function canCreateGroup(userId: string): Promise<boolean> {
+  const access = await accessService.accessForUserId(userId);
+  if (access?.isSuper) return true;
+  const user = await crmRepo.getUserById(userId);
+  return !!user && GROUP_CREATE_EMAILS.has((user.email ?? '').toLowerCase().trim());
+}
+
 async function assertCanAddMembers(conv: ConversationDoc, userId: string): Promise<void> {
   // Full managers (creator / group admin / super-admin) can always add.
   const m = conv.members.find((x) => x.userId === userId);
@@ -469,7 +484,9 @@ export const chatService = {
     // belong to (the New Group picker is access-scoped, but enforce it server-side too).
     if (branchId) {
       const access = await accessService.accessForUserId(userId);
-      const allowed = !!access && (access.isSuper || access.companyWide || (access.branchIds ?? []).includes(branchId));
+      // Delegated group creators (GROUP_CREATE_EMAILS) are treated like a super here so they can
+      // create a group in any branch, not just their own.
+      const allowed = (await canCreateGroup(userId)) || (!!access && (access.companyWide || (access.branchIds ?? []).includes(branchId)));
       if (!allowed) throw Forbidden('You can only create groups in your own branch');
       // Anchor the group to its business: the branch's company must match the selected one
       // (or fills it in when omitted), so a group always lives under business → branch → department.
