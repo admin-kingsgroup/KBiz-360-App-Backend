@@ -21,7 +21,11 @@ directoryRouter.get(
   '/users',
   requireAuth,
   asyncHandler(async (req, res) => {
-    res.json(await directoryService.listUsers(await getAccess(req)));
+    const access = await getAccess(req);
+    // Disabled (app-access-off) users are hidden by default; only a super-admin (the admin Team &
+    // Users screen) may include them via ?includeDisabled=1 so they can be re-enabled.
+    const includeDisabled = req.query.includeDisabled === '1' && access.isSuper;
+    res.json(await directoryService.listUsers(access, { includeDisabled }));
   }),
 );
 

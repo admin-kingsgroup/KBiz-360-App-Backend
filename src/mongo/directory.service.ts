@@ -5,6 +5,7 @@ import { userPositions } from './userPositions';
 import { userAvatars } from './userAvatars';
 import { appDepartments } from './appDepartments';
 import { accessService, type MongoAccess } from './access';
+import { appAccess } from './appAccess';
 import { Forbidden, BadRequest } from '../common/errors';
 
 // Read-only directory built from the CRM. Access-scoped: company-wide roles see all in the tenant;
@@ -93,7 +94,7 @@ async function ensureKbizBom(access: MongoAccess, adminId: string): Promise<{ co
 }
 
 export const directoryService = {
-  async listUsers(access: MongoAccess) {
+  async listUsers(access: MongoAccess, opts: { includeDisabled?: boolean } = {}) {
     const roles = await roleMap();
     const users = await crmRepo.listUsers(tenantFilter(access));
     const scoped = access.companyWide
@@ -103,7 +104,14 @@ export const directoryService = {
     const ids = mapped.map((m) => m.id);
     const positions = await userPositions.mapFor(ids);
     const avatars = await userAvatars.mapFor(ids);
-    return mapped.map((m) => ({ ...m, position: positions[m.id] ?? null, avatar: avatars[m.id] ?? null }));
+    const result = mapped.map((m) => ({ ...m, position: positions[m.id] ?? null, avatar: avatars[m.id] ?? null }));
+    // Deactivated users (app access disabled by a super-admin) are hidden from every directory-driven
+    // list — New Group members, the new-chat picker, reminders, alerts, business detail — so a
+    // deactivated user never appears anywhere in the app. Only the admin "Team & Users" screen passes
+    // includeDisabled to still show (and re-enable) them.
+    if (opts.includeDisabled) return result;
+    const disabled = await appAccess.disabledSet();
+    return result.filter((u) => !disabled.has(u.id));
   },
 
   async getUser(access: MongoAccess, id: string) {
@@ -315,6 +323,10 @@ export const directoryService = {
       role_id: input.roleId && Types.ObjectId.isValid(input.roleId) ? new Types.ObjectId(input.roleId) : null,
       branch_ids: (input.branchIds ?? []).filter((b) => Types.ObjectId.isValid(b)).map((b) => new Types.ObjectId(b)),
       tenant_id: access.tenantId && Types.ObjectId.isValid(access.tenantId) ? new Types.ObjectId(access.tenantId) : null,
+      // A user created FROM Smart Connect is a Smart Connect user — grant app access explicitly so
+      // they can sign in. The login gate (auth.ts) is deny-by-default on access.app === true, so
+      // without this every app-created user is locked out with "ask an administrator to enable it".
+      access: { app: true },
       status: 'active',
       email_verified: true,
       created_at: now,

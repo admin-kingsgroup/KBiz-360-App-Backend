@@ -26,7 +26,9 @@ adminRouter.get(
     if (!req.auth) throw Unauthorized();
     const access = await accessService.accessForUserId(req.auth.userId);
     if (!access) throw Unauthorized();
-    const users = await directoryService.listUsers(access);
+    // includeDisabled: the toggle screen needs a state for EVERY user, including the deactivated ones
+    // (which listUsers now hides by default), otherwise a disabled user's switch would read as ON.
+    const users = await directoryService.listUsers(access, { includeDisabled: true });
     res.json(await appAccess.statesFor(users.map((u) => u.id)));
   }),
 );
@@ -73,7 +75,7 @@ adminRouter.get(
     if (!req.auth) throw Unauthorized();
     const access = await accessService.accessForUserId(req.auth.userId);
     if (!access) throw Unauthorized();
-    const users = await directoryService.listUsers(access);
+    const users = await directoryService.listUsers(access, { includeDisabled: true });
     res.json(await attendanceExempt.statesFor(users.map((u) => u.id)));
   }),
 );
@@ -88,7 +90,7 @@ adminRouter.get(
     if (!req.auth) throw Unauthorized();
     const access = await accessService.accessForUserId(req.auth.userId);
     if (!access) throw Unauthorized();
-    const users = await directoryService.listUsers(access);
+    const users = await directoryService.listUsers(access, { includeDisabled: true });
     res.json(await alertGrants.mapFor(users.map((u) => u.id)));
   }),
 );
