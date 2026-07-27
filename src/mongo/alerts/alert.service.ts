@@ -27,7 +27,11 @@ export interface AlertEventDto {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const col = () => appDb().collection('alert_events') as any;
-const MAX_EVENTS = 200;
+// Newest events to return PER CHANNEL (not globally). A single global cap starves low-volume
+// channels: the once-a-day Receivables/Payables/Bank&Cash pushes were dropped out of the window by
+// the high-frequency Accounts/Sales-Invoice/Bookings channels, so those channels showed empty.
+const PER_CHANNEL_EVENTS = 50;
+const MAX_EVENTS = 1500; // overall safety ceiling on the merged feed
 
 // listFor filters by channelId (and announcements by recipients) sorted by time — index both paths
 // now that the ERP/CRM ingest can grow this collection much faster than attendance did. Channel
@@ -165,7 +169,19 @@ export const alertService = {
     if (!access.isSuper && channelIds.length) visible.push({ channelId: { $in: channelIds } });
     // Personal "User Alerts" — every user (supers included) sees only their own, by recipient.
     visible.push({ channelId: USER_ALERTS_CHANNEL_ID, recipients: userId });
-    const docs = await col().find({ $or: visible }).sort({ time: -1 }).limit(MAX_EVENTS).toArray();
+    // Newest PER_CHANNEL_EVENTS from EACH visible channel, then merged newest-first. This keeps
+    // low-frequency channels (the daily AR/AP/Bank&Cash pushes) visible even when busy channels emit
+    // hundreds of newer events the same day — a plain global `.limit(N)` starved them.
+    const docs = await col().aggregate([
+      { $match: { $or: visible } },
+      { $sort: { time: -1 } },
+      { $group: { _id: '$channelId', docs: { $push: '$$ROOT' } } },
+      { $project: { docs: { $slice: ['$docs', PER_CHANNEL_EVENTS] } } },
+      { $unwind: '$docs' },
+      { $replaceRoot: { newRoot: '$docs' } },
+      { $sort: { time: -1 } },
+      { $limit: MAX_EVENTS },
+    ]).toArray();
     return {
       events: docs.map((d: { _id: unknown; channelId: string; source: string; title: string; body: string; context: string; time: Date; readBy?: string[]; attachment?: { name: string; url: string } }) => ({
         id: String(d._id),
