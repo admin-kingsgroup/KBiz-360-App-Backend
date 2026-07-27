@@ -62,6 +62,9 @@ chatRouter.post('/conversations', validate(z.object({ otherUserId: z.string().mi
 chatRouter.get('/conversations/:id', asyncHandler(async (req, res) => { const c = await chatService.assertAccess(uid(req), req.params.id); res.json(await chatService.conversationDTO(c, uid(req))); }));
 chatRouter.get('/conversations/:id/messages', asyncHandler(async (req, res) => res.json(await chatService.getMessages(uid(req), req.params.id, { before: req.query.before as string | undefined, limit: req.query.limit ? Number(req.query.limit) : undefined }))));
 chatRouter.post('/conversations/:id/read', asyncHandler(async (req, res) => res.json(await chatService.markRead(uid(req), req.params.id))));
+// REST twin of the socket 'chat:delivered' ack — used by the killed/backgrounded app's push handler
+// (no socket alive there) so the sender's tick turns ✓✓ the moment the push reaches the device.
+chatRouter.post('/conversations/:id/delivered', asyncHandler(async (req, res) => res.json(await chatService.markDelivered(uid(req), req.params.id))));
 chatRouter.get('/conversations/:id/pinned', asyncHandler(async (req, res) => res.json(await chatService.pinned(uid(req), req.params.id))));
 
 // ── messages ──

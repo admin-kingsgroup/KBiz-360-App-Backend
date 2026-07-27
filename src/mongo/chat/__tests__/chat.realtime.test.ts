@@ -198,6 +198,31 @@ describe('Chat realtime — presence + delivered-on-connect sweep', () => {
     expect(evt.statuses.find((s) => s.id === res.body.id)?.status).toBe('delivered');
   });
 
+  it('killed-app push ack: REST POST /conversations/:id/delivered double-ticks with NO socket from B', async () => {
+    if (!ready) return;
+    // B's app is "killed": no socket at all. The FCM push handler acks over REST instead.
+    const offline = waitForMatch<{ userId: string }>(sockA!, 'chat:offline', (e) => e.userId === idB);
+    sockB!.close();
+    await offline;
+
+    const sent = await request(app).post('/api/messages').set(auth(tokenA)).send({ conversationId: directId, text: 'push me' });
+    expect(sent.status).toBe(201);
+    expect(sent.body.status).toBe('sent'); // single tick while B is unreachable
+
+    const delivered = waitForMatch<ReceiptEvt>(sockA!, 'chat:delivered', (e) => e.conversationId === directId);
+    const ack = await request(app).post(`/api/conversations/${directId}/delivered`).set(auth(tokenB));
+    expect(ack.status).toBe(200);
+    expect(ack.body.delivered).toBeGreaterThanOrEqual(1);
+    const evt = await delivered;
+    expect(evt.by).toBe(idB);
+    expect(evt.messageIds).toContain(sent.body.id);
+    expect(evt.statuses.find((s) => s.id === sent.body.id)?.status).toBe('delivered');
+
+    // Reconnect B for the group tests below (sweep finds nothing pending — already delivered).
+    sockB = ioClient(`http://localhost:${port}`, { auth: { token: tokenB }, transports: ['websocket'] });
+    await waitFor(sockB, 'connect');
+  });
+
   it('invalid handshake token → auth:invalid + server-side disconnect', async () => {
     if (!ready) return;
     const sock = ioClient(`http://localhost:${port}`, { auth: { token: 'not-a-jwt' }, transports: ['websocket'] });
