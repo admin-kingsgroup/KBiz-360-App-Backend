@@ -5,12 +5,14 @@ import { crmRepo } from '../../crm.repo';
 import { chatService } from '../chat.service';
 
 // Allowlists: faiz/pravesh/farhan@travkings.com may ADD members to a group they belong to (without
-// being admin/creator); faiz is additionally on the EDIT allowlist (rename + remove members) —
-// but deleting the group / promoting admins stays admin-only for everyone. Uses faiz's REAL id
-// (the guards resolve the email from the CRM); the group creator + the person-to-add are synthetic.
-// Self-skips when Mongo/the user isn't reachable; cleans up after.
+// being admin/creator); faiz is additionally on the EDIT allowlist (rename + remove members) and
+// farhan on the RENAME-only allowlist — but deleting the group / promoting admins stays admin-only
+// for everyone. Uses faiz's + farhan's REAL ids (the guards resolve the email from the CRM); the
+// group creator + the person-to-add are synthetic. Self-skips when Mongo/the users aren't
+// reachable; cleans up after.
 let ready = false;
 let faizId = '';
+let farhanId = '';
 const run = `t${Date.now().toString(36)}`;
 const CREATOR = `gtest-${run}-creator`;
 const OUTSIDER = `gtest-${run}-outsider`; // a non-allowlisted plain member
@@ -23,8 +25,10 @@ beforeAll(async () => {
   try {
     await connectMongo();
     const faiz = await crmRepo.findUserByEmail('faiz@travkings.com');
-    ready = !!faiz;
+    const farhan = await crmRepo.findUserByEmail('farhan@travkings.com');
+    ready = !!faiz && !!farhan;
     if (faiz) faizId = String(faiz._id);
+    if (farhan) farhanId = String(farhan._id);
   } catch {
     ready = false;
   }
@@ -39,12 +43,12 @@ afterAll(async () => {
 }, 20000);
 
 async function makeGroup(): Promise<string> {
-  // Creator is CREATOR (synthetic). faiz + OUTSIDER are plain members. So faiz is NOT admin/creator.
+  // Creator is CREATOR (synthetic). faiz + farhan + OUTSIDER are plain members — NOT admin/creator.
   const conv = await ConversationModel().create({
     type: 'group',
     name: 'add-members test',
-    participantIds: [CREATOR, faizId, OUTSIDER],
-    members: [member(CREATOR, 'admin'), member(faizId), member(OUTSIDER)],
+    participantIds: [CREATOR, faizId, farhanId, OUTSIDER],
+    members: [member(CREATOR, 'admin'), member(faizId), member(farhanId), member(OUTSIDER)],
     createdBy: CREATOR,
     lastActivityAt: new Date(),
   });
@@ -88,6 +92,14 @@ describe('group add-members allowlist (add-only)', () => {
     const gid = await makeGroup();
     await expect(chatService.updateGroup(OUTSIDER, gid, { name: 'nope' })).rejects.toThrow(/group admin/i);
     await expect(chatService.removeMember(OUTSIDER, gid, faizId)).rejects.toThrow(/group admin/i);
+  }, 30000);
+
+  it('a rename-allowlisted member (farhan) who is NOT admin can rename but NOT remove', async () => {
+    if (!ready) return;
+    const gid = await makeGroup();
+    const dto = await chatService.updateGroup(farhanId, gid, { name: 'renamed by farhan' });
+    expect(dto.name).toBe('renamed by farhan');
+    await expect(chatService.removeMember(farhanId, gid, OUTSIDER)).rejects.toThrow(/group admin/i);
   }, 30000);
 
   it('the edit allowlist does NOT extend to deleting the group or promoting admins', async () => {

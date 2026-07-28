@@ -69,11 +69,18 @@ const GROUP_ADD_MEMBER_EMAILS = new Set(['faiz@travkings.com', 'pravesh@travking
 // with the frontend list in Frontend/app/chat/group-info.tsx (EDIT_GROUP_EMAILS).
 const GROUP_EDIT_EMAILS = new Set(['faiz@travkings.com']);
 
-async function assertEditGroup(conv: ConversationDoc, userId: string): Promise<void> {
+// Rename-only allowlist: may edit the group's name/description/image in groups they are a MEMBER
+// of, but NOT remove members. Keep in sync with the frontend list in
+// Frontend/app/chat/group-info.tsx (RENAME_GROUP_EMAILS).
+const GROUP_RENAME_EMAILS = new Set(['farhan@travkings.com']);
+
+async function assertEditGroup(conv: ConversationDoc, userId: string, action: 'update' | 'removeMember'): Promise<void> {
   if (await canManageGroup(conv, userId)) return;
   if (conv.participantIds.includes(userId)) {
     const user = await crmRepo.getUserById(userId);
-    if (user && GROUP_EDIT_EMAILS.has((user.email ?? '').toLowerCase().trim())) return;
+    const email = (user?.email ?? '').toLowerCase().trim();
+    if (email && GROUP_EDIT_EMAILS.has(email)) return;
+    if (email && action === 'update' && GROUP_RENAME_EMAILS.has(email)) return;
   }
   throw Forbidden('Requires group admin');
 }
@@ -588,7 +595,7 @@ export const chatService = {
   async updateGroup(userId: string, conversationId: string, patch: { name?: string; description?: string; image?: string }) {
     const conv = await conversationRepo.findById(conversationId);
     if (!conv || conv.type !== 'group') throw NotFound('Group not found');
-    await assertEditGroup(conv, userId);
+    await assertEditGroup(conv, userId, 'update');
     const set: Record<string, unknown> = {};
     if (patch.name !== undefined) set.name = patch.name;
     if (patch.description !== undefined) set.description = patch.description;
@@ -626,7 +633,7 @@ export const chatService = {
   async removeMember(userId: string, conversationId: string, memberId: string) {
     const conv = await conversationRepo.findById(conversationId);
     if (!conv || conv.type !== 'group') throw NotFound('Group not found');
-    if (memberId !== userId) await assertEditGroup(conv, userId); // leaving is allowed; removing others needs admin or the edit allowlist
+    if (memberId !== userId) await assertEditGroup(conv, userId, 'removeMember'); // leaving is allowed; removing others needs admin or the edit allowlist
     const wasMember = conv.participantIds.includes(memberId);
     await ConversationModel().updateOne({ _id: conv._id }, { $pull: { participantIds: memberId, members: { userId: memberId } } });
     emitToUsers(conv.participantIds, CHAT_EVENTS.CONVERSATION_UPDATED, { conversationId });
