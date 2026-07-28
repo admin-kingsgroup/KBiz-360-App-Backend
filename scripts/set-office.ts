@@ -4,7 +4,7 @@
 // Idempotent: an existing office at the same branch+label is UPDATED, never duplicated.
 //
 //   npx ts-node scripts/set-office.ts --branch AMD --lat 23.0317354 --lng 72.5707126 \
-//     --wifi "Airtel_Travkings" [--radius 150] [--label "AMD Office"] [--apply]
+//     --wifi "Airtel_Travkings" [--radius 100] [--label "AMD Office"] [--apply]
 //
 // Equivalent to Admin → Office locations in the app; this exists for exact coordinates, which
 // are easier to paste than to type on a phone.
@@ -24,9 +24,9 @@ async function main(): Promise<void> {
   const lat = Number(arg('lat'));
   const lng = Number(arg('lng'));
   const wifi = arg('wifi') ?? null;
-  const radius = Number(arg('radius') ?? 150);
+  const radius = Number(arg('radius') ?? 100);
   if (!code || !Number.isFinite(lat) || !Number.isFinite(lng)) {
-    throw new Error('usage: --branch AMD --lat <n> --lng <n> [--wifi SSID] [--radius 150] [--label ..] [--apply]');
+    throw new Error('usage: --branch AMD --lat <n> --lng <n> [--wifi SSID] [--radius 100] [--label ..] [--apply]');
   }
   if (Math.abs(lat) > 90 || Math.abs(lng) > 180) throw new Error('lat/lng out of range');
   if (radius < 20 || radius > 5000) throw new Error('radius must be 20..5000 m'); // same clamp as the API

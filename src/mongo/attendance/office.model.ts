@@ -33,7 +33,7 @@ const OfficeGeofenceSchema = new Schema<OfficeGeofenceDoc>(
     address: { type: String, default: null },
     lat: { type: Number, required: true },
     lng: { type: Number, required: true },
-    radius: { type: Number, required: true, default: 150 },
+    radius: { type: Number, required: true, default: 100 },
     wifiSsid: { type: String, default: null },
     active: { type: Boolean, default: true },
     isDefault: { type: Boolean, default: false },

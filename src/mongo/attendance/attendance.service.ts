@@ -73,9 +73,10 @@ function fmtTime(d: Date | null): string | null {
   }
 }
 
-// Hysteresis for geofence exits: an OS Exit only closes the day when the punch's own fix is at
-// least this far BEYOND the office radius. Indoor GPS drift of 30–80 m is routine.
-export const GEOFENCE_EXIT_BUFFER_M = 50;
+// Exit hysteresis is ZERO (owner call, 07-28): check-out is immediate the moment a fix is beyond
+// the office radius — no extra buffer. The false-exit protection that remains is evidence-quality
+// only (a fix is required; no-fix + still on office Wi-Fi is drift), which adds no delay.
+export const GEOFENCE_EXIT_BUFFER_M = 0;
 
 // Pure decision for the geofence-exit drift guard: is this punch still provably at the office?
 // STRICT presence = inside the fence AND on the office Wi-Fi (when the office has an SSID), so a
@@ -373,7 +374,7 @@ export const attendanceService = {
       tenantId: access.tenantId,
       lat: body.lat,
       lng: body.lng,
-      radius: body.radius ?? 150,
+      radius: body.radius ?? 100,
       label: body.label ?? null,
       address: body.address ?? null,
       wifiSsid: body.wifiSsid ?? null,
