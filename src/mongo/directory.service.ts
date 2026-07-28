@@ -152,39 +152,66 @@ export const directoryService = {
   },
 
   async listDepartments(access: MongoAccess, branchId?: string) {
-    const filter: Record<string, unknown> = { ...tenantFilter(access) };
-    if (branchId && Types.ObjectId.isValid(branchId)) filter.branch_id = new Types.ObjectId(branchId);
-    const depts = await crmRepo.listDepartments(filter);
-    const scoped = access.companyWide
-      ? depts
-      : depts.filter((d) => (d.branch_id ? access.branchIds!.includes(String(d.branch_id)) : false));
-    const crmMapped = scoped.map(mapDept);
-
-    // Merge app-created departments, expanding company-wide ones across the company's (in-scope) branches
-    // so each branch gets the department's group — exactly like a CRM department.
+    // Departments are company-wide: every branch of a company carries the company's FULL department
+    // set. CRM rows are branch-bound per-branch docs, so the company set is expanded across all
+    // (in-scope) branches at read time — a new branch gets every department and a new department
+    // reaches every branch with no seeding step on either create path.
+    const depts = await crmRepo.listDepartments(tenantFilter(access));
     const branches = access.companyWide
       ? await crmRepo.listBranches(tenantFilter(access))
       : await crmRepo.branchesByIds((access.branchIds ?? []).filter((b) => Types.ObjectId.isValid(b)).map((b) => new Types.ObjectId(b)));
+    const targets = branchId ? branches.filter((b) => String(b._id) === branchId) : branches;
+    const nameKey = (s: string | null | undefined): string => (s ?? '').trim().toLowerCase();
+
+    // Branch-bound CRM rows keep their own ids — existing department groups key off them (deptKey).
+    const inScope = new Set(targets.map((b) => String(b._id)));
+    const crmMapped = depts.filter((d) => d.branch_id && inScope.has(String(d.branch_id))).map(mapDept);
+    const have = new Set(crmMapped.map((m) => `${m.branchId}:${nameKey(m.name ?? m.code)}`));
+
+    // Expand each company's distinct department names to branches missing them. The OLDEST row per
+    // (company, name) is canonical so the id a branch sees never drifts — deptKey "<branchId>:<id>"
+    // stays unique per branch and previously created groups keep resolving.
+    const canonical = new Map<string, CrmDepartment>();
+    for (const d of [...depts].sort((a, b) => String(a._id).localeCompare(String(b._id)))) {
+      const key = `${d.company_id ? String(d.company_id) : ''}:${nameKey(d.name ?? d.code)}`;
+      if (!canonical.has(key)) canonical.set(key, d);
+    }
+    const crmExpanded: ReturnType<typeof mapDept>[] = [];
+    for (const d of canonical.values()) {
+      for (const b of targets) {
+        if (d.company_id && String(b.company_id ?? '') !== String(d.company_id)) continue;
+        const k = `${String(b._id)}:${nameKey(d.name ?? d.code)}`;
+        if (have.has(k)) continue;
+        have.add(k);
+        crmExpanded.push({ ...mapDept(d), branchId: String(b._id) });
+      }
+    }
+
+    // Merge app-created departments, expanding company-wide ones (branchId null) the same way. A
+    // (branch, name) already covered by a CRM department is skipped so same-named departments never
+    // show as duplicate tiles.
     const apps = await appDepartments.listByTenant(access.tenantId);
-    const appExpanded = apps.flatMap((a) => {
-      const targets = branches.filter((b) => {
-        if (a.companyId && String(b.company_id) !== a.companyId) return false;
-        if (a.branchId && String(b._id) !== a.branchId) return false;
-        if (branchId && String(b._id) !== branchId) return false;
-        return true;
-      });
-      return targets.map((b) => ({
-        id: String(a._id), // same id across branches; deptKey "<branchId>:<id>" stays unique per branch
-        name: a.name,
-        code: null as string | null,
-        branchId: String(b._id),
-        companyId: a.companyId,
-        icon: a.icon ?? null,
-        color: a.color ?? null,
-        appOwned: true,
-      }));
-    });
-    return [...crmMapped, ...appExpanded];
+    const appExpanded = apps.flatMap((a) =>
+      targets
+        .filter((b) => {
+          if (a.companyId && String(b.company_id) !== a.companyId) return false;
+          if (a.branchId && String(b._id) !== a.branchId) return false;
+          if (have.has(`${String(b._id)}:${nameKey(a.name)}`)) return false;
+          have.add(`${String(b._id)}:${nameKey(a.name)}`);
+          return true;
+        })
+        .map((b) => ({
+          id: String(a._id), // same id across branches; deptKey "<branchId>:<id>" stays unique per branch
+          name: a.name,
+          code: null as string | null,
+          branchId: String(b._id),
+          companyId: a.companyId,
+          icon: a.icon ?? null,
+          color: a.color ?? null,
+          appOwned: true,
+        })),
+    );
+    return [...crmMapped, ...crmExpanded, ...appExpanded];
   },
 
   // Super-admin: raw app-created departments (un-expanded) for the management screen.
