@@ -13,13 +13,16 @@ const listQuery = z.object({
   tab: z.enum(['forme', 'iset', 'review', 'all', 'archive']).default('forme'),
   viewAs: z.string().optional(), // accepted for compatibility; visibility is role/level-derived
 });
-const createSchema = z.object({
-  text: z.string().min(1),
-  forId: z.string().min(1),
-  when: z.string().optional(),
-  section: z.string().optional(),
-  dueAt: z.string().datetime({ offset: true }).optional(), // real due timestamp (ISO)
-});
+const createSchema = z
+  .object({
+    text: z.string().min(1),
+    forId: z.string().min(1).optional(), // single assignee (legacy clients)
+    forIds: z.array(z.string().min(1)).max(50).optional(), // multi-assignee — one reminder per person
+    when: z.string().optional(),
+    section: z.string().optional(),
+    dueAt: z.string().datetime({ offset: true }).optional(), // real due timestamp (ISO)
+  })
+  .refine((b) => !!b.forId || !!b.forIds?.length, { message: 'forId or forIds required' });
 const patchSchema = z.object({
   action: z.enum(['complete', 'approve']).optional(),
   forId: z.string().min(1).optional(), // reassign to a different user
@@ -48,7 +51,10 @@ remindersRouter.post(
   validate(createSchema),
   asyncHandler(async (req, res) => {
     if (!req.auth) throw Unauthorized();
-    res.status(201).json(await remindersService.create(req.auth.userId, req.body as z.infer<typeof createSchema>));
+    const body = req.body as z.infer<typeof createSchema>;
+    const records = await remindersService.create(req.auth.userId, body);
+    // Compat: single-assignee callers (legacy forId) still get one object; forIds gets the array.
+    res.status(201).json(body.forIds?.length ? records : records[0]);
   }),
 );
 

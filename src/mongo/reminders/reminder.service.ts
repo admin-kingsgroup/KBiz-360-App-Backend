@@ -65,6 +65,9 @@ export const remindersService = {
     const viewer = await accessService.accessForUserId(userId);
     const me = userId;
 
+    // The All tab (company-wide view) is super-admin only; the app hides the chip for others.
+    if (opts.tab === 'all' && !viewer?.isSuper) throw Forbidden('The All view is available to super admins only');
+
     let source: ReminderDoc[];
     if (opts.tab === 'archive') {
       source = await reminderRepo.listApproved(me);
@@ -82,6 +85,13 @@ export const remindersService = {
     // Resolve display metadata for everyone referenced.
     const meta = await resolveMeta(visible.flatMap((r) => [r.forId, r.byId]));
     const records = visible.map((r) => toRecord(r, meta));
+
+    // Work tabs read soonest-due first (overdue on top); undated items keep their created order at
+    // the end. Archive keeps its recently-approved-first order from the repo.
+    if (opts.tab !== 'archive') {
+      const dueKey = (r: ReminderRecordDTO): number => (r.dueAt ? Date.parse(r.dueAt) : Number.MAX_SAFE_INTEGER);
+      records.sort((a, b) => dueKey(a) - dueKey(b));
+    }
 
     // Group by the "counterparty": who set it (For me) vs who it's for (everything else).
     const counterpartyOf = (r: ReminderRecordDTO): { id: string; name: string; initials: string; color: string } =>
@@ -102,10 +112,23 @@ export const remindersService = {
     const groups = [...byKey.values()];
 
     const reviewCount = await reminderRepo.countReview(me);
+
+    // Per-tab counts for the filter chips — computed on every request so the app can badge all
+    // tabs at once. `all` is only computed (and only meaningful) for super admins, where it is
+    // simply everything live. Archive requests fetch the live set just for these counts.
+    const live = opts.tab === 'archive' ? await reminderRepo.listLive() : source;
+    const counts = {
+      forme: live.filter((r) => r.state === 'pending' && r.forId === me).length,
+      iset: live.filter((r) => r.state === 'pending' && r.byId === me && r.forId !== me).length,
+      review: live.filter((r) => r.state === 'review' && r.byId === me).length,
+      ...(viewer?.isSuper ? { all: live.length } : {}),
+    };
+
     return {
       tab: opts.tab,
       isAll: opts.tab === 'all',
       reviewCount,
+      counts,
       viewer: opts.tab === 'all' ? { role: viewer?.roleName } : { id: me },
       groups,
       visible: records,
@@ -136,21 +159,30 @@ export const remindersService = {
     return map;
   },
 
-  // POST /reminders — creator = current user; assignee must be a real user.
-  async create(userId: string, body: { text: string; forId: string; when?: string; section?: string; dueAt?: string }): Promise<ReminderRecordDTO> {
-    const target = await crmRepo.getUserById(body.forId);
-    if (!target) throw BadRequest('Unknown assignee');
-    const doc = await reminderRepo.create({
-      text: body.text, section: body.section ?? 'today', forId: body.forId, byId: userId,
-      state: 'pending', whenLabel: body.when ?? null, dueAt: parseDueAt(body.dueAt),
-    });
-    const meta = await resolveMeta([doc.forId, doc.byId]);
-    // Notify the assignee (not self): realtime badge + a push "X created a reminder for you".
-    if (body.forId !== userId) {
-      emitToUser(body.forId, 'reminder:new', { id: String(doc._id) });
-      void reminderPush.sendAssigned(body.forId, meta.get(userId)?.name ?? 'Someone', body.text, String(doc._id));
+  // POST /reminders — creator = current user; assignees must be real users. Multiple assignees
+  // fan out to ONE reminder document per person, so each completes / gets reviewed / archives
+  // independently through the unchanged single-assignee state machine.
+  async create(userId: string, body: { text: string; forId?: string; forIds?: string[]; when?: string; section?: string; dueAt?: string }): Promise<ReminderRecordDTO[]> {
+    const forIds = [...new Set(body.forIds?.length ? body.forIds : body.forId ? [body.forId] : [])];
+    if (!forIds.length) throw BadRequest('Assignee required');
+    const targets = await Promise.all(forIds.map((id) => crmRepo.getUserById(id)));
+    if (targets.some((t) => !t)) throw BadRequest('Unknown assignee');
+    const meta = await resolveMeta([...forIds, userId]);
+    const dueAt = parseDueAt(body.dueAt);
+    const records: ReminderRecordDTO[] = [];
+    for (const forId of forIds) {
+      const doc = await reminderRepo.create({
+        text: body.text, section: body.section ?? 'today', forId, byId: userId,
+        state: 'pending', whenLabel: body.when ?? null, dueAt,
+      });
+      // Notify the assignee (not self): realtime badge + a push "X created a reminder for you".
+      if (forId !== userId) {
+        emitToUser(forId, 'reminder:new', { id: String(doc._id) });
+        void reminderPush.sendAssigned(forId, meta.get(userId)?.name ?? 'Someone', body.text, String(doc._id));
+      }
+      records.push(toRecord(doc.toObject() as ReminderDoc, meta));
     }
-    return toRecord(doc.toObject() as ReminderDoc, meta);
+    return records;
   },
 
   // PATCH /reminders/:id — complete (assignee) / approve (creator) / reassign (creator) / edit (creator).
