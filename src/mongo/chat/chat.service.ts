@@ -48,18 +48,35 @@ function assertMember(conv: ConversationDoc, userId: string): void {
 }
 // Group management is allowed for the creator, any promoted group admin, OR a super-admin
 // (so a super-admin can curate any group's membership).
-async function assertManageGroup(conv: ConversationDoc, userId: string): Promise<void> {
+async function canManageGroup(conv: ConversationDoc, userId: string): Promise<boolean> {
   const m = conv.members.find((x) => x.userId === userId);
-  if (conv.createdBy === userId || m?.role === 'admin') return;
+  if (conv.createdBy === userId || m?.role === 'admin') return true;
   const access = await accessService.accessForUserId(userId);
-  if (access?.isSuper) return;
-  throw Forbidden('Requires group admin');
+  return !!access?.isSuper;
+}
+async function assertManageGroup(conv: ConversationDoc, userId: string): Promise<void> {
+  if (!(await canManageGroup(conv, userId))) throw Forbidden('Requires group admin');
 }
 
 // Add-only allowlist: these users may ADD people to any group they are a MEMBER of, without being a
-// group admin/creator (they still cannot remove members, rename, or delete the group — that stays
-// with assertManageGroup). Emails are the source of truth so it survives user-id changes.
+// group admin/creator (removing members and renaming need GROUP_EDIT_EMAILS; deleting/promoting
+// stays with assertManageGroup). Emails are the source of truth so it survives user-id changes.
 const GROUP_ADD_MEMBER_EMAILS = new Set(['faiz@travkings.com', 'pravesh@travkings.com', 'farhan@travkings.com']);
+
+// Edit allowlist: these users may RENAME a group and REMOVE members in any group they are a MEMBER
+// of, without being a group admin/creator (deleting the group and promoting admins stays with
+// assertManageGroup). Emails are the source of truth so it survives user-id changes. Keep in sync
+// with the frontend list in Frontend/app/chat/group-info.tsx (EDIT_GROUP_EMAILS).
+const GROUP_EDIT_EMAILS = new Set(['faiz@travkings.com']);
+
+async function assertEditGroup(conv: ConversationDoc, userId: string): Promise<void> {
+  if (await canManageGroup(conv, userId)) return;
+  if (conv.participantIds.includes(userId)) {
+    const user = await crmRepo.getUserById(userId);
+    if (user && GROUP_EDIT_EMAILS.has((user.email ?? '').toLowerCase().trim())) return;
+  }
+  throw Forbidden('Requires group admin');
+}
 
 // Group-CREATE allowlist: super-admins may always create groups; in addition these emails are
 // delegated group creators (they can create groups without full super rights, and are treated like
@@ -571,7 +588,7 @@ export const chatService = {
   async updateGroup(userId: string, conversationId: string, patch: { name?: string; description?: string; image?: string }) {
     const conv = await conversationRepo.findById(conversationId);
     if (!conv || conv.type !== 'group') throw NotFound('Group not found');
-    await assertManageGroup(conv, userId);
+    await assertEditGroup(conv, userId);
     const set: Record<string, unknown> = {};
     if (patch.name !== undefined) set.name = patch.name;
     if (patch.description !== undefined) set.description = patch.description;
@@ -609,7 +626,7 @@ export const chatService = {
   async removeMember(userId: string, conversationId: string, memberId: string) {
     const conv = await conversationRepo.findById(conversationId);
     if (!conv || conv.type !== 'group') throw NotFound('Group not found');
-    if (memberId !== userId) await assertManageGroup(conv, userId); // leaving is allowed; removing others needs admin
+    if (memberId !== userId) await assertEditGroup(conv, userId); // leaving is allowed; removing others needs admin or the edit allowlist
     const wasMember = conv.participantIds.includes(memberId);
     await ConversationModel().updateOne({ _id: conv._id }, { $pull: { participantIds: memberId, members: { userId: memberId } } });
     emitToUsers(conv.participantIds, CHAT_EVENTS.CONVERSATION_UPDATED, { conversationId });

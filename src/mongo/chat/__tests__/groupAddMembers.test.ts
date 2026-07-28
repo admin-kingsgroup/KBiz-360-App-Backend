@@ -4,10 +4,11 @@ import { ConversationModel, MessageModel } from '../chat.models';
 import { crmRepo } from '../../crm.repo';
 import { chatService } from '../chat.service';
 
-// The add-only allowlist: faiz/pravesh/farhan@travkings.com may ADD members to a group they belong
-// to (without being admin/creator), but still cannot remove members. Uses faiz's REAL id (the guard
-// resolves the email from the CRM); the group creator + the person-to-add are synthetic. Self-skips
-// when Mongo/the user isn't reachable; cleans up after.
+// Allowlists: faiz/pravesh/farhan@travkings.com may ADD members to a group they belong to (without
+// being admin/creator); faiz is additionally on the EDIT allowlist (rename + remove members) —
+// but deleting the group / promoting admins stays admin-only for everyone. Uses faiz's REAL id
+// (the guards resolve the email from the CRM); the group creator + the person-to-add are synthetic.
+// Self-skips when Mongo/the user isn't reachable; cleans up after.
 let ready = false;
 let faizId = '';
 const run = `t${Date.now().toString(36)}`;
@@ -67,9 +68,32 @@ describe('group add-members allowlist (add-only)', () => {
     await expect(chatService.addMembers(OUTSIDER, gid, [NEWBIE])).rejects.toThrow(/group admin/i);
   }, 30000);
 
-  it('the allowlist is ADD-only — faiz still cannot remove another member', async () => {
+  it('an edit-allowlisted member (faiz) who is NOT admin can remove another member', async () => {
     if (!ready) return;
     const gid = await makeGroup();
-    await expect(chatService.removeMember(faizId, gid, OUTSIDER)).rejects.toThrow(/group admin/i);
+    await chatService.removeMember(faizId, gid, OUTSIDER);
+    const conv = await ConversationModel().findById(gid).lean();
+    expect(conv?.participantIds).not.toContain(OUTSIDER);
+  }, 30000);
+
+  it('an edit-allowlisted member (faiz) who is NOT admin can rename the group', async () => {
+    if (!ready) return;
+    const gid = await makeGroup();
+    const dto = await chatService.updateGroup(faizId, gid, { name: 'renamed by faiz' });
+    expect(dto.name).toBe('renamed by faiz');
+  }, 30000);
+
+  it('a non-allowlisted plain member can neither rename nor remove', async () => {
+    if (!ready) return;
+    const gid = await makeGroup();
+    await expect(chatService.updateGroup(OUTSIDER, gid, { name: 'nope' })).rejects.toThrow(/group admin/i);
+    await expect(chatService.removeMember(OUTSIDER, gid, faizId)).rejects.toThrow(/group admin/i);
+  }, 30000);
+
+  it('the edit allowlist does NOT extend to deleting the group or promoting admins', async () => {
+    if (!ready) return;
+    const gid = await makeGroup();
+    await expect(chatService.deleteGroup(faizId, gid)).rejects.toThrow(/group admin/i);
+    await expect(chatService.promoteAdmin(faizId, gid, OUTSIDER)).rejects.toThrow(/group admin/i);
   }, 30000);
 });
