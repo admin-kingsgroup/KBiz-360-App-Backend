@@ -17,7 +17,7 @@ export const emailPush = {
       data: { type: 'email', id: 'inbox' },
       sound: 'default' as const,
       priority: 'high' as const,
-      channelId: 'default' as const,
+      channelId: 'general' as const, // non-badging channel — badge is reserved for unread chats
     }));
     if (!config.push.enabled) {
       // eslint-disable-next-line no-console

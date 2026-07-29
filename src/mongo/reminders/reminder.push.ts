@@ -12,7 +12,7 @@ interface ExpoMessage {
   body: string;
   data: Record<string, unknown>;
   sound: 'default';
-  channelId: 'default';
+  channelId: 'general'; // non-badging channel — the app-icon badge is reserved for unread chats
   priority: 'high';
 }
 
@@ -48,7 +48,7 @@ async function sendToUser(userId: string, title: string, text: string, reminderI
     body,
     data: { type: 'reminder', id: reminderId },
     sound: 'default',
-    channelId: 'default',
+    channelId: 'general',
     priority: 'high',
   }));
 
