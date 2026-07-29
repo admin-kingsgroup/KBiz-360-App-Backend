@@ -61,7 +61,7 @@ export function registerChatHandlers(io: Server): void {
     });
 
     // Send via socket (with ack) — mirrors the REST POST /messages and emits chat:receive.
-    socket.on('chat:send', async (p: { conversationId: string; type?: 'text' | 'image' | 'video' | 'document' | 'voice'; text?: string; replyToId?: string; clientId?: string }, ack?: (r: unknown) => void) => {
+    socket.on('chat:send', async (p: { conversationId: string; type?: 'text' | 'image' | 'video' | 'document' | 'voice'; text?: string; replyToId?: string; clientId?: string; mentions?: string[] }, ack?: (r: unknown) => void) => {
       try {
         const dto = await chatService.sendMessage(userId!, p.conversationId, p);
         ack?.({ ok: true, message: dto });

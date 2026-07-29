@@ -107,6 +107,7 @@ export interface MessageDoc {
   attachments: Attachment[];
   replyTo: { messageId: Types.ObjectId; senderId: string; preview: string; type: string } | null;
   forwardedFrom: { messageId: Types.ObjectId; conversationId: Types.ObjectId } | null;
+  mentions: string[]; // userIds @-mentioned in `text` (participants only; pre-mentions docs lack the field)
   reactions: Reaction[];
   status: 'sent' | 'delivered' | 'read';
   sentAt: Date;
@@ -142,6 +143,7 @@ const MessageSchema = new Schema<MessageDoc>(
       type: new Schema({ messageId: Schema.Types.ObjectId, conversationId: Schema.Types.ObjectId }, { _id: false }),
       default: null,
     },
+    mentions: { type: [String], default: [] },
     reactions: { type: [new Schema<Reaction>({ userId: String, emoji: String, at: Date }, { _id: false })], default: [] },
     status: { type: String, enum: ['sent', 'delivered', 'read'], default: 'sent', index: true },
     sentAt: { type: Date, default: Date.now },

@@ -54,6 +54,9 @@ const sendSchema = z.object({
   attachments: z.array(attachmentSchema).optional(),
   replyToId: z.string().optional(),
   clientId: z.string().optional(),
+  // @-mentioned userIds; the service keeps only actual participants. `forwardedFrom` is NOT
+  // client-settable — zod strips it here, only forward() stamps it.
+  mentions: z.array(z.string()).max(50).optional(),
 });
 
 // ── conversations ──

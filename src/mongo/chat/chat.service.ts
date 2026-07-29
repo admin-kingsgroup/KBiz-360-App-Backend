@@ -127,6 +127,7 @@ function toMessageBase(m: MessageDoc) {
     attachments: deleted ? [] : m.attachments,
     replyTo: m.replyTo ? { messageId: String(m.replyTo.messageId), senderId: m.replyTo.senderId, preview: m.replyTo.preview, type: m.replyTo.type } : null,
     forwardedFrom: m.forwardedFrom ? { messageId: String(m.forwardedFrom.messageId), conversationId: String(m.forwardedFrom.conversationId) } : null,
+    mentions: deleted ? [] : (m.mentions ?? []), // pre-mentions docs lack the field
     reactions: m.reactions.map((r) => ({ userId: r.userId, emoji: r.emoji })),
     status: m.status,
     sentAt: m.sentAt,
@@ -271,7 +272,8 @@ export const chatService = {
     return msgs.map((m) => toMessageDTO(m, userId));
   },
 
-  async sendMessage(userId: string, conversationId: string, input: { type?: MessageDoc['type']; text?: string; attachments?: Attachment[]; replyToId?: string; clientId?: string }) {
+  // `forwardedFrom` is internal-only (set by forward(), never in the REST schema — zod strips it).
+  async sendMessage(userId: string, conversationId: string, input: { type?: MessageDoc['type']; text?: string; attachments?: Attachment[]; replyToId?: string; clientId?: string; mentions?: string[]; forwardedFrom?: MessageDoc['forwardedFrom'] }) {
     const conv = await conversationRepo.findById(conversationId);
     if (!conv) throw NotFound('Conversation not found');
     assertMember(conv, userId);
@@ -291,6 +293,9 @@ export const chatService = {
     const type = input.type ?? (input.attachments?.length ? 'document' : 'text');
     if (type === 'text' && !input.text?.trim()) throw BadRequest('Empty message');
 
+    // Mentions: only actual participants count (a stale/forged id must never trigger a push).
+    const mentions = [...new Set(input.mentions ?? [])].filter((id) => conv.participantIds.includes(id));
+
     const now = new Date();
     const created = (await messageRepo.create({
       conversationId: conv._id,
@@ -300,6 +305,8 @@ export const chatService = {
       clientId: input.clientId ?? null,
       attachments: input.attachments ?? [],
       replyTo,
+      forwardedFrom: input.forwardedFrom ?? null,
+      mentions,
       status: 'sent',
       sentAt: now,
       deliveredTo: [userId],
@@ -329,7 +336,8 @@ export const chatService = {
         const body = conv.type === 'group' ? `${senderName}: ${preview}` : preview;
         await Promise.all(recipients.map((r) => chatPush.notifyNewMessage(r, {
           title,
-          body,
+          body: mentions.includes(r) ? `${senderName} mentioned you: ${preview}` : body,
+          mention: mentions.includes(r),
           conversationId,
           messageId: String(created._id),
           senderId: userId,
@@ -474,7 +482,14 @@ export const chatService = {
     for (const cid of toConversationIds) {
       const conv = await conversationRepo.findById(cid);
       if (!conv || !conv.participantIds.includes(userId)) continue;
-      const sent = await this.sendMessage(userId, cid, { type: src.type, text: src.text, attachments: src.attachments });
+      // Keep the ORIGINAL origin on a re-forward (WhatsApp-style: the label survives forward chains).
+      // Mentions are deliberately NOT carried — the "@Name" text stays but nobody is re-notified.
+      const sent = await this.sendMessage(userId, cid, {
+        type: src.type,
+        text: src.text,
+        attachments: src.attachments,
+        forwardedFrom: src.forwardedFrom ?? { messageId: src._id, conversationId: src.conversationId },
+      });
       results.push(sent);
     }
     return results;

@@ -49,6 +49,7 @@ async function postToExpo(messages: ExpoMessage[]): Promise<void> {
 export interface ChatPushOpts {
   title: string;
   body: string;
+  mention?: boolean; // this recipient was @-mentioned — client renders the "mentioned you" line
   conversationId: string;
   // Rich fields for the FCM data path (background handler rebuilds the cached list entry from them).
   messageId?: string;
@@ -81,6 +82,7 @@ export const chatPush = {
           sentAt: opts.sentAt ?? new Date().toISOString(),
           title: opts.title,
           body: opts.body,
+          mention: opts.mention ? '1' : '', // FCM data values must be strings
         };
         let sent = 0;
         // iOS cannot run JS on data-only pushes — the apns alert makes it display the banner natively.
