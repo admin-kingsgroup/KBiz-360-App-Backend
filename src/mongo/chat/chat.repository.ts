@@ -39,17 +39,21 @@ export type ReceiptStatus = MessageDoc['status'];
 export interface ReceiptResult { ids: string[]; statuses: { id: string; status: ReceiptStatus }[] }
 const STATUS_RANK: Record<ReceiptStatus, number> = { sent: 0, delivered: 1, read: 2 };
 
-// 'read' once EVERY other participant read, 'delivered' once every other participant has it,
-// else 'sent'. A read receipt implies delivery. (Also used by scripts/backfill-receipt-status.ts.)
+// 'read' once ANY other participant read, 'delivered' once any other participant has it, else
+// 'sent'. A read receipt implies delivery. Any-member semantics are a product decision (2026-07):
+// in a group the sender's tick goes double as soon as ONE member has seen the message — waiting
+// for every member left group ticks stuck on 'sent' whenever anyone stayed offline. A direct chat
+// has a single other participant, so any == every there. (Also used by scripts/backfill-receipt-status.ts.)
 export function aggregateStatus(
   m: { senderId: string; deliveredTo?: string[] | null; readBy?: { userId: string }[] | null },
   participantIds: string[],
 ): ReceiptStatus {
   const others = participantIds.filter((p) => p !== m.senderId);
+  if (!others.length) return 'read'; // solo roster — nothing can be pending
   const readSet = new Set((m.readBy ?? []).map((r) => r.userId));
   const delivSet = new Set([...(m.deliveredTo ?? []), ...readSet]);
-  if (others.every((o) => readSet.has(o))) return 'read';
-  if (others.every((o) => delivSet.has(o))) return 'delivered';
+  if (others.some((o) => readSet.has(o))) return 'read';
+  if (others.some((o) => delivSet.has(o))) return 'delivered';
   return 'sent';
 }
 

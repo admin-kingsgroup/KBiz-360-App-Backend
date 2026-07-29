@@ -51,32 +51,40 @@ afterAll(async () => {
 }, 20000);
 
 describe('Receipt aggregation — group of 3', () => {
-  it('one read ⇒ stays sent; all delivered ⇒ delivered; all read ⇒ read (with first-reach scalars)', async () => {
+  it('any delivery ⇒ delivered; any read ⇒ read (with first-reach scalars)', async () => {
     if (!ready) return;
     const conv = await makeConv('group', [A, B, C]);
     const cid = String(conv._id);
     const msg = await makeMsg(conv._id, A);
     const mid = String(msg._id);
 
-    // B reads — C hasn't even received it, so the AGGREGATE stays 'sent' (the old code flipped to 'read' here).
-    let r = await messageRepo.markRead(cid, B, conv.participantIds, new Date());
-    expect(r.ids).toEqual([mid]);
-    expect(r.statuses).toEqual([{ id: mid, status: 'sent' }]);
-    expect((await fetchMsg(msg._id)).status).toBe('sent');
-
-    // C delivered — everyone has it now (B's read implies delivery) ⇒ 'delivered'.
+    // C receives it — ONE member having it is enough for the grey double tick (B still pending).
     const d = await messageRepo.markDelivered(cid, C, conv.participantIds, new Date());
+    expect(d.ids).toEqual([mid]);
     expect(d.statuses).toEqual([{ id: mid, status: 'delivered' }]);
     let doc = await fetchMsg(msg._id);
     expect(doc.status).toBe('delivered');
     expect(doc.deliveredAt).toBeTruthy();
     expect(doc.readAt).toBeNull();
 
-    // C reads — every other participant read ⇒ 'read'.
-    r = await messageRepo.markRead(cid, C, conv.participantIds, new Date());
+    // B reads — ANY member reading flips the aggregate to 'read', even though C never read.
+    const r = await messageRepo.markRead(cid, B, conv.participantIds, new Date());
     expect(r.statuses).toEqual([{ id: mid, status: 'read' }]);
     doc = await fetchMsg(msg._id);
     expect(doc.status).toBe('read');
+    expect(doc.readAt).toBeTruthy();
+  });
+
+  it('one member reading flips a still-sent message straight to read (both scalars stamped)', async () => {
+    if (!ready) return;
+    const conv = await makeConv('group', [A, B, C]);
+    const msg = await makeMsg(conv._id, A);
+    // B reads while C hasn't even received it — the sender still gets the blue tick.
+    const r = await messageRepo.markRead(String(conv._id), B, conv.participantIds, new Date());
+    expect(r.statuses).toEqual([{ id: String(msg._id), status: 'read' }]);
+    const doc = await fetchMsg(msg._id);
+    expect(doc.status).toBe('read');
+    expect(doc.deliveredAt).toBeTruthy(); // sent→read jump stamps delivery too
     expect(doc.readAt).toBeTruthy();
   });
 
@@ -84,13 +92,13 @@ describe('Receipt aggregation — group of 3', () => {
     if (!ready) return;
     const conv = await makeConv('group', [A, B, C]);
     const msg = await makeMsg(conv._id, A);
-    // Legacy-shaped state: stored 'read' although C never received it (what the old $set left behind).
+    // Legacy-shaped state: stored 'read' although nobody is in readBy (so the recomputed
+    // aggregate is only 'delivered') — the stored tick must not move down.
     await MessageModel().updateOne(
       { _id: msg._id },
-      { $set: { status: 'read', readAt: new Date(), readBy: [{ userId: B, at: new Date() }], deliveredTo: [A, B] } },
+      { $set: { status: 'read', readAt: new Date(), readBy: [], deliveredTo: [A, B] } },
     );
     const d = await messageRepo.markDelivered(String(conv._id), C, conv.participantIds, new Date());
-    // Aggregate says 'delivered' (C never read) but the stored tick must not move down.
     expect(d.statuses).toEqual([{ id: String(msg._id), status: 'read' }]);
     expect((await fetchMsg(msg._id)).status).toBe('read');
   });
@@ -142,10 +150,11 @@ describe('markDeliveredEverywhere', () => {
     expect(res.conversations).toBe(2); // one emission per affected conversation
     expect(res.delivered).toBe(2);
 
-    // Direct: D was the only recipient ⇒ 'delivered'. Group: B is still pending ⇒ aggregate stays 'sent'.
+    // Direct: D was the only recipient ⇒ 'delivered'. Group: any member having it counts too,
+    // so D's sweep double-ticks the group message even though B is still pending.
     expect((await fetchMsg(inDirect._id)).status).toBe('delivered');
     const groupDoc = await fetchMsg(inGroup._id);
-    expect(groupDoc.status).toBe('sent');
+    expect(groupDoc.status).toBe('delivered');
     expect(groupDoc.deliveredTo).toContain(D);
 
     // Idempotent: nothing pending on a second sweep.

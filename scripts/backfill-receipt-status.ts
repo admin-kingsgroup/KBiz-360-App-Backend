@@ -1,8 +1,10 @@
 /* eslint-disable no-console */
-// Recomputes every non-system message's AGGREGATE receipt status (WhatsApp semantics: 'read' once
-// every other participant read, 'delivered' once every other participant has it) from its
+// Recomputes every non-system message's AGGREGATE receipt status ('read' once ANY other
+// participant read, 'delivered' once any other participant has it — see aggregateStatus) from its
 // deliveredTo/readBy sets vs the conversation's CURRENT participantIds. MONOTONIC: a stored status
 // is never downgraded and deliveredAt/readAt are only filled when null. DRY-RUN by default.
+// Run it after deploying the any-member semantics: historical group messages someone already read
+// are still stored 'sent'/'delivered' and only flip on the next receipt without this backfill.
 // Run: npx ts-node scripts/backfill-receipt-status.ts           (report would-change counts)
 //      npx ts-node scripts/backfill-receipt-status.ts --apply   (write)
 import 'dotenv/config';
