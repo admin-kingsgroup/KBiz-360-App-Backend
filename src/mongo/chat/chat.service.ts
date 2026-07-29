@@ -470,6 +470,22 @@ export const chatService = {
     return { pinned: m.pinned };
   },
 
+  // Per-user receipts for one message ("message info"). Sender-only, like
+  // WhatsApp — other participants never see who read whose messages.
+  async receipts(userId: string, messageId: string) {
+    const m = await messageRepo.findById(messageId);
+    if (!m || m.senderId !== userId) throw NotFound('Message not found'); // don't leak existence to non-senders
+    const conv = await conversationRepo.findById(String(m.conversationId));
+    if (!conv) throw NotFound('Conversation not found');
+    assertMember(conv, userId);
+    const readBy = (m.readBy ?? [])
+      .filter((r) => r.userId !== userId)
+      .map((r) => ({ userId: r.userId, at: r.at ? r.at.getTime() : null }));
+    const readSet = new Set(readBy.map((r) => r.userId));
+    const deliveredTo = (m.deliveredTo ?? []).filter((u) => u !== userId && !readSet.has(u));
+    return { readBy, deliveredTo, participants: conv.participantIds.filter((u) => u !== userId) };
+  },
+
   async forward(userId: string, messageId: string, toConversationIds: string[]) {
     const src = await messageRepo.findByIdLean(messageId);
     if (!src) throw NotFound('Message not found');

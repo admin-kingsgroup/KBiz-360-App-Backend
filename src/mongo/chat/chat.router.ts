@@ -80,6 +80,7 @@ chatRouter.delete('/messages/:id', asyncHandler(async (req, res) => {
 chatRouter.post('/messages/:id/reaction', validate(z.object({ emoji: z.string().min(1) })), asyncHandler(async (req, res) => res.json(await chatService.react(uid(req), req.params.id, req.body.emoji))));
 chatRouter.post('/messages/:id/star', asyncHandler(async (req, res) => res.json(await chatService.star(uid(req), req.params.id))));
 chatRouter.post('/messages/:id/pin', asyncHandler(async (req, res) => res.json(await chatService.pin(uid(req), req.params.id))));
+chatRouter.get('/messages/:id/receipts', asyncHandler(async (req, res) => res.json(await chatService.receipts(uid(req), req.params.id))));
 chatRouter.post('/messages/read', validate(z.object({ conversationId: z.string().min(1) })), asyncHandler(async (req, res) => res.json(await chatService.markRead(uid(req), req.body.conversationId))));
 chatRouter.post('/messages/forward', validate(z.object({ messageId: z.string().min(1), conversationIds: z.array(z.string()).min(1) })), asyncHandler(async (req, res) => res.json(await chatService.forward(uid(req), req.body.messageId, req.body.conversationIds))));
 chatRouter.get('/messages/starred', asyncHandler(async (req, res) => res.json(await chatService.starred(uid(req)))));
