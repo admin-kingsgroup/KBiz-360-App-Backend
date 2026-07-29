@@ -25,6 +25,7 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./web-dist:/srv/web:ro   # web chat client build (see Caddyfile /web/* block)
       - caddy_data:/data
       - caddy_config:/config
     depends_on:

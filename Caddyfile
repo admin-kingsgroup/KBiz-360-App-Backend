@@ -1,3 +1,13 @@
 kbiz360.duckdns.org {
-	reverse_proxy backend:4000
+	# Web chat client (kb360-rn/Web) — static SPA served same-origin with the API
+	# on purpose: helmet's Cross-Origin-Resource-Policy would block /uploads media
+	# from any other origin. Deploy = rsync the Vite dist/ to ./web-dist.
+	handle_path /web/* {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+	handle {
+		reverse_proxy backend:4000
+	}
 }
