@@ -1,5 +1,5 @@
 import { connectMongo, disconnectMongo, appDb } from '../../connection';
-import { attendanceService, geofenceExitStillInside, teamScope, superUserIds, GEOFENCE_EXIT_BUFFER_M } from '../attendance.service';
+import { attendanceService, geofenceExitStillInside, resolveCheckOutAt, teamScope, superUserIds, GEOFENCE_EXIT_BUFFER_M } from '../attendance.service';
 import { punchSchema } from '../attendance.router';
 
 // Regression: validate() replaces req.body with the parsed schema, dropping unknown keys. If
@@ -11,6 +11,45 @@ describe('punchSchema preserves source (drift-guard regression)', () => {
   });
   it('rejects an unknown source value', () => {
     expect(punchSchema.safeParse({ source: 'spoofed' }).success).toBe(false);
+  });
+  // Same stripping trap for exitAt: if it isn't in the schema, validate() drops it and check-out
+  // back-dating silently dies (every checkout reverts to punch-arrival time).
+  it('keeps a valid ISO exitAt after parsing', () => {
+    const parsed = punchSchema.parse({ method: 'auto', source: 'geofence', exitAt: '2026-07-29T12:35:00.000Z' });
+    expect(parsed.exitAt).toBe('2026-07-29T12:35:00.000Z');
+  });
+  it('rejects a non-ISO exitAt', () => {
+    expect(punchSchema.safeParse({ exitAt: 'yesterday evening' }).success).toBe(false);
+  });
+});
+
+// Check-out back-dating: the recorded out time must be when the person LEFT (the OS Exit instant
+// the client persisted), not when the punch finally reached the server — but only inside hard
+// bounds, so a bad clock or a spoofed client can't rewrite history.
+describe('resolveCheckOutAt (check-out back-dating, pure)', () => {
+  const IN = new Date('2026-07-29T05:32:00.000Z'); // 11:02 AM IST
+  const EXIT = new Date('2026-07-29T12:35:00.000Z'); // 6:05 PM IST — when the OS saw the departure
+  const NOW = new Date('2026-07-29T14:30:00.000Z'); // 8:00 PM IST — when the punch finally landed
+
+  it('geofence punch with a valid exitAt → stamped at the exit instant, not arrival (the 1–2 h late-checkout fix)', () => {
+    expect(resolveCheckOutAt({ source: 'geofence', exitAt: EXIT.toISOString() }, IN, NOW)).toEqual(EXIT);
+  });
+  it('no exitAt, or a non-geofence (manual/face) punch → arrival time', () => {
+    expect(resolveCheckOutAt({ source: 'geofence' }, IN, NOW)).toEqual(NOW);
+    expect(resolveCheckOutAt({ exitAt: EXIT.toISOString() }, IN, NOW)).toEqual(NOW);
+  });
+  it('unparseable or future exitAt → distrusted, arrival time', () => {
+    expect(resolveCheckOutAt({ source: 'geofence', exitAt: 'garbage' }, IN, NOW)).toEqual(NOW);
+    expect(resolveCheckOutAt({ source: 'geofence', exitAt: '2026-07-29T15:00:00.000Z' }, IN, NOW)).toEqual(NOW);
+  });
+  it('exitAt at or before today\'s check-in → stale drift marker, arrival time', () => {
+    expect(resolveCheckOutAt({ source: 'geofence', exitAt: IN.toISOString() }, IN, NOW)).toEqual(NOW);
+    expect(resolveCheckOutAt({ source: 'geofence', exitAt: '2026-07-29T05:00:00.000Z' }, IN, NOW)).toEqual(NOW);
+    expect(resolveCheckOutAt({ source: 'geofence', exitAt: EXIT.toISOString() }, null, NOW)).toEqual(NOW);
+  });
+  it('exitAt from a previous business day (IST) → distrusted, arrival time', () => {
+    // 6:30 PM IST on 07-28 vs a punch landing 07-29 — must not close today at yesterday's instant.
+    expect(resolveCheckOutAt({ source: 'geofence', exitAt: '2026-07-28T13:00:00.000Z' }, new Date('2026-07-28T05:00:00.000Z'), NOW)).toEqual(NOW);
   });
 });
 

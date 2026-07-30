@@ -21,6 +21,10 @@ export interface PunchBody {
   // 'geofence' = the headless OS geofence task fired this punch. Only these check-outs get the
   // "still inside the office" drift rejection — user-initiated punches are never second-guessed.
   source?: 'geofence';
+  // ISO instant the OS FIRST detected this departure (client-persisted pending-exit marker: the
+  // punch itself is often refused/undeliverable at that moment). Geofence-sourced check-outs only;
+  // resolveCheckOutAt bounds it before it becomes checkOutAt.
+  exitAt?: string;
 }
 
 const PALETTE = ['#9A6CF0', '#4F8BFF', '#37B6A4', '#E8A13A', '#E3674E', '#0C0E14'];
@@ -98,6 +102,29 @@ export function geofenceExitStillInside(
   }
   if (!best || best.d > best.r + GEOFENCE_EXIT_BUFFER_M) return false; // clearly beyond the fence
   return best.ssid ? wifiVerified : true; // inside the fence: Wi-Fi leg must hold too when required
+}
+
+// Pure decision: which instant a check-out is stamped with. The punch often lands LONG after the
+// person actually left — the Exit event fired with no usable fix, then Doze deferred the phone's
+// reconcile for 1–2 hours — and stamping arrival time recorded all of that delay as a late
+// checkout. A geofence-sourced punch may therefore carry `exitAt`, the client-persisted instant
+// the OS FIRST detected the departure, and the check-out is back-dated to it. Hard bounds (bad
+// clock / spoof guard) — outside any of them the claim is distrusted and arrival time stands:
+//   - must parse, and not lie in the future;
+//   - must fall strictly AFTER today's check-in (a marker predating it is stale drift);
+//   - must be the same business day as the punch (yesterday's marker can't close today).
+export function resolveCheckOutAt(
+  body: Pick<PunchBody, 'source' | 'exitAt'>,
+  checkInAt: Date | null | undefined,
+  now: Date,
+): Date {
+  if (body.source !== 'geofence' || !body.exitAt) return now;
+  const claimed = new Date(body.exitAt);
+  const t = claimed.getTime();
+  if (!Number.isFinite(t) || t > now.getTime()) return now;
+  if (!checkInAt || t <= checkInAt.getTime()) return now;
+  if (dayKeyInTz(claimed) !== dayKeyInTz(now)) return now;
+  return claimed;
 }
 
 // Pure decision for who the team view covers (GET /attendance/team).
@@ -299,15 +326,18 @@ export const attendanceService = {
     if (body.source === 'geofence' && geofenceExitStillInside(offices, body.coords, wifiVerified)) {
       throw BadRequest('Still at the office — auto check-out ignored');
     }
+    // Back-dating: a geofence punch may carry the instant the OS first detected the departure
+    // (exitAt) — the recorded out time is when the person LEFT, not when the punch finally landed.
+    const outAt = resolveCheckOutAt(body, today.checkInAt, now);
     const saved = await attendanceRepo.upsert(userId, key, {
-      checkOutAt: now,
+      checkOutAt: outAt,
       method: viaFor(body, wifiVerified),
       present: false,
       distanceMeters: distance ?? today.distanceMeters,
       faceVerified: body.method === 'face' ? true : today.faceVerified,
     });
     // System alert ("X checked out") into the branch's attendance channel — fire-and-forget.
-    void alertService.recordAttendancePunch(userId, 'out', now, saved?.method ?? null);
+    void alertService.recordAttendancePunch(userId, 'out', outAt, saved?.method ?? null);
     return mapMe(saved);
   },
 

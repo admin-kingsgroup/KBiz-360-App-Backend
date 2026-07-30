@@ -19,6 +19,10 @@ export const punchSchema = z.object({
   // 'geofence' = punch fired by the headless OS geofence task; drives the check-out drift guard.
   // MUST be listed here — validate() strips unknown keys, so omitting it silently disabled the guard.
   source: z.enum(['geofence']).optional(),
+  // ISO instant the OS FIRST detected the departure (client pending-exit marker). Geofence-sourced
+  // check-outs only; resolveCheckOutAt bounds it before it becomes checkOutAt. Same stripping trap
+  // as `source`: omitting it here silently disables back-dating.
+  exitAt: z.string().datetime().optional(),
 });
 
 attendanceRouter.post('/check-in', requireAuth, validate(punchSchema), asyncHandler(async (req, res) => {
