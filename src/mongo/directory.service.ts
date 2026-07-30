@@ -250,8 +250,61 @@ export const directoryService = {
     if (patch.color !== undefined) set.color = patch.color;
     return appDepartments.update(id, set);
   },
-  async deleteDepartment(_userId: string, id: string) {
-    return appDepartments.remove(id);
+  // Delete a department — app-created ones are soft-removed (active:false); CRM-synced ones are
+  // hard-deleted the way the CRM itself does it. Because per-branch CRM rows are expanded
+  // company-wide at read time, deleting one visible tile must remove EVERY row of that
+  // (company, name) — otherwise the canonical row just re-expands it on the next read.
+  async deleteDepartment(userId: string, id: string) {
+    const app = await appDepartments.byId(id);
+    if (app) return appDepartments.remove(id);
+    const access = await accessService.accessForUserId(userId);
+    if (!access) throw Forbidden('Session user not found');
+    const depts = await crmRepo.listDepartments(tenantFilter(access));
+    const target = depts.find((d) => String(d._id) === id);
+    if (!target) throw BadRequest('Department not found');
+    const nameKey = (s: string | null | undefined): string => (s ?? '').trim().toLowerCase();
+    const siblings = depts.filter(
+      (d) => String(d.company_id ?? '') === String(target.company_id ?? '') && nameKey(d.name ?? d.code) === nameKey(target.name ?? target.code),
+    );
+    await crmRepo.deleteDepartmentsWhere({ _id: { $in: siblings.map((d) => d._id) } });
+    return { ok: true };
+  },
+
+  // ── Deletes (super-admin). The CRM app hard-deletes these tenant-scoped, so we do the same —
+  // with guards: no deleting yourself, and a business must be emptied of branches first. ──
+  async deleteCompany(adminId: string, id: string) {
+    const access = await accessService.accessForUserId(adminId);
+    if (!access) throw Forbidden('Session user not found');
+    const company = (await crmRepo.listCompanies(tenantFilter(access))).find((c) => String(c._id) === id);
+    if (!company) throw BadRequest('Business not found');
+    const branches = await crmRepo.listBranches({ company_id: company._id });
+    if (branches.length) throw BadRequest(`"${company.name}" still has ${branches.length} branch${branches.length === 1 ? '' : 'es'} — delete them first`);
+    await crmRepo.deleteCompany(id);
+    return { ok: true };
+  },
+
+  async deleteBranch(adminId: string, id: string) {
+    const access = await accessService.accessForUserId(adminId);
+    if (!access) throw Forbidden('Session user not found');
+    if (!Types.ObjectId.isValid(id)) throw BadRequest('Branch not found');
+    const branch = (await crmRepo.listBranches(tenantFilter(access))).find((b) => String(b._id) === id);
+    if (!branch) throw BadRequest('Branch not found');
+    // Un-assign it from every user, drop its per-branch CRM department rows, then delete the branch.
+    await crmRepo.pullBranchFromAllUsers(branch._id);
+    await crmRepo.deleteDepartmentsWhere({ branch_id: branch._id });
+    await crmRepo.deleteBranch(id);
+    return { ok: true };
+  },
+
+  async deleteUser(adminId: string, id: string) {
+    const access = await accessService.accessForUserId(adminId);
+    if (!access) throw Forbidden('Session user not found');
+    if (id === adminId) throw BadRequest('You cannot delete your own account');
+    const user = await crmRepo.getUserById(id);
+    if (!user) throw BadRequest('User not found');
+    if (access.tenantId && user.tenant_id && String(user.tenant_id) !== access.tenantId) throw BadRequest('User not found');
+    await crmRepo.deleteUser(id);
+    return { ok: true };
   },
 
   // ── Business provisioning (writes to the CRM companies collection, mirroring the ERP's doc shape

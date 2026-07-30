@@ -163,4 +163,35 @@ export const crmRepo = {
     await writeCol('roles').updateOne({ _id }, { $set: { permissions } });
     return writeCol('roles').findOne({ _id }) as Promise<CrmRole | null>;
   },
+
+  // ── DELETES (super-admin provisioning teardown). The CRM app itself hard-deletes these
+  // tenant-scoped (company/branch/department/user *.service.js deleteOne), so we mirror that —
+  // the guards (tenant scope, self-delete, company-empty) live in directory.service. ──
+  async deleteUser(id: string): Promise<boolean> {
+    const _id = oid(id);
+    if (!_id) return false;
+    return (await writeCol('users').deleteOne({ _id })).deletedCount === 1;
+  },
+  async deleteCompany(id: string): Promise<boolean> {
+    const _id = oid(id);
+    if (!_id) return false;
+    return (await writeCol('companies').deleteOne({ _id })).deletedCount === 1;
+  },
+  async deleteBranch(id: string): Promise<boolean> {
+    const _id = oid(id);
+    if (!_id) return false;
+    return (await writeCol('branches').deleteOne({ _id })).deletedCount === 1;
+  },
+  // Un-assign a branch from every user that carries it (used before deleting the branch).
+  async pullBranchFromAllUsers(branchId: Types.ObjectId): Promise<void> {
+    await writeCol('users').updateMany(
+      { branch_ids: branchId },
+      { $pull: { branch_ids: branchId }, $set: { updated_at: new Date() } },
+    );
+  },
+  // Departments are per-branch rows expanded company-wide at read time, so deleting "one"
+  // department means deleting every row of that (company, name) — hence deleteMany by filter.
+  async deleteDepartmentsWhere(filter: Record<string, unknown>): Promise<number> {
+    return (await writeCol('departments').deleteMany(filter)).deletedCount ?? 0;
+  },
 };

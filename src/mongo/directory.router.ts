@@ -144,3 +144,12 @@ directoryRouter.put('/departments/:id', requireAuth, requireSuper, validate(dept
   asyncHandler(async (req, res) => res.json(await directoryService.updateDepartment(uid(req), req.params.id, req.body))));
 directoryRouter.delete('/departments/:id', requireAuth, requireSuper,
   asyncHandler(async (req, res) => res.json(await directoryService.deleteDepartment(uid(req), req.params.id))));
+
+// Super-admin deletes (mirror the CRM's own tenant-scoped hard deletes; guards in the service:
+// a business must have no branches left, and you can never delete your own account).
+directoryRouter.delete('/companies/:id', requireAuth, requireSuper,
+  asyncHandler(async (req, res) => res.json(await directoryService.deleteCompany(uid(req), req.params.id))));
+directoryRouter.delete('/branches/:id', requireAuth, requireSuper,
+  asyncHandler(async (req, res) => res.json(await directoryService.deleteBranch(uid(req), req.params.id))));
+directoryRouter.delete('/users/:id', requireAuth, requireSuper,
+  asyncHandler(async (req, res) => res.json(await directoryService.deleteUser(uid(req), req.params.id))));
