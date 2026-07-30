@@ -70,12 +70,34 @@ export function registerChatHandlers(io: Server): void {
       }
     });
 
-    // Custom presence status (Busy / In Meeting / In Call).
+    // Presence status. `status:'offline'` is a soft-away: the connection stays
+    // up (messages keep delivering — e.g. a hidden web tab that still plays
+    // notification sounds) but this socket stops counting toward "online".
+    // Per-socket `away` flag keeps the connection-count balanced: an away
+    // socket has already decremented, so disconnect must not decrement again.
+    let away = false;
     socket.on('chat:presence', (p: { status?: string }) => {
+      if (p?.status === 'offline') {
+        if (away) return;
+        away = true;
+        if (markOffline(userId!)) {
+          io.emit(CHAT_EVENTS.OFFLINE, { userId, lastSeen: getLastSeen(userId!)?.getTime() ?? null });
+          broadcastPresence(userId!);
+        }
+        return;
+      }
+      if (away) {
+        away = false;
+        if (markOnline(userId!)) {
+          io.emit(CHAT_EVENTS.ONLINE, { userId });
+          broadcastPresence(userId!);
+        }
+      }
       io.emit(CHAT_EVENTS.ONLINE, { userId, status: p?.status ?? 'online' });
     });
 
     socket.on('disconnect', () => {
+      if (away) return; // this socket already left the online count
       if (markOffline(userId!)) {
         io.emit(CHAT_EVENTS.OFFLINE, { userId, lastSeen: getLastSeen(userId!)?.getTime() ?? null }); // epoch ms, never a raw Date
         broadcastPresence(userId!); // unified 'presence:update'
