@@ -89,8 +89,22 @@ emailRouter.post('/email/folders', validate(z.object({ name: z.string().min(1).m
     if (backfill) { try { await graph.backfillIntoFolder(userId, folder.id, matches); } catch { /* best-effort */ } }
     res.status(201).json(sfDTO(sf));
   }));
-// DELETE /api/email/folders/:id — stop routing + forget the rule (keeps the Outlook folder + its mail).
-emailRouter.delete('/email/folders/:id', asyncHandler(async (req, res) => { await smartFolderRepo.remove(uid(req), req.params.id); res.status(204).send(); }));
+// DELETE /api/email/folders/:id — remove the smart folder AND its real Outlook folder (owner call,
+// 07-31: deleting in-app deletes the folder). Graph moves the folder + its mail to Deleted Items,
+// so nothing is lost irrecoverably. Folder deletion is best-effort: the rule always dies.
+emailRouter.delete('/email/folders/:id', asyncHandler(async (req, res) => {
+  const userId = uid(req);
+  const sf = await smartFolderRepo.byId(userId, req.params.id);
+  await smartFolderRepo.remove(userId, req.params.id);
+  if (sf?.graphFolderId) { try { await graph.deleteFolder(userId, sf.graphFolderId); } catch { /* already gone / Graph hiccup */ } }
+  res.status(204).send();
+}));
+// DELETE /api/email/outlook-folders/:id — delete a real Outlook folder by Graph id (custom folders
+// shown in the app's folder strip). Graph refuses well-known folders (Inbox/Sent/…) by itself.
+emailRouter.delete('/email/outlook-folders/:id', asyncHandler(async (req, res) => {
+  await graph.deleteFolder(uid(req), req.params.id);
+  res.status(204).send();
+}));
 // GET /api/email/folders/:id/messages?skip=N — messages currently in this smart folder.
 emailRouter.get('/email/folders/:id/messages', asyncHandler(async (req, res) => {
   const sf = await smartFolderRepo.byId(uid(req), req.params.id);

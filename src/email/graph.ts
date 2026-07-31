@@ -278,6 +278,11 @@ export const graph = {
     const j = await graphFetch(userId, '/me/mailFolders', { method: 'POST', body: JSON.stringify({ displayName }) });
     return { id: j.id, displayName: j.displayName };
   },
+  // Delete a mail folder by Graph id. Graph moves the folder AND its messages to Deleted Items
+  // (recoverable from Outlook), and refuses to delete well-known folders (Inbox/Sent/…) itself.
+  async deleteFolder(userId: string, folderId: string): Promise<void> {
+    await graphFetch(userId, `/me/mailFolders/${folderId}`, { method: 'DELETE' });
+  },
   // List messages in an arbitrary folder by its Graph id (smart folders). Folder stamped 'inbox' for
   // the DTO — message actions (read/star/move/delete) are addressed by message id, folder-agnostic.
   async listFolderMessages(userId: string, folderId: string, skip = 0): Promise<EmailDTO[]> {
