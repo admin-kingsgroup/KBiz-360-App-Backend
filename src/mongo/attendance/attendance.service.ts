@@ -258,25 +258,16 @@ function mapMe(doc: AttendanceDoc | null) {
 }
 
 export const attendanceService = {
-  // Anti-spoofing gate for CHECK-IN — STRICT: the punch must come from INSIDE one of the user's
-  // office geofences AND, when that office has a Wi-Fi SSID configured, from that office's Wi-Fi.
-  // An office with no configured SSID stays geofence-only (so attendance isn't bricked before the
-  // network is set up). If no office is configured at all, the punch is allowed unverified.
+  // CHECK-IN context — INFORMATIONAL ONLY (owner call, 07-31): every location/Wi-Fi condition on
+  // punching was removed while a new attendance method is decided. Distance and Wi-Fi match are
+  // still computed and stored on the punch when the client sends them, but NOTHING is rejected —
+  // a check-in from anywhere, with or without coords, is accepted.
   async assertAtOffice(userId: string, body: PunchBody): Promise<{ distance: number | null; wifiVerified: boolean }> {
     const offices = await officesForUser(userId);
-    if (!offices.length) return { distance: null, wifiVerified: false }; // nothing to validate against yet
-    if (!body.coords) throw Forbidden('Location is required to record attendance — enable location and try again');
-    const near = nearestOffice(offices, body.coords);
-    if (!near || !near.within) {
-      throw Forbidden(near ? `You must be at the office to check in — you are ${near.distance} m away` : 'You are not at a registered office');
-    }
-    // Wi-Fi leg: judge against the offices the user is actually INSIDE (overlapping fences count).
-    const reported = normalizeSsid(body.wifiSsid);
-    const insideOffices = offices.filter((o) => haversine(body.coords as Coords, { lat: o.lat, lng: o.lng }) <= o.radius);
-    const wifiVerified = insideOffices.some((o) => !!normalizeSsid(o.wifiSsid) && normalizeSsid(o.wifiSsid) === reported);
-    const wifiOk = insideOffices.some((o) => !normalizeSsid(o.wifiSsid) || normalizeSsid(o.wifiSsid) === reported);
-    if (!wifiOk) throw Forbidden('You must be on the office Wi-Fi to check in');
-    return { distance: near.distance, wifiVerified };
+    if (!offices.length) return { distance: null, wifiVerified: false };
+    const wifiVerified = wifiVerifiedFor(offices, body.wifiSsid);
+    const distance = body.coords ? (nearestOffice(offices, body.coords)?.distance ?? null) : null;
+    return { distance, wifiVerified };
   },
 
   // POST /attendance/check-in — first punch of the day, OR a re-entry after a check-out.
