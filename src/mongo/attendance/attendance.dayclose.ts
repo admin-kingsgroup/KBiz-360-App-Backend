@@ -23,10 +23,18 @@ export function startAttendanceDayClose(intervalMs = 60_000): void {
   if (timer) return;
   timer = setInterval(() => {
     if (businessHour() < DAY_CLOSE_HOUR) return; // only from 10pm local onward
-    void attendanceService.dayCloseReport().catch((e: Error) => {
-      // eslint-disable-next-line no-console
-      console.warn('[attendance-dayclose] error:', e.message);
-    });
+    // Auto-close forgotten check-outs FIRST (stamped 7pm, method 'Auto-closed'), then the report —
+    // so the day-close summary counts those days as closed rather than "still in".
+    void attendanceService.autoCloseOpenDays()
+      .then((r) => {
+        // eslint-disable-next-line no-console
+        if (r.closed > 0) console.log(`[attendance-dayclose] auto-closed ${r.closed} forgotten checkout(s) for ${r.day}`);
+        return attendanceService.dayCloseReport();
+      })
+      .catch((e: Error) => {
+        // eslint-disable-next-line no-console
+        console.warn('[attendance-dayclose] error:', e.message);
+      });
   }, intervalMs);
 }
 

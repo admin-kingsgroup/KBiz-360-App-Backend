@@ -62,9 +62,12 @@ const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 // and shift by the difference.
 const atBusinessTime = (dayKey: string, hhmm: string): Date => {
   const guess = new Date(`${dayKey}T${hhmm}:00.000Z`);
+  // hourCycle 'h23', NOT hour12:false — the latter selects the h24 cycle in Node's ICU, which
+  // renders the midnight hour as "24:30:00" (an unparseable wall clock → Invalid Date). With IST
+  // that broke every business time in the 18:30–19:29 window, including the 19:00 defaults.
   const fmt = new Intl.DateTimeFormat('en-CA', {
     timeZone: ATTENDANCE_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
   });
   const wall = new Date(fmt.format(guess).replace(', ', 'T').replace(' ', 'T') + 'Z');
   return new Date(guess.getTime() - (wall.getTime() - guess.getTime()));
@@ -83,6 +86,18 @@ function fmtTime(d: Date | null): string | null {
 // + face photo) is being tested — no "X checked in/out" channel posts/pushes and no 10pm day-close
 // report. Flip back to true (or set ATTENDANCE_ALERTS=on) once the flow is approved.
 const ATTENDANCE_ALERTS_ENABLED = process.env.ATTENDANCE_ALERTS === 'on';
+
+// Forgotten check-outs (owner call, 07-31): the 10pm sweep closes any day still open, stamping the
+// check-out at 7pm business time — NOT the sweep hour — labelled method 'Auto-closed' so it is
+// visibly different from a real punch. A check-in AFTER the stamp hour closes at the check-in
+// instant instead (a checkout can never precede its check-in).
+const AUTO_CLOSE_STAMP = process.env.ATTENDANCE_AUTOCLOSE_TIME || '19:00';
+
+// Pure: the instant a forgotten day is closed at (exported for tests).
+export function resolveAutoCloseAt(dayKey: string, checkInAt: Date, stampHHmm: string = AUTO_CLOSE_STAMP): Date {
+  const stamp = atBusinessTime(dayKey, stampHHmm);
+  return checkInAt.getTime() > stamp.getTime() ? checkInAt : stamp;
+}
 
 // Exit hysteresis is ZERO (owner call, 07-28): check-out is immediate the moment a fix is beyond
 // the office radius — no extra buffer. The false-exit protection that remains is evidence-quality
@@ -680,6 +695,26 @@ export const attendanceService = {
         };
       })
       .sort((a, b) => (b.in ? 1 : 0) - (a.in ? 1 : 0) || a.name.localeCompare(b.name)); // present first
+  },
+
+  // AUTO-CLOSE forgotten check-outs (owner call, 07-31). Runs from the 10pm sweep — check-out now
+  // requires being AT the office, so someone who left without punching can never close their day
+  // themselves. Every day still open gets checkOutAt stamped at 7pm business time (or the check-in
+  // instant if they punched in later than that), method 'Auto-closed'. Idempotent: once closed, a
+  // row no longer matches the open-day query. Runs regardless of the alerts kill-switch.
+  // NOTE: this runs BEFORE dayCloseReport in the sweep, so the report counts these days as closed.
+  async autoCloseOpenDays(dateKey?: string): Promise<{ day: string; closed: number }> {
+    const day = dateKey ?? todayKey();
+    const open = await attendanceRepo.openForDay(day);
+    for (const r of open) {
+      if (!r.checkInAt) continue; // defensive — the query already excludes these
+      await attendanceRepo.upsert(r.userId, day, {
+        checkOutAt: resolveAutoCloseAt(day, r.checkInAt),
+        method: 'Auto-closed',
+        present: false,
+      });
+    }
+    return { day, closed: open.length };
   },
 
   // Daily attendance DAY-CLOSE report, branch-wise. Groups every tracked (active, non-exempt) user

@@ -1,5 +1,5 @@
 import { connectMongo, disconnectMongo, appDb } from '../../connection';
-import { attendanceService, geofenceExitStillInside, resolveCheckOutAt, teamScope, superUserIds, GEOFENCE_EXIT_BUFFER_M } from '../attendance.service';
+import { attendanceService, geofenceExitStillInside, resolveCheckOutAt, resolveAutoCloseAt, teamScope, superUserIds, GEOFENCE_EXIT_BUFFER_M } from '../attendance.service';
 import { punchSchema } from '../attendance.router';
 
 // Regression: validate() replaces req.body with the parsed schema, dropping unknown keys. If
@@ -137,6 +137,23 @@ describe('superUserIds (supers are untracked, pure)', () => {
     expect(superUserIds(users, roles as any).has('norole')).toBe(false);
   });
   /* eslint-enable @typescript-eslint/no-explicit-any */
+});
+
+describe('resolveAutoCloseAt (forgotten-checkout stamp, pure)', () => {
+  const day = '2026-07-31';
+  it('normal day: closes at the 7pm business-time stamp, not the 10pm sweep hour', () => {
+    const checkIn = new Date('2026-07-31T04:30:00.000Z'); // 10:00 IST
+    const out = resolveAutoCloseAt(day, checkIn);
+    expect(out.toISOString()).toBe('2026-07-31T13:30:00.000Z'); // 19:00 IST
+  });
+  it('checked in AFTER 7pm: closes at the check-in instant (never before the check-in)', () => {
+    const checkIn = new Date('2026-07-31T14:30:00.000Z'); // 20:00 IST
+    expect(resolveAutoCloseAt(day, checkIn).toISOString()).toBe(checkIn.toISOString());
+  });
+  it('honours a custom stamp time', () => {
+    const checkIn = new Date('2026-07-31T04:30:00.000Z');
+    expect(resolveAutoCloseAt(day, checkIn, '18:00').toISOString()).toBe('2026-07-31T12:30:00.000Z'); // 18:00 IST
+  });
 });
 
 // ── DB-backed re-entry state machine ──

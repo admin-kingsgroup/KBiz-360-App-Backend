@@ -15,6 +15,10 @@ export const attendanceRepo = {
   forUsersOnDay: (dateKey: string, userIds: string[]) =>
     AttendanceModel().find({ dateKey, userId: { $in: userIds } }).lean<AttendanceDoc[]>(),
 
+  // Days still OPEN (checked in, never checked out) — the 10pm auto-close sweep's work list.
+  openForDay: (dateKey: string) =>
+    AttendanceModel().find({ dateKey, checkInAt: { $ne: null }, checkOutAt: null }).lean<AttendanceDoc[]>(),
+
   // A user's most recent records (newest first) for the personal history list.
   historyForUser: (userId: string, limit: number) =>
     AttendanceModel().find({ userId }).sort({ dateKey: -1 }).limit(limit).lean<AttendanceDoc[]>(),
