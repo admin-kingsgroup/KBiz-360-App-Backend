@@ -23,6 +23,9 @@ export const punchSchema = z.object({
   // check-outs only; resolveCheckOutAt bounds it before it becomes checkOutAt. Same stripping trap
   // as `source`: omitting it here silently disables back-dating.
   exitAt: z.string().datetime().optional(),
+  // URL of the face photo captured at punch time (uploaded via /api/uploads first). REQUIRED for
+  // check-in and check-out (owner rules, 07-31). Same stripping trap as `source`.
+  facePhotoUrl: z.string().max(500).optional(),
 });
 
 attendanceRouter.post('/check-in', requireAuth, validate(punchSchema), asyncHandler(async (req, res) => {

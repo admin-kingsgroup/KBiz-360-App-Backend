@@ -165,23 +165,23 @@ afterAll(async () => {
 describe('check-in / check-out re-entry model (first-in stays, last-out wins)', () => {
   it('open → duplicate check-in rejected → check-out closes → check-in RE-OPENS preserving first-in', async () => {
     if (!ready) return;
-    const opened = await attendanceService.checkIn(FAKE_USER, { coords: null });
+    const opened = await attendanceService.checkIn(FAKE_USER, { coords: null, facePhotoUrl: 'test://face.jpg' });
     expect(opened.inTime).toBeTruthy();
     expect(opened.present).toBe(true);
     const firstIn = opened.inTime;
 
-    await expect(attendanceService.checkIn(FAKE_USER, { coords: null })).rejects.toThrow('Already checked in');
+    await expect(attendanceService.checkIn(FAKE_USER, { coords: null, facePhotoUrl: 'test://face.jpg' })).rejects.toThrow('Already checked in');
 
-    const closed = await attendanceService.checkOut(FAKE_USER, { coords: null });
+    const closed = await attendanceService.checkOut(FAKE_USER, { coords: null, facePhotoUrl: 'test://face.jpg' });
     expect(closed.outTime).toBeTruthy();
     expect(closed.present).toBe(false);
 
-    const reopened = await attendanceService.checkIn(FAKE_USER, { coords: null });
+    const reopened = await attendanceService.checkIn(FAKE_USER, { coords: null, facePhotoUrl: 'test://face.jpg' });
     expect(reopened.present).toBe(true);
     expect(reopened.outTime).toBeNull(); // the spurious/previous check-out is cleared
     expect(reopened.inTime).toBe(firstIn); // original first-in preserved
 
-    const closedAgain = await attendanceService.checkOut(FAKE_USER, { coords: null });
+    const closedAgain = await attendanceService.checkOut(FAKE_USER, { coords: null, facePhotoUrl: 'test://face.jpg' });
     expect(closedAgain.outTime).toBeTruthy(); // last-out wins
   }, 30000);
 });

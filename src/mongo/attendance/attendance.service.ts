@@ -25,6 +25,8 @@ export interface PunchBody {
   // punch itself is often refused/undeliverable at that moment). Geofence-sourced check-outs only;
   // resolveCheckOutAt bounds it before it becomes checkOutAt.
   exitAt?: string;
+  // Face photo captured at punch time (uploaded via /api/uploads first). Required for both punches.
+  facePhotoUrl?: string | null;
 }
 
 const PALETTE = ['#9A6CF0', '#4F8BFF', '#37B6A4', '#E8A13A', '#E3674E', '#0C0E14'];
@@ -254,20 +256,27 @@ function mapMe(doc: AttendanceDoc | null) {
     distanceMeters: doc.distanceMeters,
     wifiSsid: doc.wifiSsid,
     faceVerified: doc.faceVerified,
+    checkInPhotoUrl: doc.checkInPhotoUrl ?? null,
+    checkOutPhotoUrl: doc.checkOutPhotoUrl ?? null,
   };
 }
 
 export const attendanceService = {
-  // CHECK-IN context — INFORMATIONAL ONLY (owner call, 07-31): every location/Wi-Fi condition on
-  // punching was removed while a new attendance method is decided. Distance and Wi-Fi match are
-  // still computed and stored on the punch when the client sends them, but NOTHING is rejected —
-  // a check-in from anywhere, with or without coords, is accepted.
+  // Punch gate (owner rules, 07-31): BOTH check-in and check-out require
+  //   1. a live GPS fix INSIDE one of the user's office geofences (radius, default 100 m), and
+  //   2. a face photo captured at punch time (enforced by the callers, not here).
+  // No Wi-Fi requirement any more — Wi-Fi match is recorded as info only. If no office is
+  // configured at all, the punch is allowed unverified (attendance isn't bricked before setup).
   async assertAtOffice(userId: string, body: PunchBody): Promise<{ distance: number | null; wifiVerified: boolean }> {
     const offices = await officesForUser(userId);
-    if (!offices.length) return { distance: null, wifiVerified: false };
+    if (!offices.length) return { distance: null, wifiVerified: false }; // nothing to validate against yet
+    if (!body.coords) throw Forbidden('Location is required to record attendance — enable location and try again');
+    const near = nearestOffice(offices, body.coords);
+    if (!near || !near.within) {
+      throw Forbidden(near ? `You must be within ${near.office.radius} m of your office — you are ${near.distance} m away` : 'You are not at a registered office');
+    }
     const wifiVerified = wifiVerifiedFor(offices, body.wifiSsid);
-    const distance = body.coords ? (nearestOffice(offices, body.coords)?.distance ?? null) : null;
-    return { distance, wifiVerified };
+    return { distance: near.distance, wifiVerified };
   },
 
   // POST /attendance/check-in — first punch of the day, OR a re-entry after a check-out.
@@ -277,6 +286,7 @@ export const attendanceService = {
   // spurious check-out is undone the moment presence at the office is proven again.
   async checkIn(userId: string, body: PunchBody) {
     if (await isUntracked(userId)) throw BadRequest('Attendance is not tracked for your account');
+    if (!body.facePhotoUrl) throw BadRequest('A face photo is required to check in');
     const key = todayKey();
     const today = await attendanceRepo.findToday(userId, key);
     if (today?.checkInAt && !today.checkOutAt) throw BadRequest('Already checked in today');
@@ -292,40 +302,33 @@ export const attendanceService = {
       longitude: body.coords?.lng ?? null,
       distanceMeters: distance,
       wifiSsid: wifiVerified ? cleanSsid(body.wifiSsid) : null,
-      faceVerified: body.method === 'face' ? true : (reopening ? today?.faceVerified ?? null : null),
+      faceVerified: true, // a face photo is mandatory on every punch now
+      checkInPhotoUrl: body.facePhotoUrl,
     });
     // System alert ("X checked in") into the branch's attendance channel — fire-and-forget.
     void alertService.recordAttendancePunch(userId, 'in', now, saved?.method ?? null);
     return mapMe(saved);
   },
 
-  // POST /attendance/check-out — closes the day. Allowed off-site (you may leave first), distance recorded.
+  // POST /attendance/check-out — closes the day. Same gate as check-in (owner rules, 07-31):
+  // must be within the office geofence with a face photo captured at punch time.
   async checkOut(userId: string, body: PunchBody) {
     if (await isUntracked(userId)) throw BadRequest('Attendance is not tracked for your account');
+    if (!body.facePhotoUrl) throw BadRequest('A face photo is required to check out');
     const key = todayKey();
     const today = await attendanceRepo.findToday(userId, key);
     if (!today?.checkInAt) throw BadRequest('Not checked in');
     if (today.checkOutAt) throw BadRequest('Already checked out');
     const now = new Date();
-    const offices = await officesForUser(userId);
-    const wifiVerified = wifiVerifiedFor(offices, body.wifiSsid);
-    const distance = body.coords && offices.length ? (nearestOffice(offices, body.coords)?.distance ?? null) : null;
-    // Drift rejection for GEOFENCE-fired check-outs only: GPS wobble indoors routinely produces OS
-    // Exit events while the person is still at their desk. If the punch's own coordinates (or the
-    // office Wi-Fi) prove they are still inside the fence (+hysteresis), the exit is noise — refuse
-    // it. User-initiated check-outs are never blocked (leaving early from your desk is legitimate).
-    if (body.source === 'geofence' && geofenceExitStillInside(offices, body.coords, wifiVerified)) {
-      throw BadRequest('Still at the office — auto check-out ignored');
-    }
-    // Back-dating: a geofence punch may carry the instant the OS first detected the departure
-    // (exitAt) — the recorded out time is when the person LEFT, not when the punch finally landed.
+    const { distance, wifiVerified } = await this.assertAtOffice(userId, body);
     const outAt = resolveCheckOutAt(body, today.checkInAt, now);
     const saved = await attendanceRepo.upsert(userId, key, {
       checkOutAt: outAt,
       method: viaFor(body, wifiVerified),
       present: false,
       distanceMeters: distance ?? today.distanceMeters,
-      faceVerified: body.method === 'face' ? true : today.faceVerified,
+      faceVerified: true,
+      checkOutPhotoUrl: body.facePhotoUrl,
     });
     // System alert ("X checked out") into the branch's attendance channel — fire-and-forget.
     void alertService.recordAttendancePunch(userId, 'out', outAt, saved?.method ?? null);
@@ -563,6 +566,7 @@ export const attendanceService = {
         method: 'Manual',
         present: !checkOutAt,
         latitude: null, longitude: null, distanceMeters: null, wifiSsid: null, faceVerified: null,
+        checkInPhotoUrl: null, checkOutPhotoUrl: null,
         ...audit,
       };
     } else {
@@ -570,6 +574,7 @@ export const attendanceService = {
         date: new Date(`${body.date}T00:00:00.000Z`),
         checkInAt: null, checkOutAt: null, method: 'Manual', present: false,
         latitude: null, longitude: null, distanceMeters: null, wifiSsid: null, faceVerified: null,
+        checkInPhotoUrl: null, checkOutPhotoUrl: null,
         ...audit,
       };
     }
@@ -665,6 +670,8 @@ export const attendanceService = {
           in: fmtTime(rec?.checkInAt ?? null),
           out: fmtTime(rec?.checkOutAt ?? null),
           via: rec?.method ?? undefined,
+          inPhoto: rec?.checkInPhotoUrl ?? null, // face photos captured at punch time (admin view)
+          outPhoto: rec?.checkOutPhotoUrl ?? null,
         };
       })
       .sort((a, b) => (b.in ? 1 : 0) - (a.in ? 1 : 0) || a.name.localeCompare(b.name)); // present first

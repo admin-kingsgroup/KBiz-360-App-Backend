@@ -17,6 +17,8 @@ export interface AttendanceDoc {
   distanceMeters: number | null;
   wifiSsid: string | null;
   faceVerified: boolean | null;
+  checkInPhotoUrl: string | null; // face photo captured at check-in (owner rules, 07-31)
+  checkOutPhotoUrl: string | null; // face photo captured at check-out
   adjustedBy: string | null; // admin user id when the day was manually corrected
   adjustedAt: Date | null;
   createdAt: Date;
@@ -37,6 +39,8 @@ const AttendanceSchema = new Schema<AttendanceDoc>(
     distanceMeters: { type: Number, default: null },
     wifiSsid: { type: String, default: null },
     faceVerified: { type: Boolean, default: null },
+    checkInPhotoUrl: { type: String, default: null },
+    checkOutPhotoUrl: { type: String, default: null },
     adjustedBy: { type: String, default: null },
     adjustedAt: { type: Date, default: null },
   },
