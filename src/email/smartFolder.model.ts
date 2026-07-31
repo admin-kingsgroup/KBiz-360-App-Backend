@@ -10,6 +10,7 @@ export interface SmartFolderDoc {
   name: string;
   graphFolderId: string;
   from: string[]; // sender match substrings (domain or address), lower-cased on save
+  graphRuleId?: string | null; // native Outlook inbox rule filing into this folder (null until created)
   createdAt: Date;
   updatedAt: Date;
 }
@@ -20,6 +21,7 @@ const SmartFolderSchema = new Schema<SmartFolderDoc>(
     name: { type: String, required: true },
     graphFolderId: { type: String, required: true },
     from: { type: [String], default: [] },
+    graphRuleId: { type: String, default: null },
   },
   { timestamps: true, collection: 'email_smart_folders' },
 );
@@ -34,7 +36,9 @@ export const smartFolderRepo = {
   listForUser: (userId: string) => SmartFolderModel().find({ userId }).sort({ createdAt: 1 }).lean<SmartFolderDoc[]>(),
   byId: (userId: string, id: string) =>
     (Types.ObjectId.isValid(id) ? SmartFolderModel().findOne({ _id: new Types.ObjectId(id), userId }).lean<SmartFolderDoc>() : Promise.resolve(null)),
-  create: (doc: Pick<SmartFolderDoc, 'userId' | 'name' | 'graphFolderId' | 'from'>) => SmartFolderModel().create(doc),
+  create: (doc: Pick<SmartFolderDoc, 'userId' | 'name' | 'graphFolderId' | 'from'> & { graphRuleId?: string | null }) => SmartFolderModel().create(doc),
+  setRuleId: (userId: string, id: Types.ObjectId | string, graphRuleId: string | null) =>
+    SmartFolderModel().updateOne({ _id: new Types.ObjectId(String(id)), userId }, { $set: { graphRuleId } }),
   remove: (userId: string, id: string) =>
     (Types.ObjectId.isValid(id) ? SmartFolderModel().deleteOne({ _id: new Types.ObjectId(id), userId }) : Promise.resolve({ deletedCount: 0 })),
 };

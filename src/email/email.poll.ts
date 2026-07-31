@@ -19,7 +19,18 @@ async function pollUser(acct: EmailAccountDoc): Promise<void> {
 
     // Smart-folder routing: move each new message whose sender matches a rule into that folder. We do
     // this BEFORE notifying so a routed mail still triggers its new-mail push (it's still "new mail").
+    // (The primary filing path is the native Outlook inbox rule created with the folder — this poll
+    // routing is the fallback for rule-creation failures and pre-rule folders.)
     const rules = await smartFolderRepo.listForUser(acct.userId);
+    // One-time upgrade for folders created BEFORE native rules existed: give them one now, so their
+    // filing becomes instant and mailbox-native instead of poll-delayed.
+    for (const r of rules) {
+      if (r.graphRuleId || !r.from.length) continue;
+      try {
+        const rule = await graph.createInboxRule(acct.userId, `KB360 · ${r.name}`, r.from, r.graphFolderId);
+        await smartFolderRepo.setRuleId(acct.userId, r._id, rule.id);
+      } catch { /* retry next poll */ }
+    }
     if (rules.length) {
       for (const m of msgs) {
         const fromEmail = (m.fromEmail || '').toLowerCase();

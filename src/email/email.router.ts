@@ -85,7 +85,13 @@ emailRouter.post('/email/folders', validate(z.object({ name: z.string().min(1).m
     const { name, from, backfill } = req.body as { name: string; from: string[]; backfill?: boolean };
     const matches = [...new Set(from.map((s) => s.trim().toLowerCase()).filter(Boolean))];
     const folder = await graph.createFolder(userId, name.trim());
-    const sf = await smartFolderRepo.create({ userId, name: name.trim(), graphFolderId: folder.id, from: matches });
+    // Native Outlook rule so the MAILBOX files matching mail the instant it arrives (works even
+    // when this backend is down). Best-effort: without it, the 60s poll still routes new mail.
+    let graphRuleId: string | null = null;
+    if (matches.length) {
+      try { graphRuleId = (await graph.createInboxRule(userId, `KB360 · ${name.trim()}`, matches, folder.id)).id; } catch { /* poll fallback */ }
+    }
+    const sf = await smartFolderRepo.create({ userId, name: name.trim(), graphFolderId: folder.id, from: matches, graphRuleId });
     if (backfill) { try { await graph.backfillIntoFolder(userId, folder.id, matches); } catch { /* best-effort */ } }
     res.status(201).json(sfDTO(sf));
   }));
@@ -96,6 +102,7 @@ emailRouter.delete('/email/folders/:id', asyncHandler(async (req, res) => {
   const userId = uid(req);
   const sf = await smartFolderRepo.byId(userId, req.params.id);
   await smartFolderRepo.remove(userId, req.params.id);
+  if (sf?.graphRuleId) { try { await graph.deleteInboxRule(userId, sf.graphRuleId); } catch { /* already gone */ } }
   if (sf?.graphFolderId) { try { await graph.deleteFolder(userId, sf.graphFolderId); } catch { /* already gone / Graph hiccup */ } }
   res.status(204).send();
 }));

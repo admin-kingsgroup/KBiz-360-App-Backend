@@ -283,6 +283,25 @@ export const graph = {
   async deleteFolder(userId: string, folderId: string): Promise<void> {
     await graphFetch(userId, `/me/mailFolders/${folderId}`, { method: 'DELETE' });
   },
+  // Native Outlook inbox rule: "sender contains any of X → move to folder". Filing then happens in
+  // the MAILBOX itself the instant mail arrives — no dependence on our 60s poll (which stays as a
+  // fallback for rule-creation failures and for mail that arrived while the rule didn't exist).
+  async createInboxRule(userId: string, displayName: string, senderContains: string[], folderId: string): Promise<{ id: string }> {
+    const j = await graphFetch(userId, '/me/mailFolders/inbox/messageRules', {
+      method: 'POST',
+      body: JSON.stringify({
+        displayName,
+        sequence: 100,
+        isEnabled: true,
+        conditions: { senderContains },
+        actions: { moveToFolder: folderId, stopProcessingRules: false },
+      }),
+    });
+    return { id: j.id };
+  },
+  async deleteInboxRule(userId: string, ruleId: string): Promise<void> {
+    await graphFetch(userId, `/me/mailFolders/inbox/messageRules/${ruleId}`, { method: 'DELETE' });
+  },
   // List messages in an arbitrary folder by its Graph id (smart folders). Folder stamped 'inbox' for
   // the DTO — message actions (read/star/move/delete) are addressed by message id, folder-agnostic.
   async listFolderMessages(userId: string, folderId: string, skip = 0): Promise<EmailDTO[]> {
