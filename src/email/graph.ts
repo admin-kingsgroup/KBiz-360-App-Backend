@@ -302,6 +302,17 @@ export const graph = {
   async deleteInboxRule(userId: string, ruleId: string): Promise<void> {
     await graphFetch(userId, `/me/mailFolders/inbox/messageRules/${ruleId}`, { method: 'DELETE' });
   },
+  // Rename a mail folder in place (smart-folder edit) — the folder id and its mail are untouched.
+  async renameFolder(userId: string, folderId: string, displayName: string): Promise<void> {
+    await graphFetch(userId, `/me/mailFolders/${folderId}`, { method: 'PATCH', body: JSON.stringify({ displayName }) });
+  },
+  // Update an inbox rule's name + sender matches in place (smart-folder edit).
+  async updateInboxRule(userId: string, ruleId: string, displayName: string, senderContains: string[]): Promise<void> {
+    await graphFetch(userId, `/me/mailFolders/inbox/messageRules/${ruleId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ displayName, conditions: { senderContains } }),
+    });
+  },
   // List messages in an arbitrary folder by its Graph id (smart folders). Folder stamped 'inbox' for
   // the DTO — message actions (read/star/move/delete) are addressed by message id, folder-agnostic.
   async listFolderMessages(userId: string, folderId: string, skip = 0): Promise<EmailDTO[]> {
@@ -393,10 +404,17 @@ export const graph = {
     }
     return total;
   },
-  // Real unread count for the Inbox (Graph's own counter — exact, not limited to a loaded page).
-  async inboxUnread(userId: string): Promise<number> {
-    const json = await graphFetch(userId, '/me/mailFolders/inbox?$select=unreadItemCount');
-    return typeof json?.unreadItemCount === 'number' ? json.unreadItemCount : 0;
+  // Real unread counts for every standard folder (Graph's own counters — exact, not limited to a
+  // loaded page). `inbox` drives the Email tab badge; the rest badge the folder dropdown.
+  async folderUnread(userId: string): Promise<Record<EmailFolder, number>> {
+    const folders = Object.keys(FOLDER_WK) as EmailFolder[];
+    const counts = await Promise.all(folders.map(async (f) => {
+      try {
+        const j = await graphFetch(userId, `/me/mailFolders/${FOLDER_WK[f]}?$select=unreadItemCount`);
+        return [f, typeof j?.unreadItemCount === 'number' ? j.unreadItemCount : 0] as const;
+      } catch { return [f, 0] as const; } // one folder failing shouldn't zero the whole response
+    }));
+    return Object.fromEntries(counts) as Record<EmailFolder, number>;
   },
   // New inbox messages received after `sinceIso` (for the new-mail poller + smart-folder routing).
   async newSince(userId: string, sinceIso: string): Promise<{ id: string; subject: string; from: string; fromEmail: string }[]> {

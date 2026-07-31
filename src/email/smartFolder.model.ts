@@ -39,6 +39,10 @@ export const smartFolderRepo = {
   create: (doc: Pick<SmartFolderDoc, 'userId' | 'name' | 'graphFolderId' | 'from'> & { graphRuleId?: string | null }) => SmartFolderModel().create(doc),
   setRuleId: (userId: string, id: Types.ObjectId | string, graphRuleId: string | null) =>
     SmartFolderModel().updateOne({ _id: new Types.ObjectId(String(id)), userId }, { $set: { graphRuleId } }),
+  update: (userId: string, id: string, set: Partial<Pick<SmartFolderDoc, 'name' | 'from' | 'graphRuleId'>>) =>
+    (Types.ObjectId.isValid(id)
+      ? SmartFolderModel().findOneAndUpdate({ _id: new Types.ObjectId(id), userId }, { $set: set }, { new: true }).lean<SmartFolderDoc>()
+      : Promise.resolve(null)),
   remove: (userId: string, id: string) =>
     (Types.ObjectId.isValid(id) ? SmartFolderModel().deleteOne({ _id: new Types.ObjectId(id), userId }) : Promise.resolve({ deletedCount: 0 })),
 };

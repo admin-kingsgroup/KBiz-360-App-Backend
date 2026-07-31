@@ -50,10 +50,12 @@ emailRouter.get('/email/search', asyncHandler(async (req, res) => {
   const q = typeof req.query.q === 'string' ? req.query.q : '';
   res.json(await graph.search(uid(req), q));
 }));
-// Real inbox unread count (drives the Email tab badge). Returns 0 if not connected.
+// Per-folder unread counts — { inbox, sent, drafts, deleted, spam }. `inbox` drives the Email tab
+// badge (older clients read only that key); the rest badge the folder list. Zeros if not connected.
 emailRouter.get('/email/unread', asyncHandler(async (req, res) => {
   const acct = await emailAccountRepo.find(uid(req));
-  res.json({ inbox: acct ? await graph.inboxUnread(uid(req)) : 0 });
+  if (!acct) { res.json({ inbox: 0, sent: 0, drafts: 0, deleted: 0, spam: 0 }); return; }
+  res.json(await graph.folderUnread(uid(req)));
 }));
 emailRouter.get('/email/messages/:id/attachments', asyncHandler(async (req, res) => res.json(await graph.listAttachments(uid(req), req.params.id))));
 emailRouter.get('/email/messages/:id/attachments/:attId', asyncHandler(async (req, res) => res.json(await graph.getAttachment(uid(req), req.params.id, req.params.attId))));
@@ -94,6 +96,36 @@ emailRouter.post('/email/folders', validate(z.object({ name: z.string().min(1).m
     const sf = await smartFolderRepo.create({ userId, name: name.trim(), graphFolderId: folder.id, from: matches, graphRuleId });
     if (backfill) { try { await graph.backfillIntoFolder(userId, folder.id, matches); } catch { /* best-effort */ } }
     res.status(201).json(sfDTO(sf));
+  }));
+// PATCH /api/email/folders/:id { name?, from?, backfill? } — edit a smart folder's name and/or
+// sender matches. Renames the real Outlook folder and keeps its native inbox rule in lockstep
+// (updated in place; recreated if it was deleted in Outlook). backfill re-files existing inbox
+// mail that matches the NEW senders.
+emailRouter.patch('/email/folders/:id',
+  validate(z.object({ name: z.string().min(1).max(60).optional(), from: z.array(z.string().min(1)).min(1).optional(), backfill: z.boolean().optional() })),
+  asyncHandler(async (req, res) => {
+    const userId = uid(req);
+    const sf = await smartFolderRepo.byId(userId, req.params.id);
+    if (!sf) throw BadRequest('Folder not found');
+    const { name, from, backfill } = req.body as { name?: string; from?: string[]; backfill?: boolean };
+    const nextName = name?.trim() || sf.name;
+    const matches = from ? [...new Set(from.map((s) => s.trim().toLowerCase()).filter(Boolean))] : sf.from;
+    // Rename the real Outlook folder (best-effort — the app lists smart folders by the DB name).
+    if (nextName !== sf.name) { try { await graph.renameFolder(userId, sf.graphFolderId, nextName); } catch { /* keep going */ } }
+    let graphRuleId = sf.graphRuleId ?? null;
+    if (matches.length) {
+      if (graphRuleId) {
+        try { await graph.updateInboxRule(userId, graphRuleId, `KB360 · ${nextName}`, matches); }
+        catch { // rule vanished (e.g. deleted in Outlook) → recreate it
+          try { graphRuleId = (await graph.createInboxRule(userId, `KB360 · ${nextName}`, matches, sf.graphFolderId)).id; } catch { graphRuleId = null; }
+        }
+      } else {
+        try { graphRuleId = (await graph.createInboxRule(userId, `KB360 · ${nextName}`, matches, sf.graphFolderId)).id; } catch { /* poll fallback */ }
+      }
+    }
+    const updated = await smartFolderRepo.update(userId, req.params.id, { name: nextName, from: matches, graphRuleId });
+    if (backfill && from) { try { await graph.backfillIntoFolder(userId, sf.graphFolderId, matches); } catch { /* best-effort */ } }
+    res.json(sfDTO(updated ?? { ...sf, name: nextName, from: matches }));
   }));
 // DELETE /api/email/folders/:id — remove the smart folder AND its real Outlook folder (owner call,
 // 07-31: deleting in-app deletes the folder). Graph moves the folder + its mail to Deleted Items,
