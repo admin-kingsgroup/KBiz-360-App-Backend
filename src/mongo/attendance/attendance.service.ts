@@ -254,6 +254,11 @@ async function officesForUser(userId: string): Promise<OfficeGeofenceDoc[]> {
     // assigned office was deleted/deactivated — fall through to branch defaults
   }
 
+  // HIDDEN (director) attendance geofences against ANY office company-wide (owner call, 07-31) —
+  // a working-branch assignment only pins where they DISPLAY in the team view, never where their
+  // background attendance can record. (An explicit office assignment above still narrows it.)
+  if (await attendanceHidden.isHidden(userId)) return officeRepo.listByTenant(access.tenantId);
+
   const workBranchId = await userWorkBranches.branchIdFor(userId);
   if (workBranchId) return preferDefaults(await officeRepo.byBranchIds([workBranchId]));
 
