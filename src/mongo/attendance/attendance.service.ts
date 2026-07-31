@@ -560,6 +560,8 @@ export const attendanceService = {
         via: r?.method ?? null,
         present: !!r?.checkInAt, // was present that day (doc.present means "currently in office")
         distanceMeters: r?.distanceMeters ?? null,
+        inPhoto: r?.checkInPhotoUrl ?? null, // face photos — shown in the admin team view
+        outPhoto: r?.checkOutPhotoUrl ?? null,
       });
     }
     return out;
