@@ -79,6 +79,11 @@ function fmtTime(d: Date | null): string | null {
   }
 }
 
+// Attendance ALERTS kill-switch (owner call, 07-31): silenced while the new punch flow (geofence
+// + face photo) is being tested — no "X checked in/out" channel posts/pushes and no 10pm day-close
+// report. Flip back to true (or set ATTENDANCE_ALERTS=on) once the flow is approved.
+const ATTENDANCE_ALERTS_ENABLED = process.env.ATTENDANCE_ALERTS === 'on';
+
 // Exit hysteresis is ZERO (owner call, 07-28): check-out is immediate the moment a fix is beyond
 // the office radius — no extra buffer. The false-exit protection that remains is evidence-quality
 // only (a fix is required; no-fix + still on office Wi-Fi is drift), which adds no delay.
@@ -306,7 +311,7 @@ export const attendanceService = {
       checkInPhotoUrl: body.facePhotoUrl,
     });
     // System alert ("X checked in") into the branch's attendance channel — fire-and-forget.
-    void alertService.recordAttendancePunch(userId, 'in', now, saved?.method ?? null);
+    if (ATTENDANCE_ALERTS_ENABLED) void alertService.recordAttendancePunch(userId, 'in', now, saved?.method ?? null);
     return mapMe(saved);
   },
 
@@ -331,7 +336,7 @@ export const attendanceService = {
       checkOutPhotoUrl: body.facePhotoUrl,
     });
     // System alert ("X checked out") into the branch's attendance channel — fire-and-forget.
-    void alertService.recordAttendancePunch(userId, 'out', outAt, saved?.method ?? null);
+    if (ATTENDANCE_ALERTS_ENABLED) void alertService.recordAttendancePunch(userId, 'out', outAt, saved?.method ?? null);
     return mapMe(saved);
   },
 
@@ -683,6 +688,8 @@ export const attendanceService = {
   // via alertService, so the 10pm sweep may safely re-run. Returns which channels it posted.
   async dayCloseReport(dateKey?: string): Promise<{ day: string; posted: { channelId: string; branch: string; present: number; total: number }[] }> {
     const day = dateKey ?? todayKey();
+    if (!ATTENDANCE_ALERTS_ENABLED) return { day, posted: [] }; // silenced during the punch-flow test
+
     const users = (await crmRepo.listUsers({ status: 'active' })) as CrmUser[];
     const exempt = await attendanceExempt.exemptSet();
     const supers = superUserIds(users, await crmRepo.listRoles());
