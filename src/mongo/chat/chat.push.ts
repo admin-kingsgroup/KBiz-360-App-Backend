@@ -20,6 +20,7 @@ interface ExpoMessage {
   sound: 'default';
   priority: 'high';
   channelId: 'default';
+  badge?: number; // iOS app-icon count (Expo forwards it as aps.badge)
 }
 
 async function postToExpo(messages: ExpoMessage[]): Promise<void> {
@@ -50,6 +51,10 @@ export interface ChatPushOpts {
   title: string;
   body: string;
   mention?: boolean; // this recipient was @-mentioned — client renders the "mentioned you" line
+  // Recipient's unread-chat count AFTER this message (unmuted chats with unread — the client's
+  // badge formula). Rides the APNs payload so the iOS icon badge updates while the app is killed;
+  // Android ignores it (the background handler recounts from the local snapshot).
+  badge?: number;
   conversationId: string;
   // Rich fields for the FCM data path (background handler rebuilds the cached list entry from them).
   messageId?: string;
@@ -86,7 +91,7 @@ export const chatPush = {
         };
         let sent = 0;
         // iOS cannot run JS on data-only pushes — the apns alert makes it display the banner natively.
-        for (const t of fcmTokens) if (await fcm.sendData(t, data, { title: opts.title, body: opts.body })) sent++;
+        for (const t of fcmTokens) if (await fcm.sendData(t, data, { title: opts.title, body: opts.body, badge: opts.badge })) sent++;
         if (sent > 0) return sent;
         // all FCM sends failed (stale tokens were pruned) → fall through to Expo
       }
@@ -102,6 +107,7 @@ export const chatPush = {
       sound: 'default',
       priority: 'high',
       channelId: 'default',
+      ...(typeof opts.badge === 'number' ? { badge: Math.max(0, opts.badge) } : {}),
     }));
     if (!config.push.enabled) {
       // eslint-disable-next-line no-console

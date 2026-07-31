@@ -37,7 +37,9 @@ export const fcm = {
   // FCM (not a guarantee of device delivery). Data values must be strings (FCM requirement).
   // apnsAlert: when provided, iOS DISPLAYS a notification (title/body) — needed because iOS does not
   // show data-only pushes. Android always uses the data payload (background handler → notifee).
-  async sendData(token: string, data: Record<string, string>, apnsAlert?: { title: string; body: string; category?: string }): Promise<boolean> {
+  // apnsAlert.badge: absolute app-icon count for iOS. It must ride the APNs payload because iOS
+  // runs no JS for alert pushes — omitting the key leaves the current badge untouched.
+  async sendData(token: string, data: Record<string, string>, apnsAlert?: { title: string; body: string; category?: string; badge?: number }): Promise<boolean> {
     const a = getApp();
     if (!a) return false;
     try {
@@ -49,7 +51,7 @@ export const fcm = {
           ? {
               headers: { 'apns-priority': '10', 'apns-push-type': 'alert' },
               // `category` makes iOS show the registered Accept/Decline action buttons.
-              payload: { aps: { alert: { title: apnsAlert.title, body: apnsAlert.body }, sound: 'default', ...(apnsAlert.category ? { category: apnsAlert.category } : {}) } },
+              payload: { aps: { alert: { title: apnsAlert.title, body: apnsAlert.body }, sound: 'default', ...(apnsAlert.category ? { category: apnsAlert.category } : {}), ...(typeof apnsAlert.badge === 'number' ? { badge: Math.max(0, apnsAlert.badge) } : {}) } },
             }
           : { headers: { 'apns-priority': '10', 'apns-push-type': 'background' }, payload: { aps: { contentAvailable: true } } },
       });

@@ -27,6 +27,12 @@ export const conversationRepo = {
       { $set: { 'members.$.unread': 0, 'members.$.lastReadAt': at } },
     );
   },
+  // App-icon badge for one member: number of conversations with unread messages, excluding muted
+  // ones — the same formula the client uses (WhatsApp counts chats, not messages). Feeds aps.badge
+  // on chat pushes: iOS never runs JS for alert pushes, so the payload is the only way to keep the
+  // icon badge current while the app is killed/backgrounded.
+  unreadChatCount: (userId: string): Promise<number> =>
+    ConversationModel().countDocuments({ participantIds: userId, members: { $elemMatch: { userId, unread: { $gt: 0 }, muted: { $ne: true } } } }),
 };
 
 export interface MessagePage {
