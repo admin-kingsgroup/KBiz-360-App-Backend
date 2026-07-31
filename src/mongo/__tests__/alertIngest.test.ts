@@ -12,7 +12,7 @@ import {
 describe('alert channel registry', () => {
   it('registers the external channels next to attendance', () => {
     expect(ALERT_CHANNELS.map((c) => c.id)).toEqual([
-      'tk_att_bom', 'tk_att_amd', 'tk_fin_bom', 'tk_fin_amd', 'tk_crm_bom', 'tk_crm_amd',
+      'tk_att_bom', 'tk_att_amd', 'tk_att_dir', 'tk_fin_bom', 'tk_fin_amd', 'tk_crm_bom', 'tk_crm_amd',
       'tk_si_bom', 'tk_si_amd', 'tk_si_nbo', 'tk_si_dar', 'tk_si_fbm',
       'tk_ar_bom', 'tk_ar_amd', 'tk_ar_nbo', 'tk_ar_dar', 'tk_ar_fbm',
       'tk_ap_bom', 'tk_ap_amd', 'tk_ap_nbo', 'tk_ap_dar', 'tk_ap_fbm',
