@@ -18,6 +18,10 @@ export interface AlertChannelDef {
 export const ALERT_CHANNELS: AlertChannelDef[] = [
   { id: 'tk_att_bom', branchCode: 'BOM', module: 'hr', grant: 'BOM-hr', name: 'BOM Attendance' },
   { id: 'tk_att_amd', branchCode: 'AMD', module: 'hr', grant: 'AMD-hr', name: 'AMD Attendance' },
+  // Directors' hidden-attendance day summary (attendanceHidden users). branchCode 'DIR' is not a
+  // real branch, so the per-branch attendance emitter can never route into it; visibility follows
+  // the normal grant rule — super-admins always see it, nobody else unless explicitly granted.
+  { id: 'tk_att_dir', branchCode: 'DIR', module: 'hr', grant: 'DIR-hr', name: 'Directors Attendance' },
   // Fed live by the KBiz Books ERP backend via POST /api/alerts/ingest.
   { id: 'tk_fin_bom', branchCode: 'BOM', module: 'accounts', grant: 'BOM-accounts', name: 'Finance - BOM' },
   { id: 'tk_fin_amd', branchCode: 'AMD', module: 'accounts', grant: 'AMD-accounts', name: 'Finance - AMD' },

@@ -7,8 +7,9 @@ import { officeRepo } from './office.repository';
 import { userOffices } from './userOffices';
 import { userWorkBranches } from './userWorkBranches';
 import { attendanceExempt } from '../attendanceExempt';
+import { attendanceHidden } from '../attendanceHidden';
 import { alertService } from '../alerts/alert.service';
-import { attendanceChannelForBranch } from '../alerts/alertChannels';
+import { attendanceChannelForBranch, ALERT_CHANNELS } from '../alerts/alertChannels';
 import { userPositions } from '../userPositions';
 import type { OfficeGeofenceDoc } from './office.model';
 import type { AttendanceDoc } from './attendance.model';
@@ -178,11 +179,17 @@ export function superUserIds(
 }
 
 // Single-user form, for the punch/me paths.
+// HIDDEN (director) users are ALWAYS tracked — even when their role is super-admin or they sit on
+// the exempt list — their attendance just records silently (see attendanceHidden).
 async function isUntracked(userId: string): Promise<boolean> {
+  if (await attendanceHidden.isHidden(userId)) return false;
   if (await attendanceExempt.isExempt(userId)) return true;
   const access = await accessService.accessForUserId(userId);
   return !!access?.isSuper;
 }
+
+// Super-admin-only channel the directors' day summary posts into.
+const DIRECTORS_CHANNEL_ID = ALERT_CHANNELS.find((c) => c.branchCode === 'DIR')?.id ?? 'tk_att_dir';
 
 function viaFor(body: PunchBody, wifiVerified: boolean): string {
   if (body.method === 'face') return 'Face';
@@ -306,7 +313,9 @@ export const attendanceService = {
   // spurious check-out is undone the moment presence at the office is proven again.
   async checkIn(userId: string, body: PunchBody) {
     if (await isUntracked(userId)) throw BadRequest('Attendance is not tracked for your account');
-    if (!body.facePhotoUrl) throw BadRequest('A face photo is required to check in');
+    // Hidden (director) punches are fully automatic — no face photo exists for them by design.
+    const hidden = await attendanceHidden.isHidden(userId);
+    if (!hidden && !body.facePhotoUrl) throw BadRequest('A face photo is required to check in');
     const key = todayKey();
     const today = await attendanceRepo.findToday(userId, key);
     if (today?.checkInAt && !today.checkOutAt) throw BadRequest('Already checked in today');
@@ -322,11 +331,12 @@ export const attendanceService = {
       longitude: body.coords?.lng ?? null,
       distanceMeters: distance,
       wifiSsid: wifiVerified ? cleanSsid(body.wifiSsid) : null,
-      faceVerified: true, // a face photo is mandatory on every punch now
-      checkInPhotoUrl: body.facePhotoUrl,
+      faceVerified: hidden ? null : true, // a face photo is mandatory on every manual punch
+      checkInPhotoUrl: body.facePhotoUrl ?? null,
     });
     // System alert ("X checked in") into the branch's attendance channel — fire-and-forget.
-    if (ATTENDANCE_ALERTS_ENABLED) void alertService.recordAttendancePunch(userId, 'in', now, saved?.method ?? null);
+    // NEVER for hidden users: their punches must not surface anywhere except the directors summary.
+    if (ATTENDANCE_ALERTS_ENABLED && !hidden) void alertService.recordAttendancePunch(userId, 'in', now, saved?.method ?? null);
     return mapMe(saved);
   },
 
@@ -334,24 +344,35 @@ export const attendanceService = {
   // must be within the office geofence with a face photo captured at punch time.
   async checkOut(userId: string, body: PunchBody) {
     if (await isUntracked(userId)) throw BadRequest('Attendance is not tracked for your account');
-    if (!body.facePhotoUrl) throw BadRequest('A face photo is required to check out');
+    const hidden = await attendanceHidden.isHidden(userId);
+    if (!hidden && !body.facePhotoUrl) throw BadRequest('A face photo is required to check out');
     const key = todayKey();
     const today = await attendanceRepo.findToday(userId, key);
     if (!today?.checkInAt) throw BadRequest('Not checked in');
     if (today.checkOutAt) throw BadRequest('Already checked out');
     const now = new Date();
-    const { distance, wifiVerified } = await this.assertAtOffice(userId, body);
+    // Hidden check-outs may arrive from OUTSIDE the fence (that's what a departure is) — the
+    // geofence gate applies to manual punches only; the coords are still recorded.
+    const { distance, wifiVerified } = hidden
+      ? await (async () => {
+          const offices = await officesForUser(userId);
+          return {
+            distance: body.coords && offices.length ? (nearestOffice(offices, body.coords)?.distance ?? null) : null,
+            wifiVerified: wifiVerifiedFor(offices, body.wifiSsid),
+          };
+        })()
+      : await this.assertAtOffice(userId, body);
     const outAt = resolveCheckOutAt(body, today.checkInAt, now);
     const saved = await attendanceRepo.upsert(userId, key, {
       checkOutAt: outAt,
       method: viaFor(body, wifiVerified),
       present: false,
       distanceMeters: distance ?? today.distanceMeters,
-      faceVerified: true,
-      checkOutPhotoUrl: body.facePhotoUrl,
+      faceVerified: hidden ? today.faceVerified : true,
+      checkOutPhotoUrl: body.facePhotoUrl ?? null,
     });
     // System alert ("X checked out") into the branch's attendance channel — fire-and-forget.
-    if (ATTENDANCE_ALERTS_ENABLED) void alertService.recordAttendancePunch(userId, 'out', outAt, saved?.method ?? null);
+    if (ATTENDANCE_ALERTS_ENABLED && !hidden) void alertService.recordAttendancePunch(userId, 'out', outAt, saved?.method ?? null);
     return mapMe(saved);
   },
 
@@ -601,10 +622,11 @@ export const attendanceService = {
     return mapMe(await attendanceRepo.upsert(body.userId, body.date, set));
   },
 
-  // GET /attendance/me — today's status.
+  // GET /attendance/me — today's status. `hidden` = background attendance (directors): the app
+  // shows no punch UI and runs the silent geofence engine instead.
   async me(userId: string) {
     const base = mapMe(await attendanceRepo.findToday(userId, todayKey()));
-    return { ...base, exempt: await isUntracked(userId) };
+    return { ...base, exempt: await isUntracked(userId), hidden: await attendanceHidden.isHidden(userId) };
   },
 
   // GET /attendance/team — attendance for the people the viewer oversees, for one calendar
@@ -631,9 +653,16 @@ export const attendanceService = {
     }
 
     // Drop untracked people from the team list: explicit exemptions + every super-admin.
+    // HIDDEN (director) attendance is visible ONLY to super-admin viewers — everyone else's team
+    // list behaves as if the directors were not tracked at all.
     const exempt = await attendanceExempt.exemptSet();
     const supers = superUserIds(users, await crmRepo.listRoles());
-    users = users.filter((u) => !exempt.has(String(u._id)) && !supers.has(String(u._id)));
+    const hiddenSet = await attendanceHidden.hiddenSet();
+    users = users.filter((u) => {
+      const id = String(u._id);
+      if (hiddenSet.has(id)) return !!viewer.isSuper;
+      return !exempt.has(id) && !supers.has(id);
+    });
 
     // Each user's WORKING branch: explicit assignment → first CRM access branch. Resolved BEFORE
     // the attendance read so a branch manager's narrowing happens before we fetch punch records.
@@ -723,12 +752,19 @@ export const attendanceService = {
   // via alertService, so the 10pm sweep may safely re-run. Returns which channels it posted.
   async dayCloseReport(dateKey?: string): Promise<{ day: string; posted: { channelId: string; branch: string; present: number; total: number }[] }> {
     const day = dateKey ?? todayKey();
-    if (!ATTENDANCE_ALERTS_ENABLED) return { day, posted: [] }; // silenced during the punch-flow test
-
     const users = (await crmRepo.listUsers({ status: 'active' })) as CrmUser[];
+    const hiddenSet = await attendanceHidden.hiddenSet();
+
+    // Directors' hidden-attendance summary → the super-admin-only channel. Deliberately OUTSIDE the
+    // alerts kill-switch: it is the sole surface where hidden attendance appears (owner call, 07-31).
+    const directorPosts = await this.directorsDayClose(day, users.filter((u) => hiddenSet.has(String(u._id))));
+
+    if (!ATTENDANCE_ALERTS_ENABLED) return { day, posted: directorPosts }; // branch reports silenced during the punch-flow test
+
     const exempt = await attendanceExempt.exemptSet();
     const supers = superUserIds(users, await crmRepo.listRoles());
-    const tracked = users.filter((u) => !exempt.has(String(u._id)) && !supers.has(String(u._id)));
+    // Hidden users never appear in a branch report — their day lives in the directors summary only.
+    const tracked = users.filter((u) => !exempt.has(String(u._id)) && !supers.has(String(u._id)) && !hiddenSet.has(String(u._id)));
 
     // Working branch per user: explicit assignment → first CRM branch (same rule as the punch emitter).
     const workBranches = await userWorkBranches.mapFor(tracked.map((u) => String(u._id)));
@@ -792,6 +828,35 @@ export const attendanceService = {
       }, pushBody);
       posted.push({ channelId, branch: branchCode, present: presentCount, total });
     }
-    return { day, posted };
+    return { day, posted: [...directorPosts, ...posted] };
+  },
+
+  // Directors' (hidden-attendance) day summary → 'Directors Attendance', visible to super-admins
+  // only. One post per day (idempotent via hasDayCloseReport, same as the branch reports).
+  async directorsDayClose(day: string, directors: CrmUser[]): Promise<{ channelId: string; branch: string; present: number; total: number }[]> {
+    if (!directors.length) return [];
+    if (await alertService.hasDayCloseReport(DIRECTORS_CHANNEL_ID, day)) return [];
+    const records = await attendanceRepo.forUsersOnDay(day, directors.map((u) => String(u._id)));
+    const byUser = new Map(records.map((r) => [r.userId, r]));
+    const rows: string[] = [];
+    let present = 0;
+    for (const u of directors.slice().sort((a, b) => nameOf(a).localeCompare(nameOf(b)))) {
+      const rec = byUser.get(String(u._id));
+      if (rec?.checkInAt) {
+        present += 1;
+        const inT = fmtTime(rec.checkInAt) ?? '—';
+        const outT = rec.checkOutAt ? `out ${fmtTime(rec.checkOutAt)}` : 'still in';
+        const via = rec.method ? ` · ${rec.method}` : '';
+        rows.push(`• ${nameOf(u)} — in ${inT} → ${outT}${via}`);
+      } else {
+        rows.push(`• ${nameOf(u)} — not in office today`);
+      }
+    }
+    await alertService.recordDayClose(DIRECTORS_CHANNEL_ID, day, {
+      title: `Directors · ${present}/${directors.length} in office`,
+      body: rows.join('\n'),
+      context: 'TK · Directors Attendance',
+    }, `${present}/${directors.length} in office today — tap for details`);
+    return [{ channelId: DIRECTORS_CHANNEL_ID, branch: 'DIR', present, total: directors.length }];
   },
 };
