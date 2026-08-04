@@ -1,15 +1,15 @@
 import { crmRepo } from './crm.repo';
 
-// HIDDEN (background) attendance — company directors whose attendance is recorded fully
-// automatically and invisibly (owner call, 07-31): no manual punching, no face photo, no branch
-// attendance alerts, excluded from non-super team views and from the branch day-close report.
-// Their day summary goes ONLY to the super-admin 'Directors Attendance' alerts channel.
+// HIDDEN (background) attendance — accounts whose attendance is recorded fully automatically and
+// invisibly: no manual punching, no face photo, no branch attendance alerts, excluded from
+// non-super team views and from the branch day-close report. Their day summary goes ONLY to the
+// super-admin 'Directors Attendance' alerts channel.
 //
-// Membership is by email (stable across environments); override without a code change via the
-// ATTENDANCE_HIDDEN_EMAILS env var (comma-separated). Emails resolve to CRM user ids at runtime
-// with a short cache, mirroring attendanceExempt's shape.
-const HIDDEN_EMAILS: string[] = (process.env.ATTENDANCE_HIDDEN_EMAILS
-  || 'farhan@travkings.com,pravesh@travkings.com,lamiya@travkings.com')
+// EMPTY by default (owner call, 08-04): the automatic geofence punches produced mismatched
+// check-outs (indoor GPS drift closing the day), so every account — directors included — punches
+// manually. Re-enable per environment via the ATTENDANCE_HIDDEN_EMAILS env var (comma-separated
+// emails); they resolve to CRM user ids at runtime with a short cache, mirroring attendanceExempt.
+const HIDDEN_EMAILS: string[] = (process.env.ATTENDANCE_HIDDEN_EMAILS ?? '')
   .split(',')
   .map((e) => e.trim().toLowerCase())
   .filter(Boolean);
