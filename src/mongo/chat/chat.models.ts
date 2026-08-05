@@ -9,7 +9,9 @@ export interface ConvMember {
   lastReadAt: Date | null;
   unread: number;
   muted: boolean;
+  mutedUntil: Date | null; // null with muted=true ⇒ muted forever (WhatsApp's "Always")
   archived: boolean;
+  pinned: boolean;
 }
 export interface ConversationDoc {
   _id: Types.ObjectId;
@@ -27,6 +29,8 @@ export interface ConversationDoc {
   description: string | null;
   image: string | null;
   lastMessage: { messageId: Types.ObjectId | null; text: string; type: string; senderId: string; at: Date } | null;
+  // Disappearing messages: seconds after which a NEW message in this chat self-deletes (null = off).
+  disappearAfterSec: number | null;
   lastActivityAt: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -40,7 +44,9 @@ const MemberSchema = new Schema<ConvMember>(
     lastReadAt: { type: Date, default: null },
     unread: { type: Number, default: 0 },
     muted: { type: Boolean, default: false },
+    mutedUntil: { type: Date, default: null },
     archived: { type: Boolean, default: false },
+    pinned: { type: Boolean, default: false },
   },
   { _id: false },
 );
@@ -71,6 +77,7 @@ const ConversationSchema = new Schema<ConversationDoc>(
       ),
       default: null,
     },
+    disappearAfterSec: { type: Number, default: null },
     lastActivityAt: { type: Date, default: Date.now, index: true },
   },
   { timestamps: true },
@@ -123,6 +130,8 @@ export interface MessageDoc {
   editedAt: Date | null;
   deletedForEveryone: boolean;
   deletedFor: string[];
+  // Disappearing messages: when set, Mongo's TTL monitor removes the document at this instant.
+  expiresAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -159,11 +168,19 @@ const MessageSchema = new Schema<MessageDoc>(
     editedAt: { type: Date, default: null },
     deletedForEveryone: { type: Boolean, default: false },
     deletedFor: { type: [String], default: [] },
+    expiresAt: { type: Date, default: null },
   },
   { timestamps: true },
 );
+// Disappearing messages: Mongo deletes the document itself once expiresAt passes (sparse — messages
+// in normal chats carry no expiry and are never touched). Devices drop their local copy in parallel.
+MessageSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0, sparse: true });
 MessageSchema.index({ conversationId: 1, createdAt: -1 });
 MessageSchema.index({ conversationId: 1, clientId: 1 }, { sparse: true }); // send-idempotency lookup
+// Catch-up sync: "everything in my conversations that changed since <watermark>" — created, edited,
+// deleted, reacted to, or newly ticked. Local-first clients replay this once per connect instead of
+// re-fetching each thread on open.
+MessageSchema.index({ conversationId: 1, updatedAt: 1 });
 MessageSchema.index({ conversationId: 1, pinned: 1 });
 MessageSchema.index({ text: 'text' });
 
@@ -193,4 +210,77 @@ export async function ensureChatIndexes(): Promise<void> {
     }
   } catch { /* collection/index may not exist yet — ignore */ }
   await model.syncIndexes();
+  // Messages gained the delta-sync and disappearing-message (TTL) indexes — build them too, or
+  // catch-up sync collection-scans and expired messages never actually get removed.
+  // createIndexes, NOT syncIndexes: sync DROPS any index the schema does not declare, so a hand-built
+  // index added on the live cluster for an ad-hoc query would silently vanish on the next deploy —
+  // and rebuilding one on a grown messages collection is not something a restart should decide to do.
+  await MessageModel().createIndexes();
+  await ChatSettingsModel().createIndexes();
+  await StatusModel().createIndexes();
+}
+
+// ─────────── Per-user chat settings (privacy + blocks) ───────────
+// WhatsApp keeps these on the account, not the conversation: who may see your last seen, whether you
+// send read receipts, and who you have blocked.
+export interface ChatSettingsDoc {
+  _id: Types.ObjectId;
+  userId: string;
+  readReceipts: boolean;          // off ⇒ you send none AND see none (WhatsApp's reciprocal rule)
+  lastSeen: 'everyone' | 'nobody';
+  blocked: string[];              // userIds this user has blocked
+  createdAt: Date;
+  updatedAt: Date;
+}
+const ChatSettingsSchema = new Schema<ChatSettingsDoc>(
+  {
+    userId: { type: String, required: true, unique: true },
+    readReceipts: { type: Boolean, default: true },
+    lastSeen: { type: String, enum: ['everyone', 'nobody'], default: 'everyone' },
+    blocked: { type: [String], default: [] },
+  },
+  { timestamps: true },
+);
+let _ChatSettings: Model<ChatSettingsDoc> | null = null;
+export function ChatSettingsModel(): Model<ChatSettingsDoc> {
+  if (!_ChatSettings) _ChatSettings = appDb().model<ChatSettingsDoc>('ChatSettings', ChatSettingsSchema);
+  return _ChatSettings;
+}
+
+// ─────────── Status (WhatsApp "Status" / stories) ───────────
+// A photo, video or text card that expires 24 hours after posting. Mongo's TTL monitor removes the
+// document itself, so nothing has to sweep them and no expired status can leak through a stale query.
+export interface StatusDoc {
+  _id: Types.ObjectId;
+  userId: string;
+  type: 'image' | 'video' | 'text';
+  caption: string;
+  attachment: Attachment | null;   // null for text-only cards
+  backgroundColor: string | null;  // text cards carry their own colour, like WhatsApp's
+  viewers: { userId: string; at: Date }[];
+  audience: string[];              // who may see it — the poster's branch/company cohort
+  expiresAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+const StatusSchema = new Schema<StatusDoc>(
+  {
+    userId: { type: String, required: true, index: true },
+    type: { type: String, enum: ['image', 'video', 'text'], required: true },
+    caption: { type: String, default: '' },
+    attachment: { type: new Schema<Attachment>({}, { _id: false, strict: false }), default: null },
+    backgroundColor: { type: String, default: null },
+    viewers: { type: [new Schema({ userId: String, at: Date }, { _id: false })], default: [] },
+    audience: { type: [String], default: [] },
+    expiresAt: { type: Date, required: true },
+  },
+  { timestamps: true },
+);
+StatusSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 }); // 24h self-cleanup
+StatusSchema.index({ audience: 1, createdAt: -1 });
+
+let _Status: Model<StatusDoc> | null = null;
+export function StatusModel(): Model<StatusDoc> {
+  if (!_Status) _Status = appDb().model<StatusDoc>('Status', StatusSchema);
+  return _Status;
 }

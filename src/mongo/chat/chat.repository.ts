@@ -1,5 +1,5 @@
 import { Types } from 'mongoose';
-import { ConversationModel, MessageModel, type ConversationDoc, type MessageDoc } from './chat.models';
+import { ChatSettingsModel, ConversationModel, MessageModel, type ChatSettingsDoc, type ConvMember, type ConversationDoc, type MessageDoc } from './chat.models';
 
 const oid = (id: string): Types.ObjectId => new Types.ObjectId(id);
 
@@ -30,6 +30,20 @@ export const conversationRepo = {
       { $set: { 'lastMessage.text': text, 'lastMessage.type': 'system' } },
     );
   },
+  // Per-member chat settings (mute / archive / pin). Only the caller's own member row is touched, so
+  // muting a group is personal — exactly like WhatsApp, where mute is yours and not the group's.
+  async setMemberSettings(conversationId: string, userId: string, patch: Partial<Pick<ConvMember, 'muted' | 'mutedUntil' | 'archived' | 'pinned'>>): Promise<void> {
+    const $set: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(patch)) $set[`members.$.${k}`] = v;
+    if (!Object.keys($set).length) return;
+    await ConversationModel().updateOne({ _id: oid(conversationId), 'members.userId': userId }, { $set });
+  },
+
+  // Disappearing messages are a property of the CHAT (everyone in it), not of one member.
+  async setDisappearing(conversationId: string, seconds: number | null): Promise<void> {
+    await ConversationModel().updateOne({ _id: oid(conversationId) }, { $set: { disappearAfterSec: seconds } });
+  },
+
   async markRead(conversationId: string, userId: string, at: Date): Promise<void> {
     await ConversationModel().updateOne(
       { _id: oid(conversationId), 'members.userId': userId },
@@ -42,10 +56,22 @@ export const conversationRepo = {
   // icon badge current while the app is killed/backgrounded.
   unreadChatCount: (userId: string): Promise<number> =>
     ConversationModel().countDocuments({ participantIds: userId, members: { $elemMatch: { userId, unread: { $gt: 0 }, muted: { $ne: true } } } }),
+
+  // Whether this member currently has the chat muted, honouring a timed mute that has run out.
+  async isMuted(conversationId: Types.ObjectId, userId: string): Promise<boolean> {
+    const conv = await ConversationModel().findOne(
+      { _id: conversationId },
+      { members: { $elemMatch: { userId } } },
+    ).lean<ConversationDoc>();
+    const me = conv?.members?.[0];
+    if (!me?.muted) return false;
+    return !me.mutedUntil || me.mutedUntil.getTime() > Date.now();
+  },
 };
 
 export interface MessagePage {
-  before?: string; // message id cursor
+  before?: string; // message id cursor — page BACKWARDS into history (scrollback)
+  after?: string;  // message id cursor — only messages NEWER than this (delta sync for local-first clients)
   limit?: number;
 }
 
@@ -114,10 +140,36 @@ export const messageRepo = {
 
   async listByConversation(conversationId: string, userId: string, page: MessagePage): Promise<MessageDoc[]> {
     const q: Record<string, unknown> = { conversationId: oid(conversationId), deletedFor: { $ne: userId } };
-    if (page.before && Types.ObjectId.isValid(page.before)) q._id = { $lt: oid(page.before) };
+    // ObjectIds are monotonic, so the id cursor doubles as a time cursor either way.
+    // `after` wins when both are sent (a delta sync never pages backwards).
+    if (page.after && Types.ObjectId.isValid(page.after)) q._id = { $gt: oid(page.after) };
+    else if (page.before && Types.ObjectId.isValid(page.before)) q._id = { $lt: oid(page.before) };
     const limit = Math.min(Math.max(page.limit ?? 30, 1), 100);
+    // Delta sync wants the OLDEST unseen messages first (so a gap fills forward from the cursor);
+    // scrollback wants the newest before the cursor. Both are returned chronological asc.
+    if (page.after) return MessageModel().find(q).sort({ _id: 1 }).limit(limit).lean<MessageDoc[]>();
     const docs = await MessageModel().find(q).sort({ _id: -1 }).limit(limit).lean<MessageDoc[]>();
     return docs.reverse(); // chronological asc for the client
+  },
+
+  // Catch-up feed for local-first clients: every message across `conversationIds` whose document
+  // changed after `since` — new arrivals AND in-place changes (edit, delete-for-everyone, reaction,
+  // delivered/read ticks), which is why it keys on updatedAt rather than the _id/creation cursor.
+  // Ordered oldest-change-first so the client can advance its watermark page by page.
+  // The cursor is (updatedAt, _id), not updatedAt alone. updatedAt has millisecond resolution and a
+  // receipt bulkWrite stamps EVERY message it touches with the same instant — so a page boundary
+  // falling inside such a batch would leave the remainder permanently behind a `$gt` watermark. The
+  // id tiebreak resumes exactly where the previous page stopped: nothing skipped, nothing repeated.
+  changedSince(conversationIds: Types.ObjectId[], userId: string, since: Date, sinceId: string | undefined, limit: number): Promise<MessageDoc[]> {
+    if (!conversationIds.length) return Promise.resolve([]);
+    const cursor = sinceId && Types.ObjectId.isValid(sinceId)
+      ? { $or: [{ updatedAt: { $gt: since } }, { updatedAt: since, _id: { $gt: oid(sinceId) } }] }
+      : { updatedAt: { $gt: since } };
+    return MessageModel()
+      .find({ conversationId: { $in: conversationIds }, deletedFor: { $ne: userId }, ...cursor })
+      .sort({ updatedAt: 1, _id: 1 })
+      .limit(Math.min(Math.max(limit, 1), 500))
+      .lean<MessageDoc[]>();
   },
 
   pinnedFor: (conversationId: string) =>
@@ -184,5 +236,44 @@ export const messageRepo = {
     const out: { conversationId: string; ids: string[]; statuses: ReceiptResult['statuses'] }[] = [];
     for (const [conversationId, ids] of grouped) out.push({ conversationId, ...(await applyAggregates(ids, rosters.get(conversationId) ?? [], at)) });
     return out;
+  },
+};
+
+
+// ─────────── per-user chat settings (privacy + blocks) ───────────
+const DEFAULT_SETTINGS = { readReceipts: true, lastSeen: 'everyone' as const, blocked: [] as string[] };
+
+export const chatSettingsRepo = {
+  async get(userId: string): Promise<Pick<ChatSettingsDoc, 'readReceipts' | 'lastSeen' | 'blocked'>> {
+    const doc = await ChatSettingsModel().findOne({ userId }).lean<ChatSettingsDoc>();
+    return doc
+      ? { readReceipts: doc.readReceipts, lastSeen: doc.lastSeen, blocked: doc.blocked ?? [] }
+      : { ...DEFAULT_SETTINGS };
+  },
+
+  async update(userId: string, patch: Partial<Pick<ChatSettingsDoc, 'readReceipts' | 'lastSeen'>>) {
+    await ChatSettingsModel().updateOne({ userId }, { $set: patch }, { upsert: true });
+    return chatSettingsRepo.get(userId);
+  },
+
+  async setBlocked(userId: string, otherUserId: string, blocked: boolean) {
+    await ChatSettingsModel().updateOne(
+      { userId },
+      blocked ? { $addToSet: { blocked: otherUserId } } : { $pull: { blocked: otherUserId } },
+      { upsert: true },
+    );
+    return chatSettingsRepo.get(userId);
+  },
+
+  // Everyone who has blocked `userId` — the half that matters when DELIVERING (a blocker must not
+  // receive), as opposed to the blocker's own list which is checked when they SEND.
+  async blockedBy(userId: string): Promise<string[]> {
+    const docs = await ChatSettingsModel().find({ blocked: userId }, { userId: 1 }).lean<ChatSettingsDoc[]>();
+    return docs.map((d) => d.userId);
+  },
+
+  // Read receipts are reciprocal in WhatsApp: turning yours off also stops you seeing anyone else's.
+  async readReceiptsEnabled(userId: string): Promise<boolean> {
+    return (await chatSettingsRepo.get(userId)).readReceipts;
   },
 };

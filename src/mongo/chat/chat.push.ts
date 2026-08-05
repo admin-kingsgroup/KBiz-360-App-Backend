@@ -65,6 +65,30 @@ export interface ChatPushOpts {
   preview?: string;
   msgType?: string;
   sentAt?: string; // ISO
+  // The message ITSELF, so a local-first client can write it straight into its on-device database
+  // when the push lands and have it there — from storage — before the app is even opened. `preview`
+  // is truncated for the notification line and is not usable for that.
+  fullText?: string;
+  attachments?: unknown[];
+}
+
+// FCM caps a data payload at 4 KB. Anything at risk of blowing that is dropped (the client then
+// falls back to catch-up sync) rather than truncated into a message that looks complete but isn't.
+const PAYLOAD_TEXT_LIMIT = 1500;
+const PAYLOAD_ATT_LIMIT = 900;
+
+// The storable half of the payload: the complete message body and attachments, plus `full: '1'` —
+// the client's permission to write this into its local database instead of just badging the chat.
+// Anything oversized simply omits them, and the flag stays off.
+function messagePayload(opts: ChatPushOpts): Record<string, string> {
+  const out: Record<string, string> = {};
+  const text = opts.fullText ?? '';
+  const atts = opts.attachments?.length ? JSON.stringify(opts.attachments) : '';
+  if (text.length > PAYLOAD_TEXT_LIMIT || atts.length > PAYLOAD_ATT_LIMIT) return out;
+  if (text) out.text = text;
+  if (atts) out.att = atts;
+  out.full = '1';
+  return out;
 }
 
 export const chatPush = {
@@ -88,6 +112,7 @@ export const chatPush = {
           title: opts.title,
           body: opts.body,
           mention: opts.mention ? '1' : '', // FCM data values must be strings
+          ...messagePayload(opts),
         };
         let sent = 0;
         // iOS cannot run JS on data-only pushes — the apns alert makes it display the banner natively.

@@ -3,8 +3,8 @@ import { Forbidden, NotFound, BadRequest } from '../../common/errors';
 import { crmRepo } from '../crm.repo';
 import { accessService } from '../access';
 import { userAvatars } from '../userAvatars';
-import { ConversationModel, MessageModel, type ConversationDoc, type MessageDoc, type Attachment } from './chat.models';
-import { conversationRepo, messageRepo } from './chat.repository';
+import { ConversationModel, MessageModel, type ConvMember, type ConversationDoc, type MessageDoc, type Attachment } from './chat.models';
+import { chatSettingsRepo, conversationRepo, messageRepo } from './chat.repository';
 import { emitToUsers, isOnline, getLastSeen } from './chat.events';
 import { chatPush } from './chat.push';
 
@@ -31,6 +31,22 @@ const DELETE_EVERYONE_WINDOW_MS = 60 * 60 * 1000; // 1 h
 // What the chat-list preview reads once a message is deleted for everyone.
 const DELETED_PREVIEW = 'This message was deleted';
 const directKeyOf = (a: string, b: string): string => [a, b].sort().join('|');
+
+// "24 hours" / "7 days" / "90 days" for the system notice a disappearing-messages change posts.
+function humanDuration(seconds: number): string {
+  const day = 86400;
+  if (seconds % day === 0) { const d = seconds / day; return `${d} day${d === 1 ? '' : 's'}`; }
+  const h = Math.round(seconds / 3600);
+  if (h >= 1) return `${h} hour${h === 1 ? '' : 's'}`;
+  const m = Math.round(seconds / 60);
+  return `${m} minute${m === 1 ? '' : 's'}`;
+}
+
+// Blocking is symmetric in effect: whichever side pressed the button, neither can reach the other.
+async function isBlockedBetween(a: string, b: string): Promise<boolean> {
+  const [mine, theirs] = await Promise.all([chatSettingsRepo.get(a), chatSettingsRepo.get(b)]);
+  return mine.blocked.includes(b) || theirs.blocked.includes(a);
+}
 
 // ── helpers ──
 async function resolveUsers(ids: string[]): Promise<Record<string, { id: string; name: string; email: string; avatar: string | null }>> {
@@ -195,8 +211,8 @@ export const chatService = {
         type: 'direct',
         participantIds: [userId, otherUserId],
         members: [
-          { userId, role: 'member', joinedAt: new Date(), lastReadAt: new Date(), unread: 0, muted: false, archived: false },
-          { userId: otherUserId, role: 'member', joinedAt: new Date(), lastReadAt: null, unread: 0, muted: false, archived: false },
+          { userId, role: 'member', joinedAt: new Date(), lastReadAt: new Date(), unread: 0, muted: false, mutedUntil: null, archived: false, pinned: false },
+          { userId: otherUserId, role: 'member', joinedAt: new Date(), lastReadAt: null, unread: 0, muted: false, mutedUntil: null, archived: false, pinned: false },
         ],
         createdBy: userId,
         tenantId: me?.tenant_id ? String(me.tenant_id) : null,
@@ -239,8 +255,12 @@ export const chatService = {
       // additive: id + aggregate status alongside the existing {text,type,senderId,at}
       lastMessage: lm ? { ...lm, id: lm.messageId ? String(lm.messageId) : null, status: lm.messageId ? lastStatuses[String(lm.messageId)] ?? null : null } : null,
       unread: me?.unread ?? 0,
-      muted: me?.muted ?? false,
+      // A timed mute reports itself as OFF once it lapses, so the client never has to know the rule.
+      muted: !!me?.muted && (!me.mutedUntil || me.mutedUntil.getTime() > Date.now()),
+      mutedUntil: me?.mutedUntil ? me.mutedUntil.toISOString() : null,
       archived: me?.archived ?? false,
+      pinned: me?.pinned ?? false,
+      disappearAfterSec: c.disappearAfterSec ?? null,
       lastActivityAt: c.lastActivityAt,
     };
     if (c.type === 'direct') {
@@ -266,7 +286,7 @@ export const chatService = {
   },
 
   // ── messages ──
-  async getMessages(userId: string, conversationId: string, page: { before?: string; limit?: number }) {
+  async getMessages(userId: string, conversationId: string, page: { before?: string; after?: string; limit?: number }) {
     const conv = await conversationRepo.findById(conversationId);
     if (!conv) throw NotFound('Conversation not found');
     assertMember(conv, userId);
@@ -274,11 +294,89 @@ export const chatService = {
     return msgs.map((m) => toMessageDTO(m, userId));
   },
 
+  // ── per-chat settings (mute / archive / pin) ──
+  // Personal to the caller: muting or archiving a group changes nothing for anyone else in it.
+  async setConversationSettings(userId: string, conversationId: string, patch: { muted?: boolean; muteHours?: number | null; archived?: boolean; pinned?: boolean }) {
+    const conv = await conversationRepo.findById(conversationId);
+    if (!conv) throw NotFound('Conversation not found');
+    assertMember(conv, userId);
+    const set: Partial<Pick<ConvMember, 'muted' | 'mutedUntil' | 'archived' | 'pinned'>> = {};
+    if (patch.muted !== undefined) {
+      set.muted = patch.muted;
+      // muteHours null/absent with muted=true ⇒ "Always" (no expiry). Unmuting clears any timer.
+      set.mutedUntil = patch.muted && patch.muteHours ? new Date(Date.now() + patch.muteHours * 3600_000) : null;
+    }
+    if (patch.archived !== undefined) set.archived = patch.archived;
+    if (patch.pinned !== undefined) set.pinned = patch.pinned;
+    await conversationRepo.setMemberSettings(conversationId, userId, set);
+    const fresh = await conversationRepo.findById(conversationId);
+    return this.conversationDTO(fresh!, userId);
+  },
+
+  // ── disappearing messages ──
+  // A property of the chat: switching it on affects everyone, and (like WhatsApp) only messages sent
+  // AFTER the change expire — turning it on never deletes history that was sent in the open.
+  async setDisappearing(userId: string, conversationId: string, seconds: number | null) {
+    const conv = await conversationRepo.findById(conversationId);
+    if (!conv) throw NotFound('Conversation not found');
+    assertMember(conv, userId);
+    if (conv.type === 'group') await assertManageGroup(conv, userId); // groups: admins decide
+    if (seconds !== null && (!Number.isFinite(seconds) || seconds < 60 || seconds > 90 * 86400)) {
+      throw BadRequest('Duration must be between 1 minute and 90 days');
+    }
+    await conversationRepo.setDisappearing(conversationId, seconds);
+    await postSystemMessage(conv, userId, seconds === null
+      ? `${await displayName(userId)} turned off disappearing messages`
+      : `${await displayName(userId)} set messages to disappear after ${humanDuration(seconds)}`, conv.participantIds);
+    emitToUsers(conv.participantIds, CHAT_EVENTS.CONVERSATION_UPDATED, { conversationId });
+    return { disappearAfterSec: seconds };
+  },
+
+  // ── privacy + blocking ──
+  getPrivacy: (userId: string) => chatSettingsRepo.get(userId),
+  updatePrivacy: (userId: string, patch: { readReceipts?: boolean; lastSeen?: 'everyone' | 'nobody' }) =>
+    chatSettingsRepo.update(userId, patch),
+
+  async setBlocked(userId: string, otherUserId: string, blocked: boolean) {
+    if (userId === otherUserId) throw BadRequest('You cannot block yourself');
+    const settings = await chatSettingsRepo.setBlocked(userId, otherUserId, blocked);
+    // Both sides re-read presence/permissions immediately (the blocked user is not told why).
+    emitToUsers([userId], CHAT_EVENTS.CONVERSATION_UPDATED, { conversationId: null });
+    return settings;
+  },
+
+  // Catch-up sync for local-first clients. One call covers EVERY conversation the user is in and
+  // returns whatever changed since their watermark — new messages plus edits, deletions, reactions
+  // and receipt ticks. The app runs this once when its socket connects; after that the socket keeps
+  // it live, so opening a chat needs no request at all.
+  //
+  // The watermark comes back as a PAIR (`until` + `untilId`) taken from the last row returned, never
+  // from the clock — see changedSince for why the id half matters. Clients send both back.
+  async syncSince(userId: string, since: Date, sinceId: string | undefined, limit = 200) {
+    const convs = await conversationRepo.listForUser(userId);
+    const ids = convs.map((c) => c._id);
+    const docs = await messageRepo.changedSince(ids, userId, since, sinceId, limit);
+    const last = docs.length ? docs[docs.length - 1] : null;
+    return {
+      messages: docs.map((m) => toMessageDTO(m, userId)),
+      until: (last ? new Date(last.updatedAt) : since).toISOString(),
+      untilId: last ? String(last._id) : (sinceId ?? null),
+      // A full page means there is probably more behind it — the client pages until this is false.
+      more: docs.length >= limit,
+    };
+  },
+
   // `forwardedFrom` is internal-only (set by forward(), never in the REST schema — zod strips it).
   async sendMessage(userId: string, conversationId: string, input: { type?: MessageDoc['type']; text?: string; attachments?: Attachment[]; replyToId?: string; clientId?: string; mentions?: string[]; forwardedFrom?: MessageDoc['forwardedFrom'] }) {
     const conv = await conversationRepo.findById(conversationId);
     if (!conv) throw NotFound('Conversation not found');
     assertMember(conv, userId);
+    // Blocking (direct chats): refused in BOTH directions — you cannot message someone you blocked,
+    // and you cannot message someone who blocked you. The sender is not told which case applies.
+    if (conv.type === 'direct') {
+      const other = conv.participantIds.find((p) => p !== userId);
+      if (other && await isBlockedBetween(userId, other)) throw Forbidden('This message could not be sent');
+    }
 
     // Idempotency: if this clientId was already stored (retry / double-send after a dropped response),
     // return the existing message instead of creating a duplicate.
@@ -311,6 +409,9 @@ export const chatService = {
       mentions,
       status: 'sent',
       sentAt: now,
+      // Disappearing messages: only what is sent while the setting is ON gets an expiry, so switching
+      // it on never retro-deletes history (WhatsApp's rule). Mongo's TTL monitor does the deleting.
+      expiresAt: conv.disappearAfterSec ? new Date(now.getTime() + conv.disappearAfterSec * 1000) : null,
       deliveredTo: [userId],
       readBy: [],
     })) as unknown as MessageDoc;
@@ -328,7 +429,11 @@ export const chatService = {
     // the banner only for the conversation it's actively viewing (foreground handler).
     void (async () => {
       try {
-        const recipients = conv.participantIds.filter((p) => p !== userId);
+        // Never push to someone who has blocked the sender (they must not even be notified), and
+        // never to a recipient whose mute is still running.
+        const blockers = new Set(await chatSettingsRepo.blockedBy(userId));
+        const candidates = conv.participantIds.filter((p) => p !== userId && !blockers.has(p));
+        const recipients = (await Promise.all(candidates.map(async (r) => (await conversationRepo.isMuted(conv._id, r) ? null : r)))).filter((r): r is string => !!r);
         // eslint-disable-next-line no-console
         console.log(`[chat-push] msg type=${type} conv=${conversationId} recipients=${recipients.length}`);
         if (!recipients.length) return;
@@ -352,6 +457,10 @@ export const chatService = {
           preview,
           msgType: type,
           sentAt: now.toISOString(),
+          // The message itself — lets the recipient's phone store it on arrival, so it is already
+          // on the device (not one fetch away) when they open the chat.
+          fullText: created.text,
+          attachments: created.attachments,
         })));
       } catch {
         /* push is best-effort */
@@ -419,7 +528,11 @@ export const chatService = {
     const now = new Date();
     const { ids, statuses } = await messageRepo.markRead(conversationId, userId, conv.participantIds, now);
     await conversationRepo.markRead(conversationId, userId, now);
-    if (ids.length) emitToUsers(conv.participantIds, CHAT_EVENTS.READ, { conversationId, by: userId, messageIds: ids, at: now.getTime(), statuses });
+    // Read receipts off ⇒ the blue tick is never broadcast. The read itself is still recorded (it
+    // clears YOUR unread badge); only the telling of it is suppressed. Groups are exempt, exactly as
+    // in WhatsApp, where the setting cannot hide reads in a group.
+    const tell = conv.type === 'group' || await chatSettingsRepo.readReceiptsEnabled(userId);
+    if (ids.length && tell) emitToUsers(conv.participantIds, CHAT_EVENTS.READ, { conversationId, by: userId, messageIds: ids, at: now.getTime(), statuses });
     return { read: ids.length };
   },
 
@@ -564,7 +677,7 @@ export const chatService = {
     const conv = (await conversationRepo.create({
       type: 'group',
       participantIds,
-      members: participantIds.map((uid) => ({ userId: uid, role: uid === userId ? 'admin' : 'member', joinedAt: now, lastReadAt: uid === userId ? now : null, unread: 0, muted: false, archived: false })),
+      members: participantIds.map((uid) => ({ userId: uid, role: uid === userId ? 'admin' : 'member', joinedAt: now, lastReadAt: uid === userId ? now : null, unread: 0, muted: false, mutedUntil: null, archived: false, pinned: false })),
       createdBy: userId,
       tenantId: me?.tenant_id ? String(me.tenant_id) : null,
       name: input.name.trim(),
@@ -601,7 +714,7 @@ export const chatService = {
           { _id: existing._id },
           {
             $addToSet: { participantIds: userId },
-            $push: { members: { userId, role: isSuper ? 'admin' : 'member', joinedAt: new Date(), lastReadAt: null, unread: 0, muted: false, archived: false } },
+            $push: { members: { userId, role: isSuper ? 'admin' : 'member', joinedAt: new Date(), lastReadAt: null, unread: 0, muted: false, mutedUntil: null, archived: false, pinned: false } },
           },
         );
         const refreshed = await conversationRepo.findById(String(existing._id));
@@ -617,7 +730,7 @@ export const chatService = {
     const conv = (await conversationRepo.create({
       type: 'group',
       participantIds,
-      members: participantIds.map((uid) => ({ userId: uid, role: uid === userId ? 'admin' : 'member', joinedAt: now, lastReadAt: uid === userId ? now : null, unread: 0, muted: false, archived: false })),
+      members: participantIds.map((uid) => ({ userId: uid, role: uid === userId ? 'admin' : 'member', joinedAt: now, lastReadAt: uid === userId ? now : null, unread: 0, muted: false, mutedUntil: null, archived: false, pinned: false })),
       createdBy: userId,
       tenantId: me?.tenant_id ? String(me.tenant_id) : null,
       name: input.name?.trim() || 'Group',
@@ -656,7 +769,7 @@ export const chatService = {
         { _id: conv._id },
         {
           $addToSet: { participantIds: { $each: toAdd } },
-          $push: { members: { $each: toAdd.map((uid) => ({ userId: uid, role: 'member', joinedAt: new Date(), lastReadAt: null, unread: 0, muted: false, archived: false })) } },
+          $push: { members: { $each: toAdd.map((uid) => ({ userId: uid, role: 'member', joinedAt: new Date(), lastReadAt: null, unread: 0, muted: false, mutedUntil: null, archived: false, pinned: false })) } },
         },
       );
       emitToUsers([...conv.participantIds, ...toAdd], CHAT_EVENTS.CONVERSATION_UPDATED, { conversationId });
