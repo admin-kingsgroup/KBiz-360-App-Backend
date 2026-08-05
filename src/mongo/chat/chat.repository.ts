@@ -21,6 +21,15 @@ export const conversationRepo = {
       { arrayFilters: [{ 'other.userId': { $ne: senderId } }] },
     );
   },
+  // `lastMessage` is a denormalised snapshot of the text, so deleting a message for
+  // everyone has to tombstone it here too — otherwise the deleted words keep showing
+  // in every participant's chat-list preview. No-op unless the row still points at it.
+  async tombstoneLastMessage(conversationId: Types.ObjectId, messageId: Types.ObjectId, text: string): Promise<void> {
+    await ConversationModel().updateOne(
+      { _id: conversationId, 'lastMessage.messageId': messageId },
+      { $set: { 'lastMessage.text': text, 'lastMessage.type': 'system' } },
+    );
+  },
   async markRead(conversationId: string, userId: string, at: Date): Promise<void> {
     await ConversationModel().updateOne(
       { _id: oid(conversationId), 'members.userId': userId },

@@ -281,3 +281,53 @@ describe('Chat — delete group', () => {
     expect(fetch.status).toBe(404);
   });
 });
+
+describe('Chat — delete message (for me / for everyone)', () => {
+  it('for-me hides the row from that user only and leaves everyone else untouched', async () => {
+    if (!ready) return;
+    const sent = await request(app).post('/api/messages').set(auth(tokenA)).send({ conversationId: directId, text: 'B hides this' });
+    const mid = sent.body.id as string;
+
+    const del = await request(app).delete(`/api/messages/${mid}?scope=me`).set(auth(tokenB));
+    expect(del.status).toBe(200);
+
+    const listB = await request(app).get(`/api/conversations/${directId}/messages`).set(auth(tokenB));
+    expect(listB.body.some((m: { id: string }) => m.id === mid)).toBe(false);
+    const listA = await request(app).get(`/api/conversations/${directId}/messages`).set(auth(tokenA));
+    const stillThere = listA.body.find((m: { id: string }) => m.id === mid) as { text: string; deletedForEveryone: boolean };
+    expect(stillThere.text).toBe('B hides this'); // a per-user hide never touches the message itself
+    expect(stillThere.deletedForEveryone).toBe(false);
+  });
+
+  it('for-everyone tombstones the message, clears the chat-list preview, and emits chat:delete', async () => {
+    if (!ready) return;
+    const sent = await request(app).post('/api/messages').set(auth(tokenA)).send({ conversationId: directId, text: 'secret text' });
+    const mid = sent.body.id as string;
+
+    const evt = waitForMatch<{ id: string; conversationId: string }>(sockB!, 'chat:delete', (e) => e.id === mid);
+    const del = await request(app).delete(`/api/messages/${mid}?scope=everyone`).set(auth(tokenA));
+    expect(del.status).toBe(200);
+    expect((await evt).conversationId).toBe(directId);
+
+    // Text is gone from the message for BOTH sides…
+    for (const token of [tokenA, tokenB]) {
+      const list = await request(app).get(`/api/conversations/${directId}/messages`).set(auth(token));
+      const row = list.body.find((m: { id: string }) => m.id === mid) as { text: string; deletedForEveryone: boolean; attachments: unknown[] };
+      expect(row.deletedForEveryone).toBe(true);
+      expect(row.text).toBe('');
+      expect(row.attachments).toEqual([]);
+    }
+    // …and from the denormalised chat-list preview, which is a separate copy of it.
+    const convs = await request(app).get('/api/conversations').set(auth(tokenB));
+    const row = convs.body.find((c: { id: string }) => c.id === directId) as { lastMessage: { text: string; type: string } };
+    expect(row.lastMessage.text).not.toContain('secret');
+    expect(row.lastMessage.type).toBe('system');
+  });
+
+  it('only the sender can delete for everyone', async () => {
+    if (!ready) return;
+    const sent = await request(app).post('/api/messages').set(auth(tokenA)).send({ conversationId: directId, text: 'not yours to unsend' });
+    const forbidden = await request(app).delete(`/api/messages/${sent.body.id}?scope=everyone`).set(auth(tokenB));
+    expect(forbidden.status).toBe(403);
+  });
+});

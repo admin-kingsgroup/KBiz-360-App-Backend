@@ -28,6 +28,8 @@ export const CHAT_EVENTS = {
 
 const EDIT_WINDOW_MS = 15 * 60 * 1000; // 15 min
 const DELETE_EVERYONE_WINDOW_MS = 60 * 60 * 1000; // 1 h
+// What the chat-list preview reads once a message is deleted for everyone.
+const DELETED_PREVIEW = 'This message was deleted';
 const directKeyOf = (a: string, b: string): string => [a, b].sort().join('|');
 
 // ── helpers ──
@@ -390,6 +392,7 @@ export const chatService = {
     m.text = '';
     m.attachments = [];
     await m.save();
+    await conversationRepo.tombstoneLastMessage(m.conversationId, m._id, DELETED_PREVIEW);
     const conv = await conversationRepo.findById(String(m.conversationId));
     emitToUsers(conv?.participantIds ?? [], CHAT_EVENTS.DELETE, { id: String(m._id), conversationId: String(m.conversationId) });
     return { ok: true };
