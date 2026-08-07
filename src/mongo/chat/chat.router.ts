@@ -145,7 +145,11 @@ chatRouter.get('/messages/:id/receipts', asyncHandler(async (req, res) => res.js
 chatRouter.post('/messages/read', validate(z.object({ conversationId: z.string().min(1) })), asyncHandler(async (req, res) => res.json(await chatService.markRead(uid(req), req.body.conversationId))));
 chatRouter.post('/messages/forward', validate(z.object({ messageId: z.string().min(1), conversationIds: z.array(z.string()).min(1) })), asyncHandler(async (req, res) => res.json(await chatService.forward(uid(req), req.body.messageId, req.body.conversationIds))));
 chatRouter.get('/messages/starred', asyncHandler(async (req, res) => res.json(await chatService.starred(uid(req)))));
-chatRouter.get('/messages/search', asyncHandler(async (req, res) => res.json(await chatService.search(uid(req), (req.query.q as string) ?? '', { senderId: req.query.senderId as string | undefined }))));
+chatRouter.get('/messages/search', asyncHandler(async (req, res) => res.json(await chatService.search(uid(req), (req.query.q as string) ?? '', {
+  senderId: req.query.senderId as string | undefined,
+  conversationId: req.query.conversationId as string | undefined,
+  before: req.query.before as string | undefined,
+}))));
 
 // ── groups ──
 // Creating a group is Super-Admin OR a delegated group creator (the app hides the entry points for

@@ -178,13 +178,20 @@ export const messageRepo = {
   starredFor: (userId: string) =>
     MessageModel().find({ starredBy: userId, deletedFor: { $ne: userId } }).sort({ _id: -1 }).limit(200).lean<MessageDoc[]>(),
 
-  async search(conversationIds: string[], text: string, opts: { senderId?: string } = {}): Promise<MessageDoc[]> {
+  // Case-insensitive SUBSTRING match, not the $text index: $text only matches whole stemmed words,
+  // so "invo" would never find "invoice" — the wrong semantics for a chat search box. The regex scan
+  // is bounded by the conversationId index (only the caller's own conversations), and the pattern is
+  // escaped so user input can never become a pathological regex.
+  async search(conversationIds: string[], userId: string, text: string, opts: { senderId?: string; before?: string } = {}): Promise<MessageDoc[]> {
+    const escaped = text.slice(0, 200).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const q: Record<string, unknown> = {
       conversationId: { $in: conversationIds.map(oid) },
       deletedForEveryone: false,
-      $text: { $search: text },
+      deletedFor: { $ne: userId }, // deleted-for-me must not resurface in search results
+      text: { $regex: escaped, $options: 'i' },
     };
     if (opts.senderId) q.senderId = opts.senderId;
+    if (opts.before && Types.ObjectId.isValid(opts.before)) q._id = { $lt: oid(opts.before) };
     return MessageModel().find(q).sort({ _id: -1 }).limit(50).lean<MessageDoc[]>();
   },
 

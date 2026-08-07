@@ -641,11 +641,21 @@ export const chatService = {
     return (await messageRepo.starredFor(userId)).map((m) => toMessageDTO(m, userId));
   },
 
-  async search(userId: string, text: string, opts: { senderId?: string } = {}) {
+  // Global (all my conversations) or scoped to one conversation when `conversationId` is given —
+  // the in-chat "Search in chat" surface. `before` pages older results (id cursor, newest-first).
+  async search(userId: string, text: string, opts: { senderId?: string; conversationId?: string; before?: string } = {}) {
     if (!text?.trim()) return [];
-    const convs = await conversationRepo.listForUser(userId);
-    const ids = convs.map((c) => String(c._id));
-    return (await messageRepo.search(ids, text, opts)).map((m) => toMessageDTO(m, userId));
+    let ids: string[];
+    if (opts.conversationId) {
+      const conv = await conversationRepo.findById(opts.conversationId);
+      if (!conv) throw NotFound('Conversation not found');
+      assertMember(conv, userId);
+      ids = [opts.conversationId];
+    } else {
+      const convs = await conversationRepo.listForUser(userId);
+      ids = convs.map((c) => String(c._id));
+    }
+    return (await messageRepo.search(ids, userId, text.trim(), opts)).map((m) => toMessageDTO(m, userId));
   },
 
   // ── groups ──
