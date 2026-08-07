@@ -58,16 +58,16 @@ const addDays = (key: string, n: number): string => {
 };
 const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
-// The UTC instant whose wall clock in the business timezone reads `dayKey hh:mm` (for admin
-// corrections entered as business-local times). Two-step: format a UTC guess back into the tz,
-// and shift by the difference.
-const atBusinessTime = (dayKey: string, hhmm: string): Date => {
+// The UTC instant whose wall clock in the given timezone reads `dayKey hh:mm` (for admin
+// corrections entered as business-local times, and branch-local auto-close stamps). Two-step:
+// format a UTC guess back into the tz, and shift by the difference.
+const atBusinessTime = (dayKey: string, hhmm: string, tz: string = ATTENDANCE_TZ): Date => {
   const guess = new Date(`${dayKey}T${hhmm}:00.000Z`);
   // hourCycle 'h23', NOT hour12:false — the latter selects the h24 cycle in Node's ICU, which
   // renders the midnight hour as "24:30:00" (an unparseable wall clock → Invalid Date). With IST
   // that broke every business time in the 18:30–19:29 window, including the 19:00 defaults.
   const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: ATTENDANCE_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
   });
   const wall = new Date(fmt.format(guess).replace(', ', 'T').replace(' ', 'T') + 'Z');
@@ -89,15 +89,37 @@ function fmtTime(d: Date | null): string | null {
 const ATTENDANCE_ALERTS_ENABLED = process.env.ATTENDANCE_ALERTS === 'on';
 
 // Forgotten check-outs (owner call, 07-31): the 10pm sweep closes any day still open, stamping the
-// check-out at 7pm business time — NOT the sweep hour — labelled method 'Auto-closed' so it is
-// visibly different from a real punch. A check-in AFTER the stamp hour closes at the check-in
-// instant instead (a checkout can never precede its check-in).
+// check-out at 7pm — NOT the sweep hour — labelled method 'Auto-closed' so it is visibly different
+// from a real punch. A check-in AFTER the stamp hour closes at the check-in instant instead
+// (a checkout can never precede its check-in).
 const AUTO_CLOSE_STAMP = process.env.ATTENDANCE_AUTOCLOSE_TIME || '19:00';
 
+// The stamp is BRANCH-LOCAL (owner call, 08-07): stamping 19:00 IST was writing 16:30 local
+// checkouts in NBO/DAR and 15:30 local in FBM. African branches close at their OFFICE END time,
+// not 7pm (owner call, 08-07). CRM branch docs carry only code/city, so both the IANA zone and
+// the stamp are resolved from the branch code here; unknown codes (BOM/AMD/BOMMB/…) fall back to
+// the business timezone (IST) at the 7pm default.
+const BRANCH_AUTO_CLOSE: Record<string, { tz: string; stamp: string }> = {
+  NBO: { tz: 'Africa/Nairobi', stamp: '18:30' },       // Kenya, UTC+3 — office 8:30–6:30
+  DAR: { tz: 'Africa/Dar_es_Salaam', stamp: '17:30' }, // Tanzania, UTC+3 — office 8:30–5:30
+  FBM: { tz: 'Africa/Lubumbashi', stamp: '17:30' },    // DR Congo south-east, UTC+2 — office 8:30–5:30
+};
+export const branchAutoClose = (branch: { code?: string | null } | null | undefined): { tz: string; stamp: string } =>
+  BRANCH_AUTO_CLOSE[String(branch?.code ?? '').trim().toUpperCase()] ?? { tz: ATTENDANCE_TZ, stamp: AUTO_CLOSE_STAMP };
+
 // Pure: the instant a forgotten day is closed at (exported for tests).
-export function resolveAutoCloseAt(dayKey: string, checkInAt: Date, stampHHmm: string = AUTO_CLOSE_STAMP): Date {
-  const stamp = atBusinessTime(dayKey, stampHHmm);
+export function resolveAutoCloseAt(dayKey: string, checkInAt: Date, stampHHmm: string = AUTO_CLOSE_STAMP, tz: string = ATTENDANCE_TZ): Date {
+  const stamp = atBusinessTime(dayKey, stampHHmm, tz);
   return checkInAt.getTime() > stamp.getTime() ? checkInAt : stamp;
+}
+
+// The auto-close ACTION fires at 10pm in the BRANCH's local night (owner call, 08-07), not 10pm
+// IST — FBM's 10pm is 01:30 IST the next calendar day. Pure predicate: has `day` reached the
+// close hour in `tz` as of instant `at`? (Exported for tests.)
+const DAY_CLOSE_HOUR = Math.min(23, Math.max(0, Number(process.env.ATTENDANCE_DAYCLOSE_HOUR ?? 22)));
+const DAY_CLOSE_HHMM = `${String(DAY_CLOSE_HOUR).padStart(2, '0')}:00`;
+export function autoCloseDue(dayKey: string, tz: string, at: Date): boolean {
+  return at.getTime() >= atBusinessTime(dayKey, DAY_CLOSE_HHMM, tz).getTime();
 }
 
 // Exit hysteresis is ZERO (owner call, 07-28): check-out is immediate the moment a fix is beyond
@@ -739,18 +761,49 @@ export const attendanceService = {
   // instant if they punched in later than that), method 'Auto-closed'. Idempotent: once closed, a
   // row no longer matches the open-day query. Runs regardless of the alerts kill-switch.
   // NOTE: this runs BEFORE dayCloseReport in the sweep, so the report counts these days as closed.
+  // With no explicit day, sweeps BOTH IST-yesterday and IST-today: an African branch's 10pm falls
+  // past IST midnight (NBO/DAR 00:30, FBM 01:30 IST), by which point their local date — the day
+  // being closed — is already "yesterday" in IST terms.
   async autoCloseOpenDays(dateKey?: string): Promise<{ day: string; closed: number }> {
-    const day = dateKey ?? todayKey();
+    const days = dateKey ? [dateKey] : [addDays(todayKey(), -1), todayKey()];
+    let closed = 0;
+    for (const day of days) closed += await this.autoCloseOpenDay(day);
+    return { day: days.join(', '), closed };
+  },
+
+  async autoCloseOpenDay(day: string): Promise<number> {
     const open = await attendanceRepo.openForDay(day);
+    if (!open.length) return 0;
+
+    // Both the 10pm gate and the office-end stamp are branch-local, so resolve each open user's
+    // working branch first — same rule as the day-close report: explicit assignment → first CRM
+    // branch.
+    const userIds = open.map((r) => r.userId);
+    const workBranches = await userWorkBranches.mapFor(userIds);
+    const userOids = userIds.filter((v) => Types.ObjectId.isValid(v)).map((v) => new Types.ObjectId(v));
+    const users = userOids.length ? ((await crmRepo.listUsers({ _id: { $in: userOids } })) as CrmUser[]) : [];
+    const firstBranch = new Map(users.map((u) => [String(u._id), String((u.branch_ids ?? [])[0] ?? '')]));
+    const branchIdOf = (userId: string): string => workBranches[userId] ?? firstBranch.get(userId) ?? '';
+    const branchOids = [...new Set(userIds.map(branchIdOf).filter((v) => Types.ObjectId.isValid(v)))].map((v) => new Types.ObjectId(v));
+    const branches: CrmBranch[] = branchOids.length ? await crmRepo.branchesByIds(branchOids) : [];
+    const closeByBranchId = new Map(branches.map((b) => [String(b._id), branchAutoClose(b)]));
+
+    const now = new Date();
+    let closed = 0;
     for (const r of open) {
       if (!r.checkInAt) continue; // defensive — the query already excludes these
+      const { tz, stamp } = closeByBranchId.get(branchIdOf(r.userId)) ?? { tz: ATTENDANCE_TZ, stamp: AUTO_CLOSE_STAMP };
+      if (!autoCloseDue(day, tz, now)) continue; // this branch hasn't reached its local 10pm yet
+      const closeAt = resolveAutoCloseAt(day, r.checkInAt, stamp, tz);
+      if (closeAt.getTime() > now.getTime()) continue; // defensive: never write a future checkout
       await attendanceRepo.upsert(r.userId, day, {
-        checkOutAt: resolveAutoCloseAt(day, r.checkInAt),
+        checkOutAt: closeAt,
         method: 'Auto-closed',
         present: false,
       });
+      closed += 1;
     }
-    return { day, closed: open.length };
+    return closed;
   },
 
   // Daily attendance DAY-CLOSE report, branch-wise. Groups every tracked (active, non-exempt) user

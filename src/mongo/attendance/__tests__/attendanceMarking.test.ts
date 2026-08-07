@@ -1,5 +1,5 @@
 import { connectMongo, disconnectMongo, appDb } from '../../connection';
-import { attendanceService, geofenceExitStillInside, resolveCheckOutAt, resolveAutoCloseAt, teamScope, superUserIds, GEOFENCE_EXIT_BUFFER_M } from '../attendance.service';
+import { attendanceService, geofenceExitStillInside, resolveCheckOutAt, resolveAutoCloseAt, branchAutoClose, autoCloseDue, teamScope, superUserIds, GEOFENCE_EXIT_BUFFER_M } from '../attendance.service';
 import { punchSchema } from '../attendance.router';
 
 // Regression: validate() replaces req.body with the parsed schema, dropping unknown keys. If
@@ -153,6 +153,51 @@ describe('resolveAutoCloseAt (forgotten-checkout stamp, pure)', () => {
   it('honours a custom stamp time', () => {
     const checkIn = new Date('2026-07-31T04:30:00.000Z');
     expect(resolveAutoCloseAt(day, checkIn, '18:00').toISOString()).toBe('2026-07-31T12:30:00.000Z'); // 18:00 IST
+  });
+  it('stamps in the BRANCH timezone at the branch stamp time, not IST', () => {
+    const checkIn = new Date('2026-07-31T05:30:00.000Z'); // 08:30 EAT
+    const stamp = (code: string) => {
+      const { tz, stamp: hhmm } = branchAutoClose({ code });
+      return resolveAutoCloseAt(day, checkIn, hhmm, tz).toISOString();
+    };
+    expect(stamp('NBO')).toBe('2026-07-31T15:30:00.000Z'); // 18:30 EAT (UTC+3) — NBO office end
+    expect(stamp('DAR')).toBe('2026-07-31T14:30:00.000Z'); // 17:30 EAT (UTC+3) — DAR office end
+    expect(stamp('FBM')).toBe('2026-07-31T15:30:00.000Z'); // 17:30 CAT (UTC+2) — FBM office end
+    expect(stamp('BOM')).toBe('2026-07-31T13:30:00.000Z'); // 19:00 IST — Indian default unchanged
+  });
+});
+
+describe('autoCloseDue (10pm gate in the BRANCH local night, pure)', () => {
+  const day = '2026-07-31';
+  it('India: due exactly from 22:00 IST', () => {
+    expect(autoCloseDue(day, 'Asia/Kolkata', new Date('2026-07-31T16:29:00.000Z'))).toBe(false); // 21:59 IST
+    expect(autoCloseDue(day, 'Asia/Kolkata', new Date('2026-07-31T16:30:00.000Z'))).toBe(true);  // 22:00 IST
+  });
+  it('NBO/DAR: due from 22:00 EAT (= 00:30 IST next day), NOT from 22:00 IST', () => {
+    expect(autoCloseDue(day, 'Africa/Nairobi', new Date('2026-07-31T16:30:00.000Z'))).toBe(false); // 19:30 EAT
+    expect(autoCloseDue(day, 'Africa/Nairobi', new Date('2026-07-31T19:00:00.000Z'))).toBe(true);  // 22:00 EAT
+  });
+  it('FBM: due from 22:00 CAT (= 01:30 IST next day)', () => {
+    expect(autoCloseDue(day, 'Africa/Lubumbashi', new Date('2026-07-31T19:59:00.000Z'))).toBe(false); // 21:59 CAT
+    expect(autoCloseDue(day, 'Africa/Lubumbashi', new Date('2026-07-31T20:00:00.000Z'))).toBe(true);  // 22:00 CAT
+  });
+  it('a past day is always due (leftover cleanup on a later sweep)', () => {
+    expect(autoCloseDue(day, 'Africa/Lubumbashi', new Date('2026-08-01T09:00:00.000Z'))).toBe(true);
+  });
+});
+
+describe('branchAutoClose (branch code → local zone + office-end stamp)', () => {
+  it('maps the African branches to their local zone and office closing time', () => {
+    expect(branchAutoClose({ code: 'NBO' })).toEqual({ tz: 'Africa/Nairobi', stamp: '18:30' });
+    expect(branchAutoClose({ code: 'DAR' })).toEqual({ tz: 'Africa/Dar_es_Salaam', stamp: '17:30' });
+    expect(branchAutoClose({ code: 'FBM' })).toEqual({ tz: 'Africa/Lubumbashi', stamp: '17:30' });
+    expect(branchAutoClose({ code: 'fbm' })).toEqual({ tz: 'Africa/Lubumbashi', stamp: '17:30' }); // case-insensitive
+  });
+  it('falls back to IST at 7pm for Indian/unknown/missing branches', () => {
+    expect(branchAutoClose({ code: 'BOM' })).toEqual({ tz: 'Asia/Kolkata', stamp: '19:00' });
+    expect(branchAutoClose({ code: 'BOMMB' })).toEqual({ tz: 'Asia/Kolkata', stamp: '19:00' });
+    expect(branchAutoClose({ code: null })).toEqual({ tz: 'Asia/Kolkata', stamp: '19:00' });
+    expect(branchAutoClose(null)).toEqual({ tz: 'Asia/Kolkata', stamp: '19:00' });
   });
 });
 
