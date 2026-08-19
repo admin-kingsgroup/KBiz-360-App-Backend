@@ -313,6 +313,13 @@ function mapMe(doc: AttendanceDoc | null) {
   };
 }
 
+// One attempt per (branch, day) per process. The sweep ticks every minute across a six-hour
+// window so that every branch's own 10pm falls inside it; without this, each tick after a branch
+// has reported would re-read the whole directory and its attendance to discover that the chat
+// post is a duplicate. A failed attempt is remembered too — a branch whose group has been renamed
+// must not log the same warning 360 times a night.
+const reportedTonight = new Set<string>();
+
 export const attendanceService = {
   // Punch gate (owner rules, 07-31): BOTH check-in and check-out require
   //   1. a live GPS fix INSIDE one of the user's office geofences (radius, default 100 m), and
@@ -824,6 +831,18 @@ export const attendanceService = {
   // skips both the hour gate and the dedupe.
   async dayCloseReport(opts: { dateKey?: string; only?: string; force?: boolean } = {}): Promise<{ day: string; posted: { branch: string; group: string; present: number; total: number }[] }> {
     const now = new Date();
+    // Cheap early-out before the directory fan-out: is ANY branch at its own 10pm and still
+    // unreported? Seven branch docs, versus every active user + their attendance, on each tick.
+    if (!opts.force) {
+      const due = (await crmRepo.listBranches({})).some((b) => {
+        const code = attendanceBranchCode(b);
+        if (!code || (opts.only && code !== String(opts.only).toUpperCase())) return false;
+        const { tz } = branchAutoClose({ code });
+        const day = opts.dateKey ?? dayKeyIn(tz, now);
+        return autoCloseDue(day, tz, now) && !reportedTonight.has(`${code}:${day}`);
+      });
+      if (!due) return { day: opts.dateKey ?? todayKey(), posted: [] };
+    }
     const users = (await crmRepo.listUsers({ status: 'active' })) as CrmUser[];
     const hiddenSet = await attendanceHidden.hiddenSet();
     const exempt = await attendanceExempt.exemptSet();
@@ -859,7 +878,11 @@ export const attendanceService = {
       // The branch's own calendar day and its own 10pm.
       const day = opts.dateKey ?? dayKeyIn(tz, now);
       reportedDay = day;
-      if (!opts.force && !autoCloseDue(day, tz, now)) continue; // this branch's night hasn't come yet
+      if (!opts.force) {
+        if (!autoCloseDue(day, tz, now)) continue; // this branch's night hasn't come yet
+        if (reportedTonight.has(`${branchCode}:${day}`)) continue; // already attempted tonight
+        reportedTonight.add(`${branchCode}:${day}`);
+      }
 
       const records = await attendanceRepo.forUsersOnDay(day, chUsers.map((u) => String(u._id)));
       const byUser = new Map(records.map((r) => [r.userId, r]));
