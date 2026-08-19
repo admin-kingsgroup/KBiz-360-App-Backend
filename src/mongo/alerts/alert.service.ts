@@ -8,7 +8,7 @@ import { userWorkBranches } from '../attendance/userWorkBranches';
 import { emitToAll } from '../chat/chat.events';
 import { alertGrants } from './alertGrants';
 import { alertPush } from './alert.push';
-import { ANNOUNCEMENTS_CHANNEL_ID, USER_ALERTS_CHANNEL_ID, attendanceChannelForBranch, visibleChannelIds } from './alertChannels';
+import { ANNOUNCEMENTS_CHANNEL_ID, USER_ALERTS_CHANNEL_ID, visibleChannelIds } from './alertChannels';
 
 // System-alert EVENTS (kb360_app.alert_events). Events are shared per channel; read-state is
 // per-user (readBy). The realtime signal carries only the channelId — clients refetch GET /alerts,
@@ -40,8 +40,6 @@ const MAX_EVENTS = 1500; // overall safety ceiling on the merged feed
 // expiresAt — Mongo TTL skips docs missing the indexed field — so their history never expires.
 const EVENT_TTL_DAYS = 90;
 export const eventExpiry = (from: Date): Date => new Date(from.getTime() + EVENT_TTL_DAYS * 24 * 3600 * 1000);
-// Marker `source` for the daily attendance day-close summary (used for per-day idempotency).
-const DAY_CLOSE_SOURCE = 'Attendance Day-Close';
 export async function ensureAlertIndexes(): Promise<void> {
   await col().createIndex({ channelId: 1, time: -1 });
   await col().createIndex({ time: -1 });
@@ -73,21 +71,6 @@ export const alertService = {
     void alertPush.sendChannelAlert(channelId, ev.title, ev.body, actorUserId);
   },
 
-  // Daily attendance "day-close" summary posted to a branch's attendance channel. Idempotent per
-  // (channel, dayKey): reportKey carries the day so the 10pm sweep can safely re-run without
-  // double-posting (a restart between 10pm and midnight won't duplicate it).
-  async hasDayCloseReport(channelId: string, dayKey: string): Promise<boolean> {
-    return !!(await col().findOne({ channelId, source: DAY_CLOSE_SOURCE, reportKey: dayKey }));
-  },
-  // pushBody (optional) is the SHORT text sent in the heads-up notification; the full detailed
-  // ev.body (the per-user table) is stored on the event and shown in the alert detail screen.
-  async recordDayClose(channelId: string, dayKey: string, ev: { title: string; body: string; context: string }, pushBody?: string): Promise<void> {
-    const now = new Date();
-    await col().insertOne({ channelId, source: DAY_CLOSE_SOURCE, reportKey: dayKey, ...ev, time: now, readBy: [], createdAt: now, expiresAt: eventExpiry(now) });
-    emitToAll('alert:new', { channelId });
-    void alertPush.sendChannelAlert(channelId, ev.title, pushBody ?? ev.body, null);
-  },
-
   // Personal "User Alerts" event addressed to a single user, with a push to just them.
   async recordUserAlert(userId: string, ev: { source: string; title: string; body: string; context: string }): Promise<void> {
     const now = new Date();
@@ -96,38 +79,19 @@ export const alertService = {
     void alertPush.sendUserAlert(userId, ev.title, ev.body);
   },
 
-  // Attendance punch → (1) a personal "User Alerts" event for the puncher (always, with a push),
-  // and (2) an event in that branch's attendance channel (HR feed). Never throws — a failed alert
-  // must not fail the punch.
+  // Attendance punch → the puncher's own "You checked in/out" event in My Alerts (with a push to
+  // them). The branch half of this — a live "X checked in" post into the branch Attendance
+  // channel — went away 2026-08-19 with those channels: what a branch gets now is ONE day-close
+  // summary in its group chat (attendance.service.dayCloseReport), not a message per punch.
+  // Never throws — a failed alert must not fail the punch.
   async recordAttendancePunch(userId: string, action: 'in' | 'out', at: Date, via: string | null): Promise<void> {
     try {
-      // (1) Personal alert — fires for every puncher regardless of branch resolution.
       await this.recordUserAlert(userId, {
         source: 'Attendance',
         title: `You checked ${action}`,
         body: `${fmtWallTime(at)}${via ? ` · via ${via}` : ''}`,
         context: 'Your attendance',
       });
-
-      // (2) Branch attendance channel (managers' HR feed).
-      const user = await crmRepo.getUserById(userId);
-      if (!user) return;
-      // The user's WORKING branch: explicit assignment → first CRM access branch (same rule as team view).
-      const firstBranch = (user.branch_ids ?? [])[0];
-      const workBranchId = (await userWorkBranches.branchIdFor(userId)) ?? (firstBranch ? String(firstBranch) : null);
-      if (!workBranchId || !Types.ObjectId.isValid(workBranchId)) return;
-      const [branch] = await crmRepo.branchesByIds([new Types.ObjectId(workBranchId)]);
-      // Code → alias (BOMMB/MUM → BOM) → city fallback: real Mumbai staff sit under the
-      // BOMMB branch doc, which has no channel of its own but must feed BOM Attendance.
-      const channel = attendanceChannelForBranch(branch ?? null);
-      if (!channel) return; // only Mumbai/Ahmedabad-resolvable branches emit alerts
-      const name = `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim() || user.email || 'Unknown';
-      await this.record(channel.id, {
-        source: 'Attendance System',
-        title: `${name} checked ${action}`,
-        body: `${fmtWallTime(at)}${via ? ` · via ${via}` : ''}`,
-        context: `TK ${channel.branchCode} · Attendance`,
-      }, userId); // the puncher doesn't need a push about their own punch
     } catch (err) {
       console.error('[alerts] failed to record attendance event', err);
     }

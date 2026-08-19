@@ -1,12 +1,12 @@
 import { attendanceService } from './attendance.service';
 
 // Daily attendance DAY-CLOSE sweep. Every minute it checks the business-timezone hour; inside the
-// 22:00–03:59 IST window it runs the forgotten-checkout auto-close (which gates itself at 10pm in
-// each BRANCH's local timezone), and from 22:00 IST it also triggers the branch-wise day-close
-// report. The report is idempotent per (channel, day), so calling it repeatedly through the
-// evening posts exactly once per branch — no in-memory "already ran" flag needed, and a restart
-// between 10pm and midnight can't double-post. Same lifecycle shape as reminder.sweep: started
-// from mongo/main.
+// 22:00–03:59 IST window it runs the forgotten-checkout auto-close AND the branch-wise day-close
+// report — both of which gate themselves at 10pm in each BRANCH's local timezone, which is what
+// that odd-looking window spans (India's 10pm is 22:00 IST, FBM's is 01:30 IST the next day).
+// The report is idempotent per (branch, day), so calling it repeatedly through the evening posts
+// exactly once per branch — no in-memory "already ran" flag needed, and a restart between 10pm
+// and midnight can't double-post. Same lifecycle shape as reminder.sweep: started from mongo/main.
 const ATTENDANCE_TZ = process.env.ATTENDANCE_TZ || 'Asia/Kolkata';
 const DAY_CLOSE_HOUR = Number(process.env.ATTENDANCE_DAYCLOSE_HOUR ?? 22); // 24h business-tz hour
 
@@ -35,10 +35,11 @@ export function startAttendanceDayClose(intervalMs = 60_000): void {
       .then((r) => {
         // eslint-disable-next-line no-console
         if (r.closed > 0) console.log(`[attendance-dayclose] auto-closed ${r.closed} forgotten checkout(s) for ${r.day}`);
-        // The REPORT stays on the IST clock (posts once from 10pm IST): past IST midnight
-        // todayKey() is a fresh day, and reporting on it would post an all-absent summary at
-        // half past midnight.
-        return hour >= DAY_CLOSE_HOUR ? attendanceService.dayCloseReport() : undefined;
+        // The report runs on EVERY tick in the window, not just from 22:00 IST: an African
+        // branch's 10pm falls in the IST small hours (NBO 00:30, FBM 01:30), and gating on the
+        // IST hour is exactly what would skip it. Each branch decides for itself inside, on its
+        // own clock and its own calendar day.
+        return attendanceService.dayCloseReport();
       })
       .catch((e: Error) => {
         // eslint-disable-next-line no-console

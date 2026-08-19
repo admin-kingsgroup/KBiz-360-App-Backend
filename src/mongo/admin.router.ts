@@ -81,7 +81,7 @@ adminRouter.get(
 );
 
 // GET /api/admin/alert-visibility → { [userId]: grants[] } — which system-alert channels each user sees.
-// Grants use the app's access format (e.g. "BOM-hr" = the BOM Attendance channel). Supers see all.
+// Grants use the app's access format (e.g. "BOM-sales" = the BOM Sales Invoice channel). Supers see all.
 adminRouter.get(
   '/alert-visibility',
   requireAuth,

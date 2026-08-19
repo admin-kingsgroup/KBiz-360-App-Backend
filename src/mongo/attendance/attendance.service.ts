@@ -9,7 +9,8 @@ import { userWorkBranches } from './userWorkBranches';
 import { attendanceExempt } from '../attendanceExempt';
 import { attendanceHidden } from '../attendanceHidden';
 import { alertService } from '../alerts/alert.service';
-import { attendanceChannelForBranch, ALERT_CHANNELS } from '../alerts/alertChannels';
+import { reportChat } from '../alerts/reportChat.service';
+import { attendanceBranchCode, dayKeyIn } from './attendanceBranch';
 import { userPositions } from '../userPositions';
 import type { OfficeGeofenceDoc } from './office.model';
 import type { AttendanceDoc } from './attendance.model';
@@ -74,18 +75,18 @@ const atBusinessTime = (dayKey: string, hhmm: string, tz: string = ATTENDANCE_TZ
   return new Date(guess.getTime() - (wall.getTime() - guess.getTime()));
 };
 const todayDate = (): Date => new Date(`${todayKey()}T00:00:00.000Z`); // calendar-day marker for the record
-function fmtTime(d: Date | null): string | null {
+function fmtTime(d: Date | null, tz: string = ATTENDANCE_TZ): string | null {
   if (!d) return null;
   try {
-    return new Intl.DateTimeFormat('en-US', { timeZone: ATTENDANCE_TZ, hour: 'numeric', minute: '2-digit', hour12: true }).format(d);
+    return new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true }).format(d);
   } catch {
     return null;
   }
 }
 
-// Attendance ALERTS kill-switch (owner call, 07-31): silenced while the new punch flow (geofence
-// + face photo) is being tested — no "X checked in/out" channel posts/pushes and no 10pm day-close
-// report. Flip back to true (or set ATTENDANCE_ALERTS=on) once the flow is approved.
+// Attendance PUNCH-alert kill-switch (owner call, 07-31; ATTENDANCE_ALERTS=on in production):
+// gates the personal "You checked in" alert a puncher gets in My Alerts. It no longer gates the
+// day-close report — that is a branch's own daily record and posts to the branch group regardless.
 const ATTENDANCE_ALERTS_ENABLED = process.env.ATTENDANCE_ALERTS === 'on';
 
 // Forgotten check-outs (owner call, 07-31): the 10pm sweep closes any day still open, stamping the
@@ -209,9 +210,6 @@ async function isUntracked(userId: string): Promise<boolean> {
   const access = await accessService.accessForUserId(userId);
   return !!access?.isSuper;
 }
-
-// Super-admin-only channel the directors' day summary posts into.
-const DIRECTORS_CHANNEL_ID = ALERT_CHANNELS.find((c) => c.branchCode === 'DIR')?.id ?? 'tk_att_dir';
 
 function viaFor(body: PunchBody, wifiVerified: boolean): string {
   if (body.method === 'face') return 'Face';
@@ -806,27 +804,34 @@ export const attendanceService = {
     return closed;
   },
 
-  // Daily attendance DAY-CLOSE report, branch-wise. Groups every tracked (active, non-exempt) user
-  // by the attendance channel of their working branch (BOM/AMD), tallies present vs absent for the
-  // day, and posts one summary to each branch's attendance channel. Idempotent per (channel, day)
-  // via alertService, so the 10pm sweep may safely re-run. Returns which channels it posted.
-  async dayCloseReport(dateKey?: string): Promise<{ day: string; posted: { channelId: string; branch: string; present: number; total: number }[] }> {
-    const day = dateKey ?? todayKey();
+  // Daily attendance DAY-CLOSE report, branch-wise → the branch's GROUP CHAT.
+  //
+  // Where: "HQ - <CODE> Finance" (the hub posts to "MHUB - Finance Team"), the same groups the
+  // daily finance reports land in. It used to post into the Attendance alert channels, which
+  // existed for BOM and AMD alone — so Nairobi, Dar es Salaam, Lubumbashi and the hub, whose
+  // people punch every day, were bucketed into a channel that did not exist and silently dropped.
+  // Every branch has a group, so every branch now gets its report.
+  //
+  // When: 22:00 in the BRANCH's own night, not 22:00 IST. FBM's 10pm is 01:30 IST the NEXT
+  // calendar day, which is why the day being reported is the branch-local one: at that instant
+  // the IST clock has already rolled over, and reporting on the IST day would post an all-absent
+  // summary for a day nobody has worked yet. The sweep ticks every minute through the window and
+  // each branch self-gates here (autoCloseDue is the same 10pm-local predicate the auto-close
+  // uses), so one tick loop serves every zone.
+  //
+  // Idempotent per (branch, day) through the chat post's own dedupe key, so ticking every minute
+  // from 10pm posts exactly once and a restart cannot double-post. `force` (the admin/manual path)
+  // skips both the hour gate and the dedupe.
+  async dayCloseReport(opts: { dateKey?: string; only?: string; force?: boolean } = {}): Promise<{ day: string; posted: { branch: string; group: string; present: number; total: number }[] }> {
+    const now = new Date();
     const users = (await crmRepo.listUsers({ status: 'active' })) as CrmUser[];
     const hiddenSet = await attendanceHidden.hiddenSet();
-
-    // Directors' hidden-attendance summary → the super-admin-only channel. Deliberately OUTSIDE the
-    // alerts kill-switch: it is the sole surface where hidden attendance appears (owner call, 07-31).
-    const directorPosts = await this.directorsDayClose(day, users.filter((u) => hiddenSet.has(String(u._id))));
-
-    if (!ATTENDANCE_ALERTS_ENABLED) return { day, posted: directorPosts }; // branch reports silenced during the punch-flow test
-
     const exempt = await attendanceExempt.exemptSet();
     const supers = superUserIds(users, await crmRepo.listRoles());
-    // Hidden users never appear in a branch report — their day lives in the directors summary only.
+    // Hidden users are in no report at all: their attendance is private (owner call, 07-31).
     const tracked = users.filter((u) => !exempt.has(String(u._id)) && !supers.has(String(u._id)) && !hiddenSet.has(String(u._id)));
 
-    // Working branch per user: explicit assignment → first CRM branch (same rule as the punch emitter).
+    // Working branch per user: explicit assignment → first CRM branch (same rule as the team view).
     const workBranches = await userWorkBranches.mapFor(tracked.map((u) => String(u._id)));
     const branchIdOf = (u: CrmUser): string => {
       const id = String(u._id);
@@ -837,31 +842,37 @@ export const attendanceService = {
     const branches: CrmBranch[] = branchOids.length ? await crmRepo.branchesByIds(branchOids) : [];
     const branchById = new Map(branches.map((b) => [String(b._id), b]));
 
-    // Bucket users by their branch's attendance channel (BOMMB/city aliases resolve to BOM/AMD).
-    const buckets = new Map<string, { branchCode: string; users: CrmUser[] }>();
+    // Bucket by reporting branch CODE (BOMMB/MUM and the city fallback resolve to Mumbai).
+    const buckets = new Map<string, CrmUser[]>();
     for (const u of tracked) {
-      const channel = attendanceChannelForBranch(branchById.get(branchIdOf(u)) ?? null);
-      if (!channel) continue;
-      const b = buckets.get(channel.id) ?? { branchCode: channel.branchCode, users: [] };
-      b.users.push(u);
-      buckets.set(channel.id, b);
+      const code = attendanceBranchCode(branchById.get(branchIdOf(u)) ?? null);
+      if (!code) continue; // no resolvable branch → no report to belong to
+      if (opts.only && code !== String(opts.only).toUpperCase()) continue;
+      buckets.set(code, [...(buckets.get(code) ?? []), u]);
     }
 
-    const records = await attendanceRepo.forUsersOnDay(day, tracked.map((u) => String(u._id)));
-    const byUser = new Map(records.map((r) => [r.userId, r]));
-    const posted: { channelId: string; branch: string; present: number; total: number }[] = [];
+    const posted: { branch: string; group: string; present: number; total: number }[] = [];
+    let reportedDay = opts.dateKey ?? todayKey();
 
-    for (const [channelId, { branchCode, users: chUsers }] of buckets) {
-      if (await alertService.hasDayCloseReport(channelId, day)) continue; // already posted today
-      // Per-user detail: name · check-in → check-out (or "still in") · via method.
+    for (const [branchCode, chUsers] of buckets) {
+      const { tz } = branchAutoClose({ code: branchCode });
+      // The branch's own calendar day and its own 10pm.
+      const day = opts.dateKey ?? dayKeyIn(tz, now);
+      reportedDay = day;
+      if (!opts.force && !autoCloseDue(day, tz, now)) continue; // this branch's night hasn't come yet
+
+      const records = await attendanceRepo.forUsersOnDay(day, chUsers.map((u) => String(u._id)));
+      const byUser = new Map(records.map((r) => [r.userId, r]));
+      // Per-user detail: name · check-in → check-out (or "still in") · via method — in the
+      // BRANCH's wall clock, so Nairobi reads Nairobi times rather than IST.
       const presentRows: { name: string; line: string }[] = [];
       const absentNames: string[] = [];
       for (const u of chUsers) {
         const name = nameOf(u);
         const rec = byUser.get(String(u._id));
         if (rec?.checkInAt) {
-          const inT = fmtTime(rec.checkInAt) ?? '—';
-          const outT = rec.checkOutAt ? `out ${fmtTime(rec.checkOutAt)}` : 'still in';
+          const inT = fmtTime(rec.checkInAt, tz) ?? '—';
+          const outT = rec.checkOutAt ? `out ${fmtTime(rec.checkOutAt, tz)}` : 'still in';
           const via = rec.method ? ` · ${rec.method}` : '';
           presentRows.push({ name, line: `• ${name} — in ${inT} → ${outT}${via}` });
         } else {
@@ -873,50 +884,24 @@ export const attendanceService = {
       const total = chUsers.length;
       const presentCount = presentRows.length;
 
-      // Detailed report body (rendered in the alert detail screen): a per-user table split into
-      // PRESENT (with times + method) and ABSENT.
       const bodyLines: string[] = [`✅ Present ${presentCount}/${total}    ❌ Absent ${absentNames.length}`];
       if (presentRows.length) bodyLines.push('', 'PRESENT', ...presentRows.map((r) => r.line));
       if (absentNames.length) bodyLines.push('', 'ABSENT', ...absentNames.map((n) => `• ${n}`));
-      // The heads-up push stays short — the full table would be noise in a notification.
-      const pushBody = `${presentCount}/${total} present · ${absentNames.length} absent — tap for the full report`;
 
-      await alertService.recordDayClose(channelId, day, {
-        title: `Day close · ${branchCode} · ${presentCount}/${total} present`,
-        body: bodyLines.join('\n'),
-        context: `TK ${branchCode} · Attendance`,
-      }, pushBody);
-      posted.push({ channelId, branch: branchCode, present: presentCount, total });
-    }
-    return { day, posted: [...directorPosts, ...posted] };
-  },
-
-  // Directors' (hidden-attendance) day summary → 'Directors Attendance', visible to super-admins
-  // only. One post per day (idempotent via hasDayCloseReport, same as the branch reports).
-  async directorsDayClose(day: string, directors: CrmUser[]): Promise<{ channelId: string; branch: string; present: number; total: number }[]> {
-    if (!directors.length) return [];
-    if (await alertService.hasDayCloseReport(DIRECTORS_CHANNEL_ID, day)) return [];
-    const records = await attendanceRepo.forUsersOnDay(day, directors.map((u) => String(u._id)));
-    const byUser = new Map(records.map((r) => [r.userId, r]));
-    const rows: string[] = [];
-    let present = 0;
-    for (const u of directors.slice().sort((a, b) => nameOf(a).localeCompare(nameOf(b)))) {
-      const rec = byUser.get(String(u._id));
-      if (rec?.checkInAt) {
-        present += 1;
-        const inT = fmtTime(rec.checkInAt) ?? '—';
-        const outT = rec.checkOutAt ? `out ${fmtTime(rec.checkOutAt)}` : 'still in';
-        const via = rec.method ? ` · ${rec.method}` : '';
-        rows.push(`• ${nameOf(u)} — in ${inT} → ${outT}${via}`);
-      } else {
-        rows.push(`• ${nameOf(u)} — not in office today`);
+      try {
+        const res = await reportChat.post({
+          branchCode,
+          title: `🕘 Attendance · ${branchCode} · ${presentCount}/${total} present · ${day}`,
+          body: bodyLines.join('\n'),
+          ...(opts.force ? {} : { dedupeKey: `attendance-${branchCode}-${day}` }),
+        });
+        if (!res.duplicate) posted.push({ branch: branchCode, group: res.group, present: presentCount, total });
+      } catch (e) {
+        // A branch without a group (or a renamed one) must not take the other branches down with it.
+        // eslint-disable-next-line no-console
+        console.warn(`[attendance-dayclose] ${branchCode}: ${(e as Error).message}`);
       }
     }
-    await alertService.recordDayClose(DIRECTORS_CHANNEL_ID, day, {
-      title: `Directors · ${present}/${directors.length} in office`,
-      body: rows.join('\n'),
-      context: 'TK · Directors Attendance',
-    }, `${present}/${directors.length} in office today — tap for details`);
-    return [{ channelId: DIRECTORS_CHANNEL_ID, branch: 'DIR', present, total: directors.length }];
+    return { day: reportedDay, posted };
   },
 };

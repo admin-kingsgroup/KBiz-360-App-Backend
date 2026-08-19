@@ -1,4 +1,4 @@
-import { financeGroupKey, isFinanceGroupFor, squashName } from '../financeGroupName';
+import { financeGroupKey, financeGroupKeys, isFinanceGroupFor, squashName } from '../financeGroupName';
 
 // Pure unit tests — no DB. The routing rule for the scheduled finance reports: which group chat
 // a branch's Receivables / Payables / Bank & Cash posts belong in. Getting this wrong is not a
@@ -18,7 +18,6 @@ describe('finance group routing', () => {
 
   it('never matches another branch, or a differently-scoped finance group', () => {
     expect(isFinanceGroupFor('HQ - AMD Finance', 'BOM')).toBe(false);
-    expect(isFinanceGroupFor('MHUB - Finance Team', 'MHUB')).toBe(false);
     expect(isFinanceGroupFor('HO - QA Finance', 'QA')).toBe(false);
     expect(isFinanceGroupFor('BOM - Branch Accounts', 'BOM')).toBe(false);
     // A code that merely SITS INSIDE the name is not a match — the BOM/BOMMB substring trap.
@@ -40,5 +39,21 @@ describe('finance group routing', () => {
   it('squashes to letters and digits only', () => {
     expect(squashName('HQ - BOM Finance')).toBe('hqbomfinance');
     expect(squashName('')).toBe('');
+  });
+});
+
+// The hub reports into a group that predates the HQ set, so the resolver accepts two shapes.
+describe('the hub group', () => {
+  it('accepts "MHUB - Finance Team" for MHUB, and only for MHUB', () => {
+    expect(isFinanceGroupFor('MHUB - Finance Team', 'MHUB')).toBe(true);
+    expect(isFinanceGroupFor('MHUB - Finance Team', 'BOM')).toBe(false);
+    expect(financeGroupKeys('MHUB')).toEqual(['hqmhubfinance', 'mhubfinanceteam']);
+  });
+
+  it('still prefers the HQ name where both could exist', () => {
+    expect(financeGroupKey('BOM')).toBe('hqbomfinance');
+    expect(isFinanceGroupFor('HQ - BOM Finance', 'BOM')).toBe(true);
+    expect(isFinanceGroupFor('BOM - Finance Team', 'BOM')).toBe(true);
+    expect(isFinanceGroupFor('BOM - Branch Accounts', 'BOM')).toBe(false);
   });
 });

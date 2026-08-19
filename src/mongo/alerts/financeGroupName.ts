@@ -11,9 +11,17 @@
 // service and the storage layer, and this rule is worth testing without any of that.
 export const squashName = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 
-/** The squashed name the branch's Finance group must have. */
-export const financeGroupKey = (branchCode: string): string => `hq${squashName(branchCode)}finance`;
+/** The squashed names a branch's reporting group may carry, most specific first.
+ *  "HQ - <CODE> Finance" for the five operating branches; "<CODE> - Finance Team" is the hub's
+ *  (MHUB's) equivalent — it predates the HQ set and is where MHUB's own reports belong. */
+export const financeGroupKeys = (branchCode: string): string[] => {
+  const c = squashName(branchCode);
+  return c ? [`hq${c}finance`, `${c}financeteam`] : [];
+};
 
-/** Is `name` the Finance group of `branchCode`? */
+/** The canonical squashed name for a branch's Finance group. */
+export const financeGroupKey = (branchCode: string): string => financeGroupKeys(branchCode)[0] ?? '';
+
+/** Is `name` the reporting group of `branchCode`? */
 export const isFinanceGroupFor = (name: string | null | undefined, branchCode: string): boolean =>
-  !!branchCode.trim() && squashName(name ?? '') === financeGroupKey(branchCode);
+  financeGroupKeys(branchCode).includes(squashName(name ?? ''));

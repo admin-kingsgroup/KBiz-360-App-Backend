@@ -1,31 +1,28 @@
-// System-alert channel definitions, shared by the alerts API, the admin visibility routes, the
-// attendance emitter and the external ERP/CRM ingest route. Channel ids match the frontend's pulse
-// channel ids; `grant` uses the app's existing access-grant format `${branchCode}-${module}` (see
-// Frontend makeAccessFilters.alertOK). `module` uses the frontend ModuleKey vocabulary
-// ('hr' = attendance, 'accounts' = Finance/KBiz Books, 'crm' = CRM, 'sales' = ERP sales invoices,
+// System-alert channel definitions, shared by the alerts API, the admin visibility routes and the
+// external ERP/CRM ingest route. Channel ids match the frontend's pulse channel ids; `grant` uses
+// the app's existing access-grant format `${branchCode}-${module}` (see Frontend
+// makeAccessFilters.alertOK). `module` uses the frontend ModuleKey vocabulary
+// ('accounts' = Finance/KBiz Books, 'crm' = CRM, 'sales' = ERP sales invoices,
 // 'bookings' = SO/PO/GP / INB approval GP summaries, 'acct' = Accounts — the finance-voucher
 // transaction feed; NOT 'accounts', which the legacy Finance BOM/AMD channels own).
 //
-// REMOVED 2026-08-19 — 'receivables' (Clients Receivables), 'payables' (Supplier Payables) and
-// 'bankcash' (Bank & Cash), 15 channels in all. Those reports are no longer one-way alerts: the
-// ERP posts them into the branch Finance group chats (POST /api/alerts/chat →
+// REMOVED 2026-08-19 — 'receivables' (Clients Receivables), 'payables' (Supplier Payables),
+// 'bankcash' (Bank & Cash) and 'hr' (BOM/AMD/Directors Attendance): 18 channels in all. None of
+// those reports is a one-way alert any more — the ERP posts the finance ones and the day-close
+// sweep posts attendance into the branch group chats (POST /api/alerts/chat →
 // alerts/reportChat.service). The channels, their stored events and their PDFs were deleted with
 // scripts/purge-alert-channels.js. Do not re-add them here without a matching Frontend release.
+// The 'Directors Attendance' channel went with them (owner call): hidden attendance is no longer
+// summarised anywhere, which is deliberate — it must never land in a branch group.
 export interface AlertChannelDef {
   id: string;
   branchCode: string; // ERP/CRM branch code the channel covers (BOM/AMD/NBO/DAR/FBM)
-  module: 'hr' | 'accounts' | 'crm' | 'sales' | 'bookings' | 'acct';
+  module: 'accounts' | 'crm' | 'sales' | 'bookings' | 'acct';
   grant: string; // per-user grant string a super-admin assigns
   name: string;
 }
 
 export const ALERT_CHANNELS: AlertChannelDef[] = [
-  { id: 'tk_att_bom', branchCode: 'BOM', module: 'hr', grant: 'BOM-hr', name: 'BOM Attendance' },
-  { id: 'tk_att_amd', branchCode: 'AMD', module: 'hr', grant: 'AMD-hr', name: 'AMD Attendance' },
-  // Directors' hidden-attendance day summary (attendanceHidden users). branchCode 'DIR' is not a
-  // real branch, so the per-branch attendance emitter can never route into it; visibility follows
-  // the normal grant rule — super-admins always see it, nobody else unless explicitly granted.
-  { id: 'tk_att_dir', branchCode: 'DIR', module: 'hr', grant: 'DIR-hr', name: 'Directors Attendance' },
   // Fed live by the KBiz Books ERP backend via POST /api/alerts/ingest.
   { id: 'tk_fin_bom', branchCode: 'BOM', module: 'accounts', grant: 'BOM-accounts', name: 'Finance - BOM' },
   { id: 'tk_fin_amd', branchCode: 'AMD', module: 'accounts', grant: 'AMD-accounts', name: 'Finance - AMD' },
@@ -78,27 +75,6 @@ export const ANNOUNCEMENTS_CHANNEL_ID = 'announcements';
 // recipient (the user it's about), and a user only ever sees their own (see alertService.listFor).
 // Fed by the attendance emitter (check-in / check-out) and pushed only to that user.
 export const USER_ALERTS_CHANNEL_ID = 'user_alerts';
-
-// Attendance-emitter lookup: a branch's ATTENDANCE channel (there are now several channels per
-// branch, so this must filter by module, not just branch).
-export const channelForBranchCode = (code: string | null | undefined): AlertChannelDef | null =>
-  ALERT_CHANNELS.find((c) => c.module === 'hr' && c.branchCode.toLowerCase() === (code ?? '').toLowerCase()) ?? null;
-
-// Real branch docs don't always carry the channel's code — Mumbai staff sit under BOMMB
-// ("Mumbai Main Branch", the ERP's head-office branch) and legacy tenants used MUM — so
-// resolve exact code → alias → city. Without this, every BOMMB puncher was silently
-// skipped and the attendance channels stayed empty forever.
-const BRANCH_CODE_ALIASES: Record<string, string> = { BOMMB: 'BOM', MUM: 'BOM' };
-const CITY_TO_CHANNEL_BRANCH: Record<string, string> = { mumbai: 'BOM', ahmedabad: 'AMD' };
-export function attendanceChannelForBranch(branch: { code?: string | null; city?: string | null } | null | undefined): AlertChannelDef | null {
-  if (!branch) return null;
-  const code = String(branch.code ?? '').toUpperCase();
-  return (
-    channelForBranchCode(code)
-    ?? channelForBranchCode(BRANCH_CODE_ALIASES[code] ?? null)
-    ?? channelForBranchCode(CITY_TO_CHANNEL_BRANCH[String(branch.city ?? '').trim().toLowerCase()] ?? null)
-  );
-}
 
 // Channels a user may see: super-admins see every channel; everyone else sees exactly the
 // channels a super-admin granted them (grant strings like "BOM-accounts", assigned via

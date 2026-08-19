@@ -62,7 +62,7 @@ export async function findBranchFinanceGroup(branchCode: string): Promise<{ id: 
     .lean<Array<Pick<ConversationDoc, '_id' | 'name' | 'lastActivityAt'>>>();
   const hits = rows.filter((r) => isFinanceGroupFor(r.name, code));
   if (!hits.length) {
-    throw BadRequest(`No Finance group for branch "${code}" — expected a group named "HQ - ${code} Finance" (or pin one with REPORT_CHAT_GROUPS)`);
+    throw BadRequest(`No Finance group for branch "${code}" — expected a group named "HQ - ${code} Finance" or "${code} - Finance Team" (or pin one with REPORT_CHAT_GROUPS)`);
   }
   // Duplicates are a data accident, not a routing choice: take the one people actually use.
   hits.sort((a, b) => new Date(b.lastActivityAt ?? 0).getTime() - new Date(a.lastActivityAt ?? 0).getTime());

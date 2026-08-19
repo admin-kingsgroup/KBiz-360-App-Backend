@@ -1,18 +1,17 @@
 import {
   ALERT_CHANNELS,
   ALERT_GRANT_IDS,
-  attendanceChannelForBranch,
-  channelForBranchCode,
   channelForModuleBranch,
   visibleChannelIds,
 } from '../alerts/alertChannels';
+import { attendanceBranchCode } from '../attendance/attendanceBranch';
 
 // Pure unit tests — no DB. The live ingest path is exercised by the smoke/e2e flow.
 
 describe('alert channel registry', () => {
   it('registers the external channels next to attendance', () => {
     expect(ALERT_CHANNELS.map((c) => c.id)).toEqual([
-      'tk_att_bom', 'tk_att_amd', 'tk_att_dir', 'tk_fin_bom', 'tk_fin_amd', 'tk_crm_bom', 'tk_crm_amd',
+      'tk_fin_bom', 'tk_fin_amd', 'tk_crm_bom', 'tk_crm_amd',
       'tk_si_bom', 'tk_si_amd', 'tk_si_nbo', 'tk_si_dar', 'tk_si_fbm',
       'tk_bkg_bom', 'tk_bkg_amd', 'tk_bkg_nbo', 'tk_bkg_dar', 'tk_bkg_fbm',
       'tk_acc_bom', 'tk_acc_amd', 'tk_acc_nbo', 'tk_acc_dar', 'tk_acc_fbm',
@@ -69,25 +68,27 @@ describe('alert channel registry', () => {
     expect(channelForModuleBranch('acct', 'TKHO')).toBeNull();
   });
 
-  it('keeps channelForBranchCode pinned to ATTENDANCE channels (order-independent)', () => {
-    expect(channelForBranchCode('BOM')?.id).toBe('tk_att_bom');
-    expect(channelForBranchCode('AMD')?.id).toBe('tk_att_amd');
+  it('attendance has no channels at all — the day-close report goes to the branch group chats', () => {
+    expect(ALERT_CHANNELS.some((c) => c.id.startsWith('tk_att_'))).toBe(false);
+    expect(ALERT_GRANT_IDS.some((g) => g.endsWith('-hr'))).toBe(false);
   });
 
-  it('resolves attendance channels via code → alias → city (BOMMB staff must hit BOM)', () => {
-    expect(attendanceChannelForBranch({ code: 'BOM' })?.id).toBe('tk_att_bom');
-    expect(attendanceChannelForBranch({ code: 'BOMMB', city: 'Mumbai' })?.id).toBe('tk_att_bom'); // alias
-    expect(attendanceChannelForBranch({ code: 'MUM' })?.id).toBe('tk_att_bom'); // legacy alias
-    expect(attendanceChannelForBranch({ code: 'XYZ', city: 'Ahmedabad' })?.id).toBe('tk_att_amd'); // city fallback
-    expect(attendanceChannelForBranch({ code: 'NBO', city: 'Nairobi' })).toBeNull(); // no channel → skip
-    expect(attendanceChannelForBranch(null)).toBeNull();
+  it('resolves a puncher\'s branch via code → alias → city (BOMMB staff must count as BOM)', () => {
+    expect(attendanceBranchCode({ code: 'BOM' })).toBe('BOM');
+    expect(attendanceBranchCode({ code: 'BOMMB', city: 'Mumbai' })).toBe('BOM'); // alias
+    expect(attendanceBranchCode({ code: 'MUM' })).toBe('BOM'); // legacy alias
+    expect(attendanceBranchCode({ code: '', city: 'Ahmedabad' })).toBe('AMD'); // city fallback
+    // Every branch reports now — the Africa branches are no longer dropped for want of a channel.
+    expect(attendanceBranchCode({ code: 'NBO', city: 'Nairobi' })).toBe('NBO');
+    expect(attendanceBranchCode({ code: 'MHUB', city: 'Mumbai' })).toBe('MHUB');
+    expect(attendanceBranchCode(null)).toBe('');
   });
 
   it('supers see every channel; non-supers exactly their granted channels', () => {
     expect(visibleChannelIds(true, [])).toEqual(ALERT_CHANNELS.map((c) => c.id));
     expect(visibleChannelIds(false, [])).toEqual([]);
     expect(visibleChannelIds(false, ['BOM-accounts'])).toEqual(['tk_fin_bom']);
-    expect(visibleChannelIds(false, ['BOM-accounts', 'BOM-crm', 'AMD-hr'])).toEqual(['tk_att_amd', 'tk_fin_bom', 'tk_crm_bom']);
+    expect(visibleChannelIds(false, ['BOM-accounts', 'BOM-crm', 'AMD-hr'])).toEqual(['tk_fin_bom', 'tk_crm_bom']); // -hr grants no longer resolve
     expect(visibleChannelIds(false, ['NBO-sales', 'FBM-sales'])).toEqual(['tk_si_nbo', 'tk_si_fbm']);
     expect(visibleChannelIds(false, ['NBO-accounts', 'bogus'])).toEqual([]); // unknown grants grant nothing
   });
