@@ -5,18 +5,17 @@ import { crmRepo } from '../crm.repo';
 import { ConversationModel, type ConversationDoc, type Attachment } from '../chat/chat.models';
 import { chatService } from '../chat/chat.service';
 import { attachmentFilename } from './attachmentName';
-import { isFinanceGroupFor } from './financeGroupName';
+import { isReportGroupFor, reportGroupExpected, reportGroupNameHint, type ReportGroupKind } from './reportGroupName';
 
-// ─── Scheduled finance reports → the branch Finance GROUP CHATS ──────────────────────────
-// The daily Receivables / Payables ageing PDFs and the Bank & Cash snapshot used to be pushed
-// into the mobile "System Alerts" channels (Clients Receivables - <BR> etc.). They now go where
-// the finance team actually talks: the per-branch group chats
+// ─── Scheduled reports → the branch GROUP CHATS ───────────────────────────────────────────
+// Reports that used to be one-way "System Alerts" channel events now go where the people who act
+// on them actually talk, as ordinary chat messages (PDFs as document attachments) — searchable,
+// forwardable, repliable, and ringing the same notification as any other message.
 //
-//     HQ - BOM Finance · HQ - AMD Finance · HQ - NBO Finance · HQ - DAR Finance · HQ - FBM Finance
-//
-// (all five created under the MHUB hub branch). A report is an ordinary chat message from the
-// reporting identity, with the PDF as a document attachment — so it is searchable, forwardable,
-// repliable and it rings the same notification as any other message in that group.
+//   'finance'  → HQ - BOM Finance · HQ - AMD Finance · … (MHUB posts to "MHUB - Finance Team"):
+//                daily Receivables / Payables ageing, Bank & Cash, day-close attendance.
+//   'accounts' → BOM - Branch Accounts · AMD - Branch Accounts · …: the live per-voucher feed
+//                (receipts, payments, contra, journals, notes, memos) as they are approved.
 //
 // Two lookups have to hold for a post to land, and BOTH fail loudly (4xx to the ERP, which
 // dead-letters and logs) rather than writing the report somewhere else:
@@ -41,37 +40,40 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
 const groupCache = new Map<string, { id: string; name: string; at: number }>();
 let senderCache: { id: string; name: string; at: number } | null = null;
 
-export async function findBranchFinanceGroup(branchCode: string): Promise<{ id: string; name: string }> {
+export async function findBranchReportGroup(branchCode: string, kind: ReportGroupKind = 'finance'): Promise<{ id: string; name: string }> {
   const code = branchCode.trim().toUpperCase();
-  const cached = groupCache.get(code);
+  const cacheKey = `${kind}:${code}`;
+  const cached = groupCache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return { id: cached.id, name: cached.name };
 
-  const pinned = pinnedGroups()[code];
+  // The pin addresses the FINANCE group (the one an operator is likely to rename); the accounts
+  // family resolves by name only.
+  const pinned = kind === 'finance' ? pinnedGroups()[code] : undefined;
   if (pinned) {
     const conv = await ConversationModel().findById(pinned).select('_id name type').lean<ConversationDoc>();
     if (!conv) throw BadRequest(`REPORT_CHAT_GROUPS pins ${code} to conversation ${pinned}, which does not exist`);
-    groupCache.set(code, { id: String(conv._id), name: conv.name ?? code, at: Date.now() });
+    groupCache.set(cacheKey, { id: String(conv._id), name: conv.name ?? code, at: Date.now() });
     return { id: String(conv._id), name: conv.name ?? code };
   }
 
-  // Narrow in Mongo (groups whose name mentions finance — a handful), then match exactly on the
-  // squashed name in JS. A regex built from the branch code would have to guess the punctuation.
+  // Narrow in Mongo (groups whose name mentions the family — a handful), then match exactly on
+  // the squashed name in JS.
   const rows = await ConversationModel()
-    .find({ type: 'group', name: { $regex: 'finance', $options: 'i' } })
+    .find({ type: 'group', name: { $regex: reportGroupNameHint(kind), $options: 'i' } })
     .select('_id name lastActivityAt')
     .lean<Array<Pick<ConversationDoc, '_id' | 'name' | 'lastActivityAt'>>>();
-  const hits = rows.filter((r) => isFinanceGroupFor(r.name, code));
+  const hits = rows.filter((r) => isReportGroupFor(r.name, kind, code));
   if (!hits.length) {
-    throw BadRequest(`No Finance group for branch "${code}" — expected a group named "HQ - ${code} Finance" or "${code} - Finance Team" (or pin one with REPORT_CHAT_GROUPS)`);
+    throw BadRequest(`No ${kind} group for branch "${code}" — expected a group named ${reportGroupExpected(kind, code)}`);
   }
   // Duplicates are a data accident, not a routing choice: take the one people actually use.
   hits.sort((a, b) => new Date(b.lastActivityAt ?? 0).getTime() - new Date(a.lastActivityAt ?? 0).getTime());
   const chosen = hits[0];
   if (hits.length > 1) {
     // eslint-disable-next-line no-console
-    console.warn(`[report-chat] ${hits.length} groups match the Finance group name for ${code} — posting to the most recently active (${String(chosen._id)})`);
+    console.warn(`[report-chat] ${hits.length} groups match the ${kind} group name for ${code} — posting to the most recently active (${String(chosen._id)})`);
   }
-  groupCache.set(code, { id: String(chosen._id), name: chosen.name ?? code, at: Date.now() });
+  groupCache.set(cacheKey, { id: String(chosen._id), name: chosen.name ?? code, at: Date.now() });
   return { id: String(chosen._id), name: chosen.name ?? code };
 }
 
@@ -96,23 +98,31 @@ export async function resolveReportSender(): Promise<{ id: string; name: string 
 
 export interface ReportChatInput {
   branchCode?: string;
+  group?: ReportGroupKind; // which family of group the branch code resolves to (default 'finance')
   conversationId?: string; // explicit target (smoke tests, one-off posts) — wins over branchCode
   title: string;
   body?: string;
   dedupeKey?: string;
+  // Resolve the group and the sender, report them, write nothing. The safe way to prove routing
+  // on live data — an operator can check where a branch's reports would land without putting a
+  // test message in front of a room full of people.
+  dryRun?: boolean;
   attachment?: { name: string; mime?: string; data: string };
 }
 
 export const reportChat = {
-  async post(input: ReportChatInput): Promise<{ conversationId: string; group: string; messageId: string; duplicate: boolean; attachmentUrl?: string }> {
+  async post(input: ReportChatInput): Promise<{ conversationId: string; group: string; messageId: string; duplicate: boolean; dryRun?: boolean; sender?: string; attachmentUrl?: string }> {
     const target = input.conversationId
       ? await (async () => {
         const conv = await ConversationModel().findById(input.conversationId).select('_id name').lean<ConversationDoc>();
         if (!conv) throw BadRequest(`Conversation ${input.conversationId} not found`);
         return { id: String(conv._id), name: conv.name ?? String(conv._id) };
       })()
-      : await findBranchFinanceGroup(input.branchCode ?? '');
+      : await findBranchReportGroup(input.branchCode ?? '', input.group ?? 'finance');
     const sender = await resolveReportSender();
+    if (input.dryRun) {
+      return { conversationId: target.id, group: target.name, messageId: '', duplicate: false, dryRun: true, sender: sender.name };
+    }
 
     let attachments: Attachment[] | undefined;
     let attachmentUrl: string | undefined;

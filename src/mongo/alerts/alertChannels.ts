@@ -3,21 +3,21 @@
 // the app's existing access-grant format `${branchCode}-${module}` (see Frontend
 // makeAccessFilters.alertOK). `module` uses the frontend ModuleKey vocabulary
 // ('accounts' = Finance/KBiz Books, 'crm' = CRM, 'sales' = ERP sales invoices,
-// 'bookings' = SO/PO/GP / INB approval GP summaries, 'acct' = Accounts — the finance-voucher
-// transaction feed; NOT 'accounts', which the legacy Finance BOM/AMD channels own).
+// 'bookings' = SO/PO/GP / INB approval GP summaries).
 //
 // REMOVED 2026-08-19 — 'receivables' (Clients Receivables), 'payables' (Supplier Payables),
-// 'bankcash' (Bank & Cash) and 'hr' (BOM/AMD/Directors Attendance): 18 channels in all. None of
-// those reports is a one-way alert any more — the ERP posts the finance ones and the day-close
-// sweep posts attendance into the branch group chats (POST /api/alerts/chat →
-// alerts/reportChat.service). The channels, their stored events and their PDFs were deleted with
+// 'bankcash' (Bank & Cash), 'hr' (BOM/AMD/Directors Attendance) and 'acct' (Accounts — the
+// per-voucher money-movement feed, which now posts into "<BR> - Branch Accounts"): 23 channels in
+// all. None of those reports is a one-way alert any more — the ERP posts the finance and accounts
+// ones and the day-close sweep posts attendance into the branch group chats
+// (POST /api/alerts/chat → alerts/reportChat.service). The channels, their stored events and their PDFs were deleted with
 // scripts/purge-alert-channels.js. Do not re-add them here without a matching Frontend release.
 // The 'Directors Attendance' channel went with them (owner call): hidden attendance is no longer
 // summarised anywhere, which is deliberate — it must never land in a branch group.
 export interface AlertChannelDef {
   id: string;
   branchCode: string; // ERP/CRM branch code the channel covers (BOM/AMD/NBO/DAR/FBM)
-  module: 'accounts' | 'crm' | 'sales' | 'bookings' | 'acct';
+  module: 'accounts' | 'crm' | 'sales' | 'bookings';
   grant: string; // per-user grant string a super-admin assigns
   name: string;
 }
@@ -43,13 +43,6 @@ export const ALERT_CHANNELS: AlertChannelDef[] = [
   { id: 'tk_bkg_nbo', branchCode: 'NBO', module: 'bookings', grant: 'NBO-bookings', name: 'SO/PO/GP / INB - NBO' },
   { id: 'tk_bkg_dar', branchCode: 'DAR', module: 'bookings', grant: 'DAR-bookings', name: 'SO/PO/GP / INB - DAR' },
   { id: 'tk_bkg_fbm', branchCode: 'FBM', module: 'bookings', grant: 'FBM-bookings', name: 'SO/PO/GP / INB - FBM' },
-  // Accounts — every posted finance voucher (receipt/payment/contra/journal/notes/refunds/
-  // memos): how much was received or sent, per branch.
-  { id: 'tk_acc_bom', branchCode: 'BOM', module: 'acct', grant: 'BOM-acct', name: 'Accounts - BOM' },
-  { id: 'tk_acc_amd', branchCode: 'AMD', module: 'acct', grant: 'AMD-acct', name: 'Accounts - AMD' },
-  { id: 'tk_acc_nbo', branchCode: 'NBO', module: 'acct', grant: 'NBO-acct', name: 'Accounts - NBO' },
-  { id: 'tk_acc_dar', branchCode: 'DAR', module: 'acct', grant: 'DAR-acct', name: 'Accounts - DAR' },
-  { id: 'tk_acc_fbm', branchCode: 'FBM', module: 'acct', grant: 'FBM-acct', name: 'Accounts - FBM' },
 ];
 
 export const ALERT_GRANT_IDS: string[] = ALERT_CHANNELS.map((c) => c.grant);

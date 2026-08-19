@@ -914,6 +914,7 @@ export const attendanceService = {
       try {
         const res = await reportChat.post({
           branchCode,
+          group: 'finance', // the day's people-report belongs with the day's money-reports
           title: `🕘 Attendance · ${branchCode} · ${presentCount}/${total} present · ${day}`,
           body: bodyLines.join('\n'),
           ...(opts.force ? {} : { dedupeKey: `attendance-${branchCode}-${day}` }),

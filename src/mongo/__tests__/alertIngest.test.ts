@@ -14,14 +14,12 @@ describe('alert channel registry', () => {
       'tk_fin_bom', 'tk_fin_amd', 'tk_crm_bom', 'tk_crm_amd',
       'tk_si_bom', 'tk_si_amd', 'tk_si_nbo', 'tk_si_dar', 'tk_si_fbm',
       'tk_bkg_bom', 'tk_bkg_amd', 'tk_bkg_nbo', 'tk_bkg_dar', 'tk_bkg_fbm',
-      'tk_acc_bom', 'tk_acc_amd', 'tk_acc_nbo', 'tk_acc_dar', 'tk_acc_fbm',
     ]);
     expect(ALERT_GRANT_IDS).toEqual(
       expect.arrayContaining([
         'BOM-accounts', 'AMD-accounts', 'BOM-crm', 'AMD-crm',
         'BOM-sales', 'AMD-sales', 'NBO-sales', 'DAR-sales', 'FBM-sales',
         'BOM-bookings', 'NBO-bookings', 'FBM-bookings',
-        'BOM-acct', 'DAR-acct', 'FBM-acct',
       ]),
     );
   });
@@ -46,11 +44,11 @@ describe('alert channel registry', () => {
     // Clients Receivables / Supplier Payables / Bank & Cash were deleted 2026-08-19. An emitter
     // still aiming here must land nowhere (and the ingest's zod enum rejects the module outright),
     // never in some neighbouring channel.
-    for (const mod of ['receivables', 'payables', 'bankcash']) {
+    for (const mod of ['receivables', 'payables', 'bankcash', 'acct', 'hr']) {
       for (const br of ['BOM', 'AMD', 'NBO', 'DAR', 'FBM']) expect(channelForModuleBranch(mod, br)).toBeNull();
     }
     expect(ALERT_CHANNELS.some((c) => /^tk_(ar|ap|bc)_/.test(c.id))).toBe(false);
-    expect(ALERT_GRANT_IDS.some((g) => /-(receivables|payables|bankcash)$/.test(g))).toBe(false);
+    expect(ALERT_GRANT_IDS.some((g) => /-(receivables|payables|bankcash|acct|hr)$/.test(g))).toBe(false);
   });
 
   it('maps bookings to the SO/PO/GP / INB channels (all 5 branches)', () => {
@@ -60,12 +58,11 @@ describe('alert channel registry', () => {
     expect(channelForModuleBranch('bookings', 'TKHO')).toBeNull();
   });
 
-  it("maps acct to the Accounts channels, distinct from the legacy 'accounts' Finance family", () => {
-    expect(channelForModuleBranch('acct', 'BOM')?.id).toBe('tk_acc_bom');
-    expect(channelForModuleBranch('acct', 'dar')?.id).toBe('tk_acc_dar');
-    expect(channelForModuleBranch('acct', 'NBO')?.grant).toBe('NBO-acct');
-    expect(channelForModuleBranch('accounts', 'BOM')?.id).toBe('tk_fin_bom'); // Finance untouched
-    expect(channelForModuleBranch('acct', 'TKHO')).toBeNull();
+  it("the retired 'acct' feed resolves to nothing — it posts into <BR> - Branch Accounts now", () => {
+    for (const br of ['BOM', 'AMD', 'NBO', 'DAR', 'FBM']) expect(channelForModuleBranch('acct', br)).toBeNull();
+    expect(ALERT_CHANNELS.some((c) => c.id.startsWith('tk_acc_'))).toBe(false);
+    expect(ALERT_GRANT_IDS.some((g) => g.endsWith('-acct'))).toBe(false);
+    expect(channelForModuleBranch('accounts', 'BOM')?.id).toBe('tk_fin_bom'); // legacy Finance untouched
   });
 
   it('attendance has no channels at all — the day-close report goes to the branch group chats', () => {
