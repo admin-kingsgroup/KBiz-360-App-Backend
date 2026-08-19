@@ -14,21 +14,15 @@ describe('alert channel registry', () => {
     expect(ALERT_CHANNELS.map((c) => c.id)).toEqual([
       'tk_att_bom', 'tk_att_amd', 'tk_att_dir', 'tk_fin_bom', 'tk_fin_amd', 'tk_crm_bom', 'tk_crm_amd',
       'tk_si_bom', 'tk_si_amd', 'tk_si_nbo', 'tk_si_dar', 'tk_si_fbm',
-      'tk_ar_bom', 'tk_ar_amd', 'tk_ar_nbo', 'tk_ar_dar', 'tk_ar_fbm',
-      'tk_ap_bom', 'tk_ap_amd', 'tk_ap_nbo', 'tk_ap_dar', 'tk_ap_fbm',
       'tk_bkg_bom', 'tk_bkg_amd', 'tk_bkg_nbo', 'tk_bkg_dar', 'tk_bkg_fbm',
       'tk_acc_bom', 'tk_acc_amd', 'tk_acc_nbo', 'tk_acc_dar', 'tk_acc_fbm',
-      'tk_bc_bom', 'tk_bc_amd', 'tk_bc_nbo', 'tk_bc_dar', 'tk_bc_fbm',
     ]);
     expect(ALERT_GRANT_IDS).toEqual(
       expect.arrayContaining([
         'BOM-accounts', 'AMD-accounts', 'BOM-crm', 'AMD-crm',
         'BOM-sales', 'AMD-sales', 'NBO-sales', 'DAR-sales', 'FBM-sales',
-        'BOM-receivables', 'NBO-receivables', 'FBM-receivables',
-        'BOM-payables', 'DAR-payables', 'FBM-payables',
         'BOM-bookings', 'NBO-bookings', 'FBM-bookings',
         'BOM-acct', 'DAR-acct', 'FBM-acct',
-        'BOM-bankcash', 'NBO-bankcash', 'FBM-bankcash',
       ]),
     );
   });
@@ -49,12 +43,15 @@ describe('alert channel registry', () => {
     expect(channelForModuleBranch('sales', 'TKHO')).toBeNull(); // no channel → emitters must skip
   });
 
-  it('maps receivables/payables to the AR/AP channels (all 5 branches, independent families)', () => {
-    expect(channelForModuleBranch('receivables', 'BOM')?.id).toBe('tk_ar_bom');
-    expect(channelForModuleBranch('receivables', 'dar')?.id).toBe('tk_ar_dar');
-    expect(channelForModuleBranch('payables', 'NBO')?.id).toBe('tk_ap_nbo');
-    expect(channelForModuleBranch('payables', 'FBM')?.grant).toBe('FBM-payables');
-    expect(channelForModuleBranch('receivables', 'TKHO')).toBeNull();
+  it('the retired report families resolve to NOTHING — they live in the Finance group chats now', () => {
+    // Clients Receivables / Supplier Payables / Bank & Cash were deleted 2026-08-19. An emitter
+    // still aiming here must land nowhere (and the ingest's zod enum rejects the module outright),
+    // never in some neighbouring channel.
+    for (const mod of ['receivables', 'payables', 'bankcash']) {
+      for (const br of ['BOM', 'AMD', 'NBO', 'DAR', 'FBM']) expect(channelForModuleBranch(mod, br)).toBeNull();
+    }
+    expect(ALERT_CHANNELS.some((c) => /^tk_(ar|ap|bc)_/.test(c.id))).toBe(false);
+    expect(ALERT_GRANT_IDS.some((g) => /-(receivables|payables|bankcash)$/.test(g))).toBe(false);
   });
 
   it('maps bookings to the SO/PO/GP / INB channels (all 5 branches)', () => {
@@ -70,13 +67,6 @@ describe('alert channel registry', () => {
     expect(channelForModuleBranch('acct', 'NBO')?.grant).toBe('NBO-acct');
     expect(channelForModuleBranch('accounts', 'BOM')?.id).toBe('tk_fin_bom'); // Finance untouched
     expect(channelForModuleBranch('acct', 'TKHO')).toBeNull();
-  });
-
-  it('maps bankcash to the Bank & Cash channels (all 5 branches)', () => {
-    expect(channelForModuleBranch('bankcash', 'BOM')?.id).toBe('tk_bc_bom');
-    expect(channelForModuleBranch('bankcash', 'fbm')?.id).toBe('tk_bc_fbm');
-    expect(channelForModuleBranch('bankcash', 'DAR')?.grant).toBe('DAR-bankcash');
-    expect(channelForModuleBranch('bankcash', 'TKHO')).toBeNull();
   });
 
   it('keeps channelForBranchCode pinned to ATTENDANCE channels (order-independent)', () => {

@@ -63,7 +63,9 @@ alertsIngestRouter.post(
   requireServiceToken,
   ingestRateLimit,
   validate(z.object({
-    module: z.enum(['finance', 'accounts', 'crm', 'sales', 'sales-invoice', 'receivables', 'payables', 'bookings', 'acct', 'bankcash']),
+    // 'receivables' / 'payables' / 'bankcash' were removed 2026-08-19 — those reports go to the
+    // branch Finance groups via /chat below, and an emitter still aiming here must fail loudly.
+    module: z.enum(['finance', 'accounts', 'crm', 'sales', 'sales-invoice', 'bookings', 'acct']),
     branchCode: z.string().trim().min(2).max(10),
     title: z.string().trim().min(1).max(160),
     body: z.string().trim().max(2000).optional(),
@@ -109,8 +111,7 @@ alertsIngestRouter.post(
 
     // Default context embeds the branch code — the app buckets events into branch sections by it.
     const MODULE_LABEL: Record<string, string> = {
-      accounts: 'Finance', sales: 'Sales Invoice', receivables: 'Clients Receivables', payables: 'Supplier Payables',
-      bookings: 'SO/PO/GP / INB', acct: 'Accounts', bankcash: 'Bank & Cash',
+      accounts: 'Finance', sales: 'Sales Invoice', bookings: 'SO/PO/GP / INB', acct: 'Accounts',
     };
     const label = MODULE_LABEL[channel.module] ?? channel.module.toUpperCase();
     await alertService.record(channel.id, {
