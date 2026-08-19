@@ -11,6 +11,7 @@
     "start:dev": "ts-node src/main.ts",
     "start:mongo": "ts-node src/mongo/main.ts",
     "backfill:receipts": "ts-node scripts/backfill-receipt-status.ts",
+    "reports:sender": "node scripts/ensure-report-sender.js",
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "test:cov": "jest --coverage",

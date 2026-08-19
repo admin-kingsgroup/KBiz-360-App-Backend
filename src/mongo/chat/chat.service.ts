@@ -470,6 +470,87 @@ export const chatService = {
     return { ...toMessageDTO(created, userId), clientId: input.clientId }; // echo clientId so the sender reconciles its optimistic row
   },
 
+  // ── Service-posted message (a backend posting into a group, no acting user) ──────────────
+  // The ERP's daily finance reports (Receivables / Payables ageing, Bank & Cash) used to land in
+  // the mobile Alert channels; they now land in the branch Finance groups as ordinary chat
+  // messages, posted through POST /api/alerts/chat by a backend holding the service token.
+  //
+  // There is no user session behind such a post, so this deliberately skips the membership and
+  // blocking checks sendMessage runs: the reporting identity is not a member of the group it
+  // reports into, and enrolling it in five groups purely to satisfy an assert would put a bot in
+  // every member list and every "who's in this group" screen. Everything AFTER those checks is
+  // identical to a human send — stored message, conversation preview + unread bump, socket
+  // fan-out, push to everyone who has not muted the group.
+  //
+  // `clientId` is the idempotency key, exactly as a phone's optimistic id is: the scheduler
+  // passes "<kind>-<branch>-<date>", so a cron catch-up, a retry after a timeout, or a second
+  // process firing the same slot re-posts nothing (it returns the existing message).
+  async postServiceMessage(conversationId: string, senderId: string, input: { text: string; attachments?: Attachment[]; clientId?: string; senderName?: string }) {
+    const conv = await conversationRepo.findById(conversationId);
+    if (!conv) throw NotFound('Conversation not found');
+    if (input.clientId) {
+      const existing = await messageRepo.findByClientId(conv._id, input.clientId);
+      if (existing) return { ...toMessageBase(existing), duplicate: true };
+    }
+    const type: MessageDoc['type'] = input.attachments?.length ? 'document' : 'text';
+    if (type === 'text' && !input.text.trim()) throw BadRequest('Empty message');
+
+    const now = new Date();
+    const created = (await messageRepo.create({
+      conversationId: conv._id,
+      senderId,
+      type,
+      text: input.text ?? '',
+      clientId: input.clientId ?? null,
+      attachments: input.attachments ?? [],
+      replyTo: null,
+      forwardedFrom: null,
+      mentions: [],
+      status: 'sent',
+      sentAt: now,
+      expiresAt: conv.disappearAfterSec ? new Date(now.getTime() + conv.disappearAfterSec * 1000) : null,
+      deliveredTo: [senderId],
+      readBy: [],
+    })) as unknown as MessageDoc;
+
+    const preview = type === 'text' ? created.text.slice(0, 140) : '📄 Document';
+    await conversationRepo.touchLastMessage(conversationId, { messageId: created._id, text: preview, type, senderId, at: now }, senderId);
+    emitToUsers(conv.participantIds, CHAT_EVENTS.RECEIVE, toMessageBase(created));
+
+    void (async () => {
+      try {
+        const recipients = (await Promise.all(conv.participantIds
+          .filter((p) => p !== senderId)
+          .map(async (r) => (await conversationRepo.isMuted(conv._id, r) ? null : r))))
+          .filter((r): r is string => !!r);
+        // eslint-disable-next-line no-console
+        console.log(`[chat-push] service msg type=${type} conv=${conversationId} recipients=${recipients.length}`);
+        if (!recipients.length) return;
+        const senderName = input.senderName ?? await displayName(senderId);
+        await Promise.all(recipients.map(async (r) => chatPush.notifyNewMessage(r, {
+          title: conv.name ?? 'Group',
+          body: `${senderName}: ${preview}`,
+          badge: await conversationRepo.unreadChatCount(r),
+          conversationId,
+          messageId: String(created._id),
+          senderId,
+          senderName,
+          convType: conv.type,
+          convName: conv.name ?? '',
+          preview,
+          msgType: type,
+          sentAt: now.toISOString(),
+          fullText: created.text,
+          attachments: created.attachments,
+        })));
+      } catch {
+        /* push is best-effort */
+      }
+    })();
+
+    return { ...toMessageBase(created), duplicate: false };
+  },
+
   async editMessage(userId: string, messageId: string, text: string) {
     const m = await messageRepo.findById(messageId);
     if (!m) throw NotFound('Message not found');

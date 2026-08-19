@@ -7,6 +7,8 @@ import { AppError, BadRequest } from '../../common/errors';
 import { getStorage } from '../../storage';
 import { requireServiceToken } from './serviceAuth';
 import { channelForModuleBranch } from './alertChannels';
+import { attachmentFilename } from './attachmentName';
+import { reportChat } from './reportChat.service';
 import { alertService } from './alert.service';
 
 // POST /api/alerts/ingest — external systems (KBiz Books ERP, CRM) push events into the
@@ -51,14 +53,10 @@ export const ingestRateLimit: RequestHandler = (req, _res, next) => {
 // Content-Type express.static serves, so it must never be attacker-controllable).
 const MAX_ATTACHMENT_B64 = 2_000_000; // ≈ 1.5 MB decoded
 
-// Sanitize FIRST, strip any .pdf, cap at 100, THEN append .pdf — the storage layer's own
-// safeName() slice(0,120) then cannot truncate the extension away. (Appending before
-// truncating let a 120-char name ending ".html" survive as the stored extension →
-// served as text/html from our origin = stored XSS.)
-export const attachmentFilename = (name: string): string => {
-  const base = name.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.pdf$/i, '').slice(0, 100);
-  return `${base || 'document'}.pdf`;
-};
+// Re-exported for the ingest's own use and for the callers/tests that have always imported it
+// from here; the implementation moved to ./attachmentName so the Finance-group chat post can
+// share the exact same rule without importing this router (a cycle).
+export { attachmentFilename } from './attachmentName';
 
 alertsIngestRouter.post(
   '/ingest',
@@ -123,5 +121,38 @@ alertsIngestRouter.post(
       ...(stored ? { attachment: stored } : {}),
     });
     res.json({ ok: true, channelId: channel.id, ...(stored ? { attachmentUrl: stored.url } : {}) });
+  }),
+);
+
+// POST /api/alerts/chat — the same service-token pipe, but the event lands in a branch's
+// Finance GROUP CHAT instead of an alert channel. This is where the daily Receivables /
+// Payables ageing PDFs and the Bank & Cash snapshot go since 2026-08-19: the finance team
+// reads and replies to them in "HQ - <BR> Finance" rather than in a one-way feed.
+// Addressed by branch (resolved to the group by name) or, for a one-off/smoke post, by an
+// explicit conversationId. `dedupeKey` makes a re-fired cron slot or a retry idempotent.
+alertsIngestRouter.post(
+  '/chat',
+  requireServiceToken,
+  ingestRateLimit,
+  validate(z.object({
+    branchCode: z.string().trim().min(2).max(10).optional(),
+    conversationId: z.string().trim().regex(/^[a-f0-9]{24}$/i).optional(),
+    title: z.string().trim().min(1).max(300),
+    body: z.string().trim().max(4000).optional(),
+    source: z.string().trim().min(1).max(80).optional(),
+    dedupeKey: z.string().trim().max(120).optional(),
+    attachment: z.object({
+      name: z.string().trim().min(1).max(120),
+      mime: z.literal('application/pdf').optional(),
+      data: z.string().min(1).max(MAX_ATTACHMENT_B64),
+    }).optional(),
+  }).refine((v) => !!(v.branchCode || v.conversationId), { message: 'branchCode or conversationId is required' })),
+  asyncHandler(async (req, res) => {
+    const { branchCode, conversationId, title, body, dedupeKey, attachment } = req.body as {
+      branchCode?: string; conversationId?: string; title: string; body?: string; dedupeKey?: string;
+      attachment?: { name: string; mime?: string; data: string };
+    };
+    const out = await reportChat.post({ branchCode, conversationId, title, body, dedupeKey, attachment });
+    res.json({ ok: true, ...out });
   }),
 );
