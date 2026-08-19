@@ -31,7 +31,14 @@ const GRANT_MODULES = arg('grants', '').split(',').map((s) => s.trim()).filter(B
 // The storage adapter is TypeScript; inside the container only the built dist/ exists. Fall back to
 // a direct S3 delete when neither is loadable (a local-driver install has nothing to delete anyway).
 function loadStorage() {
-  for (const p of ['../dist/storage', '../dist/storage/index.js', '../src/storage']) {
+  const path = require('path');
+  // Both layouts: run as a file from scripts/ (…/../dist), and piped in on stdin inside the
+  // container, where a relative require resolves against the WORKDIR instead of this file.
+  const candidates = [
+    path.join(__dirname, '../dist/storage'), path.join(__dirname, '../src/storage'),
+    path.join(process.cwd(), 'dist/storage'), path.join(process.cwd(), 'src/storage'),
+  ];
+  for (const p of candidates) {
     try { return require(p).getStorage(); } catch { /* try the next */ }
   }
   return null;
