@@ -63,10 +63,10 @@ alertsIngestRouter.post(
   requireServiceToken,
   ingestRateLimit,
   validate(z.object({
-    // 'receivables' / 'payables' / 'bankcash' / 'hr' / 'acct' were removed 2026-08-19 — those
+    // Everything except the legacy Finance and CRM families was retired 2026-08-19 — those
     // reports go to the branch group chats via /chat below, and an emitter still aiming here must
     // fail loudly rather than write into a feed nobody reads.
-    module: z.enum(['finance', 'accounts', 'crm', 'sales', 'sales-invoice', 'bookings']),
+    module: z.enum(['finance', 'accounts', 'crm']),
     branchCode: z.string().trim().min(2).max(10),
     title: z.string().trim().min(1).max(160),
     body: z.string().trim().max(2000).optional(),
@@ -111,9 +111,7 @@ alertsIngestRouter.post(
     }
 
     // Default context embeds the branch code — the app buckets events into branch sections by it.
-    const MODULE_LABEL: Record<string, string> = {
-      accounts: 'Finance', sales: 'Sales Invoice', bookings: 'SO/PO/GP / INB',
-    };
+    const MODULE_LABEL: Record<string, string> = { accounts: 'Finance' };
     const label = MODULE_LABEL[channel.module] ?? channel.module.toUpperCase();
     await alertService.record(channel.id, {
       source,
@@ -128,9 +126,11 @@ alertsIngestRouter.post(
 
 // POST /api/alerts/chat — the same service-token pipe, but the event lands in a branch's GROUP
 // CHAT instead of an alert channel. Since 2026-08-19 this is where every report the app used to
-// carry as one-way alerts goes: `group: 'finance'` → "HQ - <BR> Finance" (daily ageing PDFs, Bank
-// & Cash, the day-close attendance summary), `group: 'accounts'` → "<BR> - Branch Accounts" (the
-// live per-voucher money-movement feed). Addressed by branch (resolved to the group by name) or,
+// carry as one-way alerts goes: 'finance' → "HQ - <BR> Finance" (daily ageing PDFs, Bank & Cash,
+// the day-close attendance summary), 'accounts' → "<BR> - Branch Accounts" (the per-voucher money
+// feed), 'ticketing'/'holidays' → "<BR> - Ticketing" / "<BR> - Holidays" (approved invoices and
+// SO/PO/GP deals, split by module), 'inb-ticketing'/'inb-holidays' → the "INB <desk> A/B" room the
+// two branches of a deal share. Addressed by branch (resolved to the group by name) or,
 // for a one-off post, by an explicit conversationId. `dedupeKey` makes a re-fired cron slot or a
 // retry idempotent; `dryRun` reports where a post WOULD land without writing anything.
 alertsIngestRouter.post(
@@ -138,8 +138,9 @@ alertsIngestRouter.post(
   requireServiceToken,
   ingestRateLimit,
   validate(z.object({
-    branchCode: z.string().trim().min(2).max(10).optional(),
-    group: z.enum(['finance', 'accounts']).optional(),
+    // A single code, or "SELLER/BUYER" for the INB kinds (the pair groups two branches share).
+    branchCode: z.string().trim().min(2).max(16).optional(),
+    group: z.enum(['finance', 'accounts', 'ticketing', 'holidays', 'inb-ticketing', 'inb-holidays']).optional(),
     conversationId: z.string().trim().regex(/^[a-f0-9]{24}$/i).optional(),
     dryRun: z.boolean().optional(),
     title: z.string().trim().min(1).max(300),
@@ -154,7 +155,8 @@ alertsIngestRouter.post(
   }).refine((v) => !!(v.branchCode || v.conversationId), { message: 'branchCode or conversationId is required' })),
   asyncHandler(async (req, res) => {
     const { branchCode, group, conversationId, dryRun, title, body, dedupeKey, attachment } = req.body as {
-      branchCode?: string; group?: 'finance' | 'accounts'; conversationId?: string; dryRun?: boolean;
+      branchCode?: string; group?: 'finance' | 'accounts' | 'ticketing' | 'holidays' | 'inb-ticketing' | 'inb-holidays';
+      conversationId?: string; dryRun?: boolean;
       title: string; body?: string; dedupeKey?: string; attachment?: { name: string; mime?: string; data: string };
     };
     const out = await reportChat.post({ branchCode, group, conversationId, dryRun, title, body, dedupeKey, attachment });

@@ -10,18 +10,10 @@ import { attendanceBranchCode } from '../attendance/attendanceBranch';
 
 describe('alert channel registry', () => {
   it('registers the external channels next to attendance', () => {
-    expect(ALERT_CHANNELS.map((c) => c.id)).toEqual([
-      'tk_fin_bom', 'tk_fin_amd', 'tk_crm_bom', 'tk_crm_amd',
-      'tk_si_bom', 'tk_si_amd', 'tk_si_nbo', 'tk_si_dar', 'tk_si_fbm',
-      'tk_bkg_bom', 'tk_bkg_amd', 'tk_bkg_nbo', 'tk_bkg_dar', 'tk_bkg_fbm',
-    ]);
-    expect(ALERT_GRANT_IDS).toEqual(
-      expect.arrayContaining([
-        'BOM-accounts', 'AMD-accounts', 'BOM-crm', 'AMD-crm',
-        'BOM-sales', 'AMD-sales', 'NBO-sales', 'DAR-sales', 'FBM-sales',
-        'BOM-bookings', 'NBO-bookings', 'FBM-bookings',
-      ]),
-    );
+    // All that is left: the legacy Finance and CRM families (hidden in the app, still fed by the
+    // CRM backend). Every other report posts into a branch GROUP CHAT now.
+    expect(ALERT_CHANNELS.map((c) => c.id)).toEqual(['tk_fin_bom', 'tk_fin_amd', 'tk_crm_bom', 'tk_crm_amd']);
+    expect(ALERT_GRANT_IDS).toEqual(['BOM-accounts', 'AMD-accounts', 'BOM-crm', 'AMD-crm']);
   });
 
   it('maps (module, branch) to the right channel, with finance → accounts aliasing', () => {
@@ -32,30 +24,15 @@ describe('alert channel registry', () => {
     expect(channelForModuleBranch('finance', 'NBO')).toBeNull(); // Finance stays BOM/AMD → emitters must skip
   });
 
-  it('maps sales to the per-branch Sales Invoice channels (all 5 branches)', () => {
-    expect(channelForModuleBranch('sales', 'BOM')?.id).toBe('tk_si_bom');
-    expect(channelForModuleBranch('sales', 'nbo')?.id).toBe('tk_si_nbo'); // case-insensitive branch
-    expect(channelForModuleBranch('sales-invoice', 'FBM')?.id).toBe('tk_si_fbm'); // ERP vocabulary alias
-    expect(channelForModuleBranch('sales', 'DAR')?.grant).toBe('DAR-sales');
-    expect(channelForModuleBranch('sales', 'TKHO')).toBeNull(); // no channel → emitters must skip
-  });
-
   it('the retired report families resolve to NOTHING — they live in the Finance group chats now', () => {
     // Clients Receivables / Supplier Payables / Bank & Cash were deleted 2026-08-19. An emitter
     // still aiming here must land nowhere (and the ingest's zod enum rejects the module outright),
     // never in some neighbouring channel.
-    for (const mod of ['receivables', 'payables', 'bankcash', 'acct', 'hr']) {
+    for (const mod of ['receivables', 'payables', 'bankcash', 'acct', 'hr', 'sales', 'sales-invoice', 'bookings']) {
       for (const br of ['BOM', 'AMD', 'NBO', 'DAR', 'FBM']) expect(channelForModuleBranch(mod, br)).toBeNull();
     }
-    expect(ALERT_CHANNELS.some((c) => /^tk_(ar|ap|bc)_/.test(c.id))).toBe(false);
-    expect(ALERT_GRANT_IDS.some((g) => /-(receivables|payables|bankcash|acct|hr)$/.test(g))).toBe(false);
-  });
-
-  it('maps bookings to the SO/PO/GP / INB channels (all 5 branches)', () => {
-    expect(channelForModuleBranch('bookings', 'BOM')?.id).toBe('tk_bkg_bom');
-    expect(channelForModuleBranch('bookings', 'nbo')?.id).toBe('tk_bkg_nbo');
-    expect(channelForModuleBranch('bookings', 'FBM')?.grant).toBe('FBM-bookings');
-    expect(channelForModuleBranch('bookings', 'TKHO')).toBeNull();
+    expect(ALERT_CHANNELS.some((c) => /^tk_(ar|ap|bc|acc|att|si|bkg)_/.test(c.id))).toBe(false);
+    expect(ALERT_GRANT_IDS.some((g) => /-(receivables|payables|bankcash|acct|hr|sales|bookings)$/.test(g))).toBe(false);
   });
 
   it("the retired 'acct' feed resolves to nothing — it posts into <BR> - Branch Accounts now", () => {
@@ -86,7 +63,7 @@ describe('alert channel registry', () => {
     expect(visibleChannelIds(false, [])).toEqual([]);
     expect(visibleChannelIds(false, ['BOM-accounts'])).toEqual(['tk_fin_bom']);
     expect(visibleChannelIds(false, ['BOM-accounts', 'BOM-crm', 'AMD-hr'])).toEqual(['tk_fin_bom', 'tk_crm_bom']); // -hr grants no longer resolve
-    expect(visibleChannelIds(false, ['NBO-sales', 'FBM-sales'])).toEqual(['tk_si_nbo', 'tk_si_fbm']);
+    expect(visibleChannelIds(false, ['NBO-sales', 'FBM-sales'])).toEqual([]); // sales grants no longer resolve
     expect(visibleChannelIds(false, ['NBO-accounts', 'bogus'])).toEqual([]); // unknown grants grant nothing
   });
 });

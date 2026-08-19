@@ -2,22 +2,23 @@
 // external ERP/CRM ingest route. Channel ids match the frontend's pulse channel ids; `grant` uses
 // the app's existing access-grant format `${branchCode}-${module}` (see Frontend
 // makeAccessFilters.alertOK). `module` uses the frontend ModuleKey vocabulary
-// ('accounts' = Finance/KBiz Books, 'crm' = CRM, 'sales' = ERP sales invoices,
-// 'bookings' = SO/PO/GP / INB approval GP summaries).
+// ('accounts' = Finance/KBiz Books, 'crm' = CRM — the only two families left here).
 //
 // REMOVED 2026-08-19 — 'receivables' (Clients Receivables), 'payables' (Supplier Payables),
-// 'bankcash' (Bank & Cash), 'hr' (BOM/AMD/Directors Attendance) and 'acct' (Accounts — the
-// per-voucher money-movement feed, which now posts into "<BR> - Branch Accounts"): 23 channels in
-// all. None of those reports is a one-way alert any more — the ERP posts the finance and accounts
-// ones and the day-close sweep posts attendance into the branch group chats
-// (POST /api/alerts/chat → alerts/reportChat.service). The channels, their stored events and their PDFs were deleted with
+// 'bankcash', 'hr' (Attendance), 'acct' (the per-voucher money feed), 'sales' (approved invoice
+// PDFs) and 'bookings' (SO/PO/GP + INB deal summaries): 33 channels in all. None of those reports
+// is a one-way alert any more — every one posts into a branch GROUP CHAT
+// (POST /api/alerts/chat → alerts/reportChat.service), by the room its readers already work in:
+// finance reports and attendance → "HQ - <BR> Finance", the money feed → "<BR> - Branch Accounts",
+// approved invoices and deals → "<BR> - Ticketing" (flights) or "<BR> - Holidays" (everything
+// else), and inter-branch deals → the "INB <desk> A/B" room the two branches share. The channels, their stored events and their PDFs were deleted with
 // scripts/purge-alert-channels.js. Do not re-add them here without a matching Frontend release.
 // The 'Directors Attendance' channel went with them (owner call): hidden attendance is no longer
 // summarised anywhere, which is deliberate — it must never land in a branch group.
 export interface AlertChannelDef {
   id: string;
   branchCode: string; // ERP/CRM branch code the channel covers (BOM/AMD/NBO/DAR/FBM)
-  module: 'accounts' | 'crm' | 'sales' | 'bookings';
+  module: 'accounts' | 'crm';
   grant: string; // per-user grant string a super-admin assigns
   name: string;
 }
@@ -29,20 +30,6 @@ export const ALERT_CHANNELS: AlertChannelDef[] = [
   // Fed live by the CRM backend via POST /api/alerts/ingest.
   { id: 'tk_crm_bom', branchCode: 'BOM', module: 'crm', grant: 'BOM-crm', name: 'CRM - BOM' },
   { id: 'tk_crm_amd', branchCode: 'AMD', module: 'crm', grant: 'AMD-crm', name: 'CRM - AMD' },
-  // Sales Invoice — the ERP pushes the approved sale invoice PDF here (module 'sales'), one
-  // channel per live Books branch. All 5 branches, unlike Finance/CRM which are BOM/AMD only.
-  { id: 'tk_si_bom', branchCode: 'BOM', module: 'sales', grant: 'BOM-sales', name: 'Sales Invoice - BOM' },
-  { id: 'tk_si_amd', branchCode: 'AMD', module: 'sales', grant: 'AMD-sales', name: 'Sales Invoice - AMD' },
-  { id: 'tk_si_nbo', branchCode: 'NBO', module: 'sales', grant: 'NBO-sales', name: 'Sales Invoice - NBO' },
-  { id: 'tk_si_dar', branchCode: 'DAR', module: 'sales', grant: 'DAR-sales', name: 'Sales Invoice - DAR' },
-  { id: 'tk_si_fbm', branchCode: 'FBM', module: 'sales', grant: 'FBM-sales', name: 'Sales Invoice - FBM' },
-  // SO/PO/GP / INB — deal summary (sale · purchase · GP · Link No) on every ERP booking
-  // approval and INB deal approval, per branch.
-  { id: 'tk_bkg_bom', branchCode: 'BOM', module: 'bookings', grant: 'BOM-bookings', name: 'SO/PO/GP / INB - BOM' },
-  { id: 'tk_bkg_amd', branchCode: 'AMD', module: 'bookings', grant: 'AMD-bookings', name: 'SO/PO/GP / INB - AMD' },
-  { id: 'tk_bkg_nbo', branchCode: 'NBO', module: 'bookings', grant: 'NBO-bookings', name: 'SO/PO/GP / INB - NBO' },
-  { id: 'tk_bkg_dar', branchCode: 'DAR', module: 'bookings', grant: 'DAR-bookings', name: 'SO/PO/GP / INB - DAR' },
-  { id: 'tk_bkg_fbm', branchCode: 'FBM', module: 'bookings', grant: 'FBM-bookings', name: 'SO/PO/GP / INB - FBM' },
 ];
 
 export const ALERT_GRANT_IDS: string[] = ALERT_CHANNELS.map((c) => c.grant);

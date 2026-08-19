@@ -77,3 +77,47 @@ describe('accounts group routing', () => {
     expect(reportGroupExpected('finance', 'DAR')).toBe('"HQ - DAR Finance" or "DAR - Finance Team"');
   });
 });
+
+// Approved invoices and deals split by desk: flights to Ticketing, everything else to Holidays.
+describe('desk group routing', () => {
+  it('matches "<CODE> - Ticketing" and "<CODE> - Holidays"', () => {
+    expect(isReportGroupFor('BOM - Ticketing', 'ticketing', 'BOM')).toBe(true);
+    expect(isReportGroupFor('AMD - Holidays', 'holidays', 'AMD')).toBe(true);
+    expect(isReportGroupFor('bom  ticketing', 'ticketing', 'BOM')).toBe(true);
+  });
+
+  it('never crosses desk, branch, or family', () => {
+    expect(isReportGroupFor('BOM - Ticketing', 'holidays', 'BOM')).toBe(false);
+    expect(isReportGroupFor('BOM - Ticketing', 'ticketing', 'AMD')).toBe(false);
+    expect(isReportGroupFor('BOM - Ticketing', 'accounts', 'BOM')).toBe(false);
+    expect(isReportGroupFor('INB Ticketing AMD/BOM', 'ticketing', 'BOM')).toBe(false);
+  });
+});
+
+// An inter-branch deal belongs to BOTH its branches, in the room they share. The pair is
+// unordered: the group was named in whichever order its creator typed.
+describe('INB pair group routing', () => {
+  it('matches the pair group in either order', () => {
+    expect(isReportGroupFor('INB Ticketing AMD/BOM', 'inb-ticketing', 'BOM/AMD')).toBe(true);
+    expect(isReportGroupFor('INB Ticketing AMD/BOM', 'inb-ticketing', 'AMD/BOM')).toBe(true);
+    expect(isReportGroupFor('INB Holidays DAR/FBM', 'inb-holidays', 'FBM/DAR')).toBe(true);
+    expect(reportGroupKeys('inb-ticketing', 'BOM/AMD')).toEqual(['inbticketingbomamd', 'inbticketingamdbom']);
+  });
+
+  it('refuses a half-written or self-referencing pair rather than guessing', () => {
+    expect(reportGroupKeys('inb-ticketing', 'BOM')).toEqual([]);
+    expect(reportGroupKeys('inb-holidays', 'BOM/')).toEqual([]);
+    expect(reportGroupKeys('inb-ticketing', 'BOM/BOM')).toEqual([]); // a branch cannot deal with itself
+    expect(isReportGroupFor('INB Ticketing AMD/BOM', 'inb-ticketing', 'BOM')).toBe(false);
+  });
+
+  it('keeps a third branch out of a pair it is not in', () => {
+    expect(isReportGroupFor('INB Ticketing AMD/BOM', 'inb-ticketing', 'BOM/NBO')).toBe(false);
+    expect(isReportGroupFor('INB Ticketing AMD/BOM', 'inb-holidays', 'AMD/BOM')).toBe(false); // wrong desk
+  });
+
+  it('says which room it expected when there is none', () => {
+    expect(reportGroupExpected('inb-holidays', 'BOM/NBO')).toBe('"INB Holidays BOM/NBO" (either order)');
+    expect(reportGroupExpected('ticketing', 'DAR')).toBe('"DAR - Ticketing"');
+  });
+});
