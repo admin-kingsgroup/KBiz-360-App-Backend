@@ -11,6 +11,7 @@ import { attendanceHidden } from '../attendanceHidden';
 import { alertService } from '../alerts/alert.service';
 import { reportChat } from '../alerts/reportChat.service';
 import { attendanceBranchCode, dayKeyIn } from './attendanceBranch';
+import { punchChatLine, punchDedupeKey } from './punchMessage';
 import { userPositions } from '../userPositions';
 import type { OfficeGeofenceDoc } from './office.model';
 import type { AttendanceDoc } from './attendance.model';
@@ -88,6 +89,12 @@ function fmtTime(d: Date | null, tz: string = ATTENDANCE_TZ): string | null {
 // gates the personal "You checked in" alert a puncher gets in My Alerts. It no longer gates the
 // day-close report — that is a branch's own daily record and posts to the branch group regardless.
 const ATTENDANCE_ALERTS_ENABLED = process.env.ATTENDANCE_ALERTS === 'on';
+
+// Live punch line in the branch's GROUP CHAT (owner call, 2026-08-25) — separate switch from the
+// one above: that one gates the puncher's PERSONAL "You checked in" in My Alerts, this one gates
+// what a whole room sees. On by default; ATTENDANCE_PUNCH_CHAT=off silences the rooms without a
+// redeploy, and the 10pm day-close summary keeps posting either way.
+const PUNCH_CHAT_ENABLED = process.env.ATTENDANCE_PUNCH_CHAT !== 'off';
 
 // Forgotten check-outs (owner call, 07-31): the 10pm sweep closes any day still open, stamping the
 // check-out at 7pm — NOT the sweep hour — labelled method 'Auto-closed' so it is visibly different
@@ -320,6 +327,46 @@ function mapMe(doc: AttendanceDoc | null) {
 // must not log the same warning 360 times a night.
 const reportedTonight = new Set<string>();
 
+// A punch also shows up LIVE in the puncher's branch group — "🟢 Priya Patel checked in · 9:42 AM
+// · Geofence" — in the SAME room the 10pm day-close summary posts to ("HQ - <CODE> Finance", the
+// hub's "MHUB - Finance Team"). Reusing that group is what makes this work on day one: every
+// branch already has one, and nobody has to create or populate a new room.
+//
+// Which branch: the explicit working-branch assignment, else the user's first CRM branch — the
+// same rule the day-close report and the team view resolve with, so a person's live line and
+// their line in that night's summary can never land in different rooms.
+//
+// Times are the BRANCH's wall clock, not IST: Nairobi reads Nairobi.
+//
+// Never throws and never blocks the punch — callers fire it with `void`. A branch that resolves
+// to no code, a group renamed past recognition, chat storage down: all of it is a log warning.
+// Recording attendance must not depend on being able to announce it.
+//
+// Hidden (director) users never reach here — their attendance is private by design, the same
+// reason they are absent from the day-close summary.
+async function postPunchToBranchGroup(userId: string, action: 'in' | 'out', at: Date, via: string | null): Promise<void> {
+  try {
+    const user = await crmRepo.getUserById(userId);
+    if (!user) return;
+    const assigned = await userWorkBranches.branchIdFor(userId);
+    const branchId = assigned ?? String((user.branch_ids ?? [])[0] ?? '');
+    if (!Types.ObjectId.isValid(branchId)) return; // no branch at all → no room this belongs in
+    const [branch] = await crmRepo.branchesByIds([new Types.ObjectId(branchId)]);
+    const branchCode = attendanceBranchCode(branch ?? null);
+    if (!branchCode) return; // unresolvable code (BOMMB/MUM and cities are handled inside)
+    const { tz } = branchAutoClose({ code: branchCode });
+    await reportChat.post({
+      branchCode,
+      group: 'finance',
+      title: punchChatLine({ name: nameOf(user), action, time: fmtTime(at, tz), via }),
+      dedupeKey: punchDedupeKey(branchCode, dayKeyIn(tz, at), userId, action),
+    });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn(`[attendance-punch-chat] ${userId} ${action}: ${(e as Error).message}`);
+  }
+}
+
 export const attendanceService = {
   // Punch gate (owner rules, 07-31): BOTH check-in and check-out require
   //   1. a live GPS fix INSIDE one of the user's office geofences (radius, default 100 m), and
@@ -366,9 +413,10 @@ export const attendanceService = {
       faceVerified: hidden ? null : true, // a face photo is mandatory on every manual punch
       checkInPhotoUrl: body.facePhotoUrl ?? null,
     });
-    // System alert ("X checked in") into the branch's attendance channel — fire-and-forget.
-    // NEVER for hidden users: their punches must not surface anywhere except the directors summary.
+    // Two fire-and-forget announcements: the puncher's own "You checked in" in My Alerts, and the
+    // live line in their branch's group chat. NEVER for hidden users — their punches surface nowhere.
     if (ATTENDANCE_ALERTS_ENABLED && !hidden) void alertService.recordAttendancePunch(userId, 'in', now, saved?.method ?? null);
+    if (PUNCH_CHAT_ENABLED && !hidden) void postPunchToBranchGroup(userId, 'in', now, saved?.method ?? null);
     return mapMe(saved);
   },
 
@@ -403,8 +451,9 @@ export const attendanceService = {
       faceVerified: hidden ? today.faceVerified : true,
       checkOutPhotoUrl: body.facePhotoUrl ?? null,
     });
-    // System alert ("X checked out") into the branch's attendance channel — fire-and-forget.
+    // Same pair as check-in: the puncher's own My Alerts event, and the branch group's live line.
     if (ATTENDANCE_ALERTS_ENABLED && !hidden) void alertService.recordAttendancePunch(userId, 'out', outAt, saved?.method ?? null);
+    if (PUNCH_CHAT_ENABLED && !hidden) void postPunchToBranchGroup(userId, 'out', outAt, saved?.method ?? null);
     return mapMe(saved);
   },
 
