@@ -1,6 +1,6 @@
 import { connectMongo, disconnectMongo, appDb } from '../../connection';
-import { attendanceService, geofenceExitStillInside, resolveCheckOutAt, resolveAutoCloseAt, branchAutoClose, autoCloseDue, teamScope, superUserIds, GEOFENCE_EXIT_BUFFER_M } from '../attendance.service';
-import { punchSchema } from '../attendance.router';
+import { attendanceService, geofenceExitStillInside, resolveCheckOutAt, resolveAdminTimes, resolveAutoCloseAt, branchAutoClose, autoCloseDue, teamScope, superUserIds, GEOFENCE_EXIT_BUFFER_M } from '../attendance.service';
+import { punchSchema, adminTimesSchema } from '../attendance.router';
 
 // Regression: validate() replaces req.body with the parsed schema, dropping unknown keys. If
 // `source` isn't in the schema it is stripped before checkOut runs and the drift guard is dead.
@@ -50,6 +50,49 @@ describe('resolveCheckOutAt (check-out back-dating, pure)', () => {
   it('exitAt from a previous business day (IST) → distrusted, arrival time', () => {
     // 6:30 PM IST on 07-28 vs a punch landing 07-29 — must not close today at yesterday's instant.
     expect(resolveCheckOutAt({ source: 'geofence', exitAt: '2026-07-28T13:00:00.000Z' }, new Date('2026-07-28T05:00:00.000Z'), NOW)).toEqual(NOW);
+  });
+});
+
+// Admin time correction (PUT /attendance/admin/day/times): the one path that can rewrite a day's
+// times, so its bounds are pinned like exitAt's. IST is the row's calendar (ATTENDANCE_TZ default).
+describe('adminTimesSchema (admin time-correction body)', () => {
+  const base = { userId: 'u1', date: '2026-08-27', checkInAt: '2026-08-27T04:10:00.000Z' };
+  it('keeps checkOutAt:null — an explicit "still in" must survive validate()', () => {
+    expect(adminTimesSchema.parse({ ...base, checkOutAt: null }).checkOutAt).toBeNull();
+  });
+  it('rejects a wall-clock string where an ISO instant is expected', () => {
+    expect(adminTimesSchema.safeParse({ ...base, checkInAt: '09:40' }).success).toBe(false);
+    expect(adminTimesSchema.safeParse({ ...base, checkOutAt: '19:00' }).success).toBe(false);
+  });
+});
+
+describe('resolveAdminTimes (admin time-correction bounds, pure)', () => {
+  const NOW = new Date('2026-08-27T10:00:00.000Z'); // 3:30 PM IST, 27 Aug
+  const today = '2026-08-27';
+  const IN = '2026-08-27T04:10:00.000Z'; // 9:40 AM IST
+  const OUT = '2026-08-27T09:00:00.000Z'; // 2:30 PM IST
+
+  it('valid in/out on the day → exactly the instants given', () => {
+    const r = resolveAdminTimes({ date: today, checkInAt: IN, checkOutAt: OUT }, NOW);
+    expect(r.checkInAt.toISOString()).toBe(IN);
+    expect(r.checkOutAt?.toISOString()).toBe(OUT);
+  });
+  it('today may be left open (no check-out); a past day may not', () => {
+    expect(resolveAdminTimes({ date: today, checkInAt: IN }, NOW).checkOutAt).toBeNull();
+    expect(resolveAdminTimes({ date: today, checkInAt: IN, checkOutAt: null }, NOW).checkOutAt).toBeNull();
+    expect(() => resolveAdminTimes({ date: '2026-08-26', checkInAt: '2026-08-26T04:10:00.000Z', checkOutAt: null }, NOW)).toThrow('past day');
+  });
+  it('the times must fall on the business day being corrected (IST calendar, the row key)', () => {
+    // 11:30 PM IST on the 26th belongs to the 26th's row, never the 27th's.
+    expect(() => resolveAdminTimes({ date: today, checkInAt: '2026-08-26T18:00:00.000Z', checkOutAt: OUT }, NOW)).toThrow('must fall on');
+    // 2:00 AM IST on the 28th (20:30Z on the 27th) is a check-out on the wrong day too.
+    expect(() => resolveAdminTimes({ date: today, checkInAt: IN, checkOutAt: '2026-08-27T20:30:00.000Z' }, new Date('2026-08-28T05:00:00.000Z'))).toThrow('must fall on');
+  });
+  it('rejects future instants, a check-out at/before the check-in, and unparseable input', () => {
+    expect(() => resolveAdminTimes({ date: today, checkInAt: '2026-08-27T11:00:00.000Z' }, NOW)).toThrow('future');
+    expect(() => resolveAdminTimes({ date: today, checkInAt: IN, checkOutAt: '2026-08-27T11:00:00.000Z' }, NOW)).toThrow('future');
+    expect(() => resolveAdminTimes({ date: today, checkInAt: IN, checkOutAt: IN }, NOW)).toThrow('after check-in');
+    expect(() => resolveAdminTimes({ date: today, checkInAt: 'nine forty' }, NOW)).toThrow('valid instant');
   });
 });
 
@@ -204,6 +247,7 @@ describe('branchAutoClose (branch code → local zone + office-end stamp)', () =
 // ── DB-backed re-entry state machine ──
 let ready = false;
 const FAKE_USER = `jest-att-${Date.now().toString(36)}`;
+const FAKE_USER_NEVER = `${FAKE_USER}-never`; // never punches — the admin-times "absent → Manual" path
 
 beforeAll(async () => {
   try {
@@ -217,7 +261,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (ready) {
     /* eslint-disable @typescript-eslint/no-explicit-any */
-    await (appDb().collection('attendance') as any).deleteMany({ userId: FAKE_USER });
+    await (appDb().collection('attendance') as any).deleteMany({ userId: { $in: [FAKE_USER, FAKE_USER_NEVER] } });
     await (appDb().collection('alert_events') as any).deleteMany({ recipients: FAKE_USER });
     /* eslint-enable @typescript-eslint/no-explicit-any */
   }
@@ -245,5 +289,57 @@ describe('check-in / check-out re-entry model (first-in stays, last-out wins)', 
 
     const closedAgain = await attendanceService.checkOut(FAKE_USER, { coords: null, facePhotoUrl: 'test://face.jpg' });
     expect(closedAgain.outTime).toBeTruthy(); // last-out wins
+  }, 30000);
+});
+
+// Admin time correction against the DB: runs AFTER the re-entry suite, so FAKE_USER's day is a
+// real (closed) punch carrying a face photo — exactly the evidence an edit must not destroy.
+describe('applyAdminTimes (DB: moves the times, keeps the punch evidence, stamps adjusted)', () => {
+  const ADMIN = 'jest-admin';
+  const tz = process.env.ATTENDANCE_TZ || 'Asia/Kolkata';
+  const keyIn = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const rawRow = (userId: string, dateKey: string) => (appDb().collection('attendance') as any).findOne({ userId, dateKey });
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+
+  it('a real punch keeps its method + photo; only the instants move', async () => {
+    if (!ready) return;
+    const now = new Date();
+    const inAt = new Date(now.getTime() - 2 * 60_000);
+    const outAt = new Date(now.getTime() - 60_000);
+    const today = keyIn(now);
+    if (keyIn(inAt) !== today) return; // the two minutes straddling IST midnight — not worth a flake
+    const before = await rawRow(FAKE_USER, today);
+    expect(before?.method).toBeTruthy(); // the re-entry suite left a real punch here
+    expect(before?.checkInPhotoUrl).toBe('test://face.jpg');
+
+    const r = await attendanceService.applyAdminTimes(ADMIN, { userId: FAKE_USER, date: today, checkInAt: inAt.toISOString(), checkOutAt: outAt.toISOString() });
+    expect(r.inTime).toBe(inAt.toISOString());
+    expect(r.outTime).toBe(outAt.toISOString());
+    expect(r.present).toBe(false);
+    expect(r.via).toBe(before.method); // NOT flipped to 'Manual'
+
+    const after = await rawRow(FAKE_USER, today);
+    expect(after.checkInPhotoUrl).toBe('test://face.jpg'); // evidence preserved
+    expect(after.adjustedBy).toBe(ADMIN);
+    expect(after.adjustedAt).toBeInstanceOf(Date);
+    const hist = await attendanceService.history(FAKE_USER, 1);
+    expect(hist[0]?.adjusted).toBe(true);
+  }, 30000);
+
+  it('a day with no punch becomes a Manual row at the given times, left open only for today', async () => {
+    if (!ready) return;
+    const now = new Date();
+    const inAt = new Date(now.getTime() - 60_000);
+    const today = keyIn(now);
+    if (keyIn(inAt) !== today) return;
+    const r = await attendanceService.applyAdminTimes(ADMIN, { userId: FAKE_USER_NEVER, date: today, checkInAt: inAt.toISOString(), checkOutAt: null });
+    expect(r.via).toBe('Manual');
+    expect(r.inTime).toBe(inAt.toISOString());
+    expect(r.outTime).toBeNull();
+    expect(r.present).toBe(true); // still in — the 10pm sweep will close it
+    const raw = await rawRow(FAKE_USER_NEVER, today);
+    expect(raw.checkInPhotoUrl).toBeNull();
+    expect(raw.adjustedBy).toBe(ADMIN);
   }, 30000);
 });

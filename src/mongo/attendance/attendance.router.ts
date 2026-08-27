@@ -79,6 +79,21 @@ attendanceRouter.post('/admin/day', requireAuth, requireManage,
     res.json(await attendanceService.adminSetDay(req.auth.userId, req.body));
   }));
 
+// Admin TIME correction — move one day's check-in/check-out to the given instants (ISO, the
+// device's own clock) WITHOUT discarding the punch's evidence; audit-stamped. Manager-only.
+// Exported for the router-schema regression test: validate() strips unknown keys, and
+// checkOutAt:null (an explicit "still in") must survive parsing or it silently keeps the old check-out.
+export const adminTimesSchema = z.object({
+  userId: z.string().min(1),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  checkInAt: z.string().datetime(),
+  checkOutAt: z.string().datetime().nullable().optional(),
+});
+attendanceRouter.put('/admin/day/times', requireAuth, requireManage, validate(adminTimesSchema), asyncHandler(async (req, res) => {
+  if (!req.auth) throw Unauthorized();
+  res.json(await attendanceService.adminSetTimes(req.auth.userId, req.body));
+}));
+
 // ── office geofences ──
 // Offices the caller may punch at (drives the app's office picker + geofence presence).
 attendanceRouter.get('/offices', requireAuth, asyncHandler(async (req, res) => {

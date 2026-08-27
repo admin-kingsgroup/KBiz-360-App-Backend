@@ -180,6 +180,34 @@ export function resolveCheckOutAt(
   return claimed;
 }
 
+// Pure decision for an admin TIME correction (PUT /attendance/admin/day/times): the instants the
+// admin picked become the day's check-in/check-out only inside hard bounds — the same distrust
+// exitAt back-dating gets, because a correction is the one path that can rewrite history:
+//   - both must parse, and neither may lie in the future;
+//   - the check-in must fall on the business day being corrected (IST calendar day = the row key);
+//   - a check-out must be strictly after the check-in, and on that same day;
+//   - only TODAY may be left open (no check-out): a past day with none would sit open for ever
+//     (the 10pm sweep only walks yesterday/today) and read as "still in office".
+export function resolveAdminTimes(
+  body: { date: string; checkInAt: string; checkOutAt?: string | null },
+  now: Date,
+): { checkInAt: Date; checkOutAt: Date | null } {
+  const checkInAt = new Date(body.checkInAt);
+  if (!Number.isFinite(checkInAt.getTime())) throw BadRequest('Check-in time is not a valid instant');
+  if (checkInAt.getTime() > now.getTime()) throw BadRequest('Check-in time cannot be in the future');
+  if (dayKeyInTz(checkInAt) !== body.date) throw BadRequest(`Check-in must fall on ${body.date} (business time)`);
+  if (!body.checkOutAt) {
+    if (body.date !== dayKeyInTz(now)) throw BadRequest('A past day needs a check-out time — only today can be left open');
+    return { checkInAt, checkOutAt: null };
+  }
+  const checkOutAt = new Date(body.checkOutAt);
+  if (!Number.isFinite(checkOutAt.getTime())) throw BadRequest('Check-out time is not a valid instant');
+  if (checkOutAt.getTime() > now.getTime()) throw BadRequest('Check-out time cannot be in the future');
+  if (checkOutAt.getTime() <= checkInAt.getTime()) throw BadRequest('Check-out must be after check-in');
+  if (dayKeyInTz(checkOutAt) !== body.date) throw BadRequest(`Check-out must fall on ${body.date} (business time)`);
+  return { checkInAt, checkOutAt };
+}
+
 // Pure decision for who the team view covers (GET /attendance/team).
 //   seesTeam  — false = the viewer only ever sees their own record.
 //   branchIds — null = every branch in the tenant; otherwise narrow to these WORKING branches.
@@ -643,6 +671,7 @@ export const attendanceService = {
         distanceMeters: r?.distanceMeters ?? null,
         inPhoto: r?.checkInPhotoUrl ?? null, // face photos — shown in the admin team view
         outPhoto: r?.checkOutPhotoUrl ?? null,
+        adjusted: !!r?.adjustedBy, // an admin set or moved this day's times (adminSetDay / adminSetTimes)
       });
     }
     return out;
@@ -703,6 +732,43 @@ export const attendanceService = {
       };
     }
     return mapMe(await attendanceRepo.upsert(body.userId, body.date, set));
+  },
+
+  // PUT /attendance/admin/day/times — admin correction of the TIMES only ("she was in by 9:40,
+  // not 11:02"). Unlike adminSetDay this never throws the day's evidence away: a real punch keeps
+  // its method (Face/Geofence/…), face photos and GPS fix — only checkInAt/checkOutAt move — and
+  // the day is stamped adjustedBy/adjustedAt so corrected times stay distinguishable from what the
+  // device recorded (history/team expose it as `adjusted`; the ERP attendance drawer flags it too).
+  // A day with no punch at all becomes a 'Manual' row at the given times, the shape adminSetDay
+  // writes. Instants arrive as ISO (the device's own clock — what the admin sees is what is saved).
+  // Manager-only (route), target must belong to the viewer's tenant.
+  async adminSetTimes(adminId: string, body: { userId: string; date: string; checkInAt: string; checkOutAt?: string | null }) {
+    const viewer = await accessService.accessForUserId(adminId);
+    if (!viewer?.canManage) throw Forbidden('Requires super_admin or company_manager');
+    if (!DAY_KEY_RE.test(body.date) || body.date > todayKey()) throw BadRequest('Invalid date — expected YYYY-MM-DD, not in the future');
+    const target = await crmRepo.getUserById(body.userId);
+    if (!target) throw BadRequest('User not found');
+    if (viewer.tenantId && target.tenant_id && String(target.tenant_id) !== viewer.tenantId) throw Forbidden('User is outside your tenant');
+    return this.applyAdminTimes(adminId, body);
+  },
+
+  // The write behind adminSetTimes — NO authorization here (the gate is above). On the service
+  // only so the DB-backed test can exercise the evidence-preserving upsert with a synthetic user.
+  async applyAdminTimes(adminId: string, body: { userId: string; date: string; checkInAt: string; checkOutAt?: string | null }) {
+    const { checkInAt, checkOutAt } = resolveAdminTimes(body, new Date());
+    const existing = await attendanceRepo.findToday(body.userId, body.date);
+    const hadPunch = !!existing?.checkInAt;
+    return mapMe(await attendanceRepo.upsert(body.userId, body.date, {
+      date: new Date(`${body.date}T00:00:00.000Z`),
+      checkInAt,
+      checkOutAt,
+      present: !checkOutAt, // doc.present = "currently in office"
+      method: hadPunch ? (existing?.method ?? null) : 'Manual',
+      // A never-punched day carries no evidence; a real punch keeps every bit of its own.
+      ...(hadPunch ? {} : { latitude: null, longitude: null, distanceMeters: null, wifiSsid: null, faceVerified: null, checkInPhotoUrl: null, checkOutPhotoUrl: null }),
+      adjustedBy: adminId,
+      adjustedAt: new Date(),
+    }));
   },
 
   // GET /attendance/me — today's status. `hidden` = background attendance (directors): the app
@@ -804,6 +870,7 @@ export const attendanceService = {
           via: rec?.method ?? undefined,
           inPhoto: rec?.checkInPhotoUrl ?? null, // face photos captured at punch time (admin view)
           outPhoto: rec?.checkOutPhotoUrl ?? null,
+          adjusted: !!rec?.adjustedBy, // an admin set or moved this day's times
         };
       })
       .sort((a, b) => (b.in ? 1 : 0) - (a.in ? 1 : 0) || a.name.localeCompare(b.name)); // present first
