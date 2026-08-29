@@ -7,6 +7,7 @@ import { ConversationModel, MessageModel, type ConvMember, type ConversationDoc,
 import { chatSettingsRepo, conversationRepo, messageRepo } from './chat.repository';
 import { emitToUsers, isOnline, getLastSeen } from './chat.events';
 import { chatPush } from './chat.push';
+import { stripFormatting } from './formatting';
 
 export const CHAT_EVENTS = {
   RECEIVE: 'chat:receive',
@@ -418,6 +419,7 @@ export const chatService = {
 
     const MEDIA_LABEL: Record<string, string> = { image: '📷 Photo', video: '🎥 Video', document: '📄 Document', voice: '🎤 Voice message' };
     const preview = type === 'text' ? created.text.slice(0, 140) : (MEDIA_LABEL[type] ?? `[${type}]`);
+    const pushPreview = type === 'text' ? stripFormatting(created.text).slice(0, 140) : preview; // the notification line shows words, not *markers*
     await conversationRepo.touchLastMessage(conversationId, { messageId: created._id, text: preview, type, senderId: userId, at: now }, userId);
 
     const base = { ...toMessageBase(created), clientId: input.clientId };
@@ -440,10 +442,10 @@ export const chatService = {
         const sender = await crmRepo.getUserById(userId);
         const senderName = sender ? `${sender.first_name ?? ''} ${sender.last_name ?? ''}`.trim() || sender.email : 'New message';
         const title = conv.type === 'group' ? (conv.name ?? 'Group') : senderName;
-        const body = conv.type === 'group' ? `${senderName}: ${preview}` : preview;
+        const body = conv.type === 'group' ? `${senderName}: ${pushPreview}` : pushPreview;
         await Promise.all(recipients.map(async (r) => chatPush.notifyNewMessage(r, {
           title,
-          body: mentions.includes(r) ? `${senderName} mentioned you: ${preview}` : body,
+          body: mentions.includes(r) ? `${senderName} mentioned you: ${pushPreview}` : body,
           mention: mentions.includes(r),
           // Counted AFTER touchLastMessage bumped this recipient's unread, so the APNs badge
           // already includes this message. iOS-only consumer; Android recounts client-side.
@@ -454,7 +456,7 @@ export const chatService = {
           senderName,
           convType: conv.type,
           convName: conv.name ?? '',
-          preview,
+          preview: pushPreview,
           msgType: type,
           sentAt: now.toISOString(),
           // The message itself — lets the recipient's phone store it on arrival, so it is already
@@ -514,6 +516,7 @@ export const chatService = {
     })) as unknown as MessageDoc;
 
     const preview = type === 'text' ? created.text.slice(0, 140) : '📄 Document';
+    const pushPreview = type === 'text' ? stripFormatting(created.text).slice(0, 140) : preview; // the notification line shows words, not *markers*
     await conversationRepo.touchLastMessage(conversationId, { messageId: created._id, text: preview, type, senderId, at: now }, senderId);
     emitToUsers(conv.participantIds, CHAT_EVENTS.RECEIVE, toMessageBase(created));
 
@@ -529,7 +532,7 @@ export const chatService = {
         const senderName = input.senderName ?? await displayName(senderId);
         await Promise.all(recipients.map(async (r) => chatPush.notifyNewMessage(r, {
           title: conv.name ?? 'Group',
-          body: `${senderName}: ${preview}`,
+          body: `${senderName}: ${pushPreview}`,
           badge: await conversationRepo.unreadChatCount(r),
           conversationId,
           messageId: String(created._id),
@@ -537,7 +540,7 @@ export const chatService = {
           senderName,
           convType: conv.type,
           convName: conv.name ?? '',
-          preview,
+          preview: pushPreview,
           msgType: type,
           sentAt: now.toISOString(),
           fullText: created.text,
