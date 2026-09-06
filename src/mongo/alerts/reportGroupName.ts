@@ -1,9 +1,13 @@
 // Which group chat is a branch's home for a given kind of report.
 //
 // The families, all per branch (the INB ones per branch PAIR):
-//   'finance'       → "HQ - BOM Finance" … the daily Receivables / Payables / Bank & Cash reports
-//                     and the day-close attendance summary. The hub's equivalent predates the HQ
-//                     set and is called "MHUB - Finance Team", so that shape is accepted too.
+//   'finance'       → "HQ - BOM Finance" … the daily Receivables / Payables / Bank & Cash reports.
+//                     The hub's equivalent predates the HQ set and is called "MHUB - Finance Team",
+//                     so that shape is accepted too.
+//   'hr'            → "HQ - BOM HR" / "BOM - HR Team" / "BOM HR" … attendance: the live check-in /
+//                     check-out lines and the day-close summary (owner call, 2026-09-06 — these
+//                     lived in the finance groups before; callers fall back there when a branch
+//                     has no HR group yet).
 //   'accounts'      → "BOM - Branch Accounts" … the live per-voucher money-movement feed.
 //   'ticketing'     → "BOM - Ticketing" … approved FLIGHT invoices and their SO/PO/GP deals.
 //   'holidays'      → "BOM - Holidays" … every other module's invoices and deals (holiday
@@ -19,7 +23,7 @@
 //
 // Deliberately its own module with no imports: the resolver it serves reaches into the chat
 // service and the storage layer, and this rule is worth testing without any of that.
-export type ReportGroupKind = 'finance' | 'accounts' | 'ticketing' | 'holidays' | 'inb-ticketing' | 'inb-holidays';
+export type ReportGroupKind = 'finance' | 'hr' | 'accounts' | 'ticketing' | 'holidays' | 'inb-ticketing' | 'inb-holidays';
 
 export const squashName = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 
@@ -38,6 +42,8 @@ export const reportGroupKeys = (kind: ReportGroupKind, branchCode: string): stri
     case 'accounts': return [`${c}branchaccounts`];
     case 'ticketing': return [`${c}ticketing`];
     case 'holidays': return [`${c}holidays`];
+    // "HQ - BOM HR", "BOM - HR Team", "BOM HR" — every shape a branch HR room gets named in.
+    case 'hr': return [`hq${c}hr`, `${c}hrteam`, `${c}hr`];
     default: return [`hq${c}finance`, `${c}financeteam`];
   }
 };
@@ -58,6 +64,7 @@ export const reportGroupNameHint = (kind: ReportGroupKind): string => {
     case 'accounts': return 'accounts';
     case 'ticketing': case 'inb-ticketing': return 'ticketing';
     case 'holidays': case 'inb-holidays': return 'holidays';
+    case 'hr': return 'hr';
     default: return 'finance';
   }
 };
@@ -71,6 +78,7 @@ export const reportGroupExpected = (kind: ReportGroupKind, branchCode: string): 
     case 'holidays': return `"${branchCode} - Holidays"`;
     case 'inb-ticketing': return `"INB Ticketing ${a}/${b}" (either order)`;
     case 'inb-holidays': return `"INB Holidays ${a}/${b}" (either order)`;
+    case 'hr': return `"HQ - ${branchCode} HR" or "${branchCode} - HR Team"`;
     default: return `"HQ - ${branchCode} Finance" or "${branchCode} - Finance Team"`;
   }
 };

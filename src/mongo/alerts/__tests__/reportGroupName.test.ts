@@ -57,6 +57,30 @@ describe('the hub group', () => {
   });
 });
 
+// Attendance (live punches + day-close summary) goes to the branch's HR room, not finance.
+describe('hr group routing', () => {
+  it('matches every shape a branch HR room gets named in, however punctuated', () => {
+    for (const name of ['HQ - BOM HR', 'HQ-BOM HR', 'hq bom hr']) {
+      expect(isReportGroupFor(name, 'hr', 'BOM')).toBe(true);
+    }
+    expect(isReportGroupFor('BOM - HR Team', 'hr', 'BOM')).toBe(true);
+    expect(isReportGroupFor('BOM HR', 'hr', 'BOM')).toBe(true);
+    expect(isReportGroupFor('MHUB - HR Team', 'hr', 'MHUB')).toBe(true);
+    expect(reportGroupKeys('hr', 'NBO')).toEqual(['hqnbohr', 'nbohrteam', 'nbohr']);
+  });
+
+  it('never matches another branch or the finance family', () => {
+    expect(isReportGroupFor('HQ - AMD HR', 'hr', 'BOM')).toBe(false);
+    expect(isReportGroupFor('HQ - BOM Finance', 'hr', 'BOM')).toBe(false);
+    expect(isReportGroupFor('HQ - BOM HR', 'finance', 'BOM')).toBe(false);
+    expect(isReportGroupFor('HQ - BOMMB HR', 'hr', 'BOM')).toBe(false); // the BOM/BOMMB substring trap
+  });
+
+  it('says which group it expected when there is none', () => {
+    expect(reportGroupExpected('hr', 'DAR')).toBe('"HQ - DAR HR" or "DAR - HR Team"');
+  });
+});
+
 // The per-voucher money-movement feed goes to a DIFFERENT room than the daily reports.
 describe('accounts group routing', () => {
   it('matches "<CODE> - Branch Accounts", however punctuated', () => {

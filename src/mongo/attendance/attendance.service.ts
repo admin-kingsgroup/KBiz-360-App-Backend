@@ -372,6 +372,19 @@ const reportedTonight = new Set<string>();
 //
 // Hidden (director) users never reach here — their attendance is private by design, the same
 // reason they are absent from the day-close summary.
+// Attendance posts belong in the branch's HR room (owner call, 2026-09-06) — "HQ - BOM HR" /
+// "BOM - HR Team" — not the finance group they used to share with the money reports. A branch
+// that has no HR group yet falls back to its finance group, so the alert still lands somewhere
+// people see it instead of vanishing until the room is created.
+async function postAttendanceToBranchGroup(input: Omit<Parameters<typeof reportChat.post>[0], 'group'>): Promise<Awaited<ReturnType<typeof reportChat.post>>> {
+  try {
+    return await reportChat.post({ ...input, group: 'hr' });
+  } catch (e) {
+    if (!/^No hr group for branch/.test((e as Error).message)) throw e;
+    return await reportChat.post({ ...input, group: 'finance' });
+  }
+}
+
 async function postPunchToBranchGroup(userId: string, action: 'in' | 'out', at: Date, via: string | null): Promise<void> {
   try {
     const user = await crmRepo.getUserById(userId);
@@ -383,9 +396,8 @@ async function postPunchToBranchGroup(userId: string, action: 'in' | 'out', at: 
     const branchCode = attendanceBranchCode(branch ?? null);
     if (!branchCode) return; // unresolvable code (BOMMB/MUM and cities are handled inside)
     const { tz } = branchAutoClose({ code: branchCode });
-    await reportChat.post({
+    await postAttendanceToBranchGroup({
       branchCode,
-      group: 'finance',
       title: punchChatLine({ name: nameOf(user), action, time: fmtTime(at, tz), via }),
       dedupeKey: punchDedupeKey(branchCode, dayKeyIn(tz, at), userId, action),
     });
@@ -1028,9 +1040,8 @@ export const attendanceService = {
       if (absentNames.length) bodyLines.push('', 'ABSENT', ...absentNames.map((n) => `• ${n}`));
 
       try {
-        const res = await reportChat.post({
+        const res = await postAttendanceToBranchGroup({
           branchCode,
-          group: 'finance', // the day's people-report belongs with the day's money-reports
           title: `🕘 Attendance · ${branchCode} · ${presentCount}/${total} present · ${day}`,
           body: bodyLines.join('\n'),
           ...(opts.force ? {} : { dedupeKey: `attendance-${branchCode}-${day}` }),
