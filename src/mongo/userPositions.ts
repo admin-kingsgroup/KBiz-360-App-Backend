@@ -1,6 +1,6 @@
 import { appDb } from './connection';
 
-// Per-user POSITION / job title (e.g. "Senior Finance Manager"), set by super-admins. This is display
+// Per-user POSITION / job title (e.g. "Finance Manager"), set by super-admins. This is display
 // metadata distinct from the user's ROLE (which comes from the CRM and drives access). The CRM is
 // READ-ONLY, so positions live in kb360_app. Absence of a record = no custom position.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

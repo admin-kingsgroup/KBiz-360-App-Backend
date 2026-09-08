@@ -26,7 +26,7 @@ export const PRIVACY_HTML = `<!DOCTYPE html>
 
 <h2>Information we collect</h2>
 <ul>
-<li><strong>Account &amp; profile:</strong> your name, work email address, role, branch and department, as maintained in our company systems.</li>
+<li><strong>Account &amp; profile:</strong> your name, work email address, role and branch, as maintained in our company systems.</li>
 <li><strong>Attendance:</strong> daily check-in/check-out times, the method used (Wi-Fi, geofence or face punch), your distance from the office at the time of the punch, and the name of the office Wi-Fi network your device was connected to (only when it matches an office network we configured).</li>
 <li><strong>Location:</strong> used to detect when you arrive at or leave your office. This includes <strong>background location</strong>, so automatic check-in/out works while the app is closed. Location is checked against your office's registered coordinates; we store punch events (with the distance and the coordinates of the punch), not a continuous movement history.</li>
 <li><strong>Messages &amp; calls:</strong> chats, group messages, voice notes and shared files you send through the app; call history (who called whom, when, duration). Call audio/video is transmitted for the call and not recorded.</li>

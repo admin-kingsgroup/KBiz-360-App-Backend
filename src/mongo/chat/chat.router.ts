@@ -154,9 +154,7 @@ chatRouter.get('/messages/search', asyncHandler(async (req, res) => res.json(awa
 // ── groups ──
 // Creating a group is Super-Admin OR a delegated group creator (the app hides the entry points for
 // everyone else, but the API must enforce it too).
-chatRouter.post('/groups', requireCanCreateGroup, validate(z.object({ name: z.string().min(1), memberIds: z.array(z.string()).default([]), description: z.string().optional(), image: z.string().optional(), companyId: z.string().optional(), branchId: z.string().optional(), departmentId: z.string().optional() })), asyncHandler(async (req, res) => res.status(201).json(await chatService.createGroup(uid(req), req.body))));
-// Auto branch-department group (members = the whole branch). Get-or-create, then open it.
-chatRouter.post('/groups/department', validate(z.object({ branchId: z.string().min(1), departmentId: z.string().min(1), name: z.string().min(1) })), asyncHandler(async (req, res) => res.json(await chatService.getOrCreateDepartmentGroup(uid(req), req.body))));
+chatRouter.post('/groups', requireCanCreateGroup, validate(z.object({ name: z.string().min(1), memberIds: z.array(z.string()).default([]), description: z.string().optional(), image: z.string().optional(), companyId: z.string().optional(), branchId: z.string().optional() })), asyncHandler(async (req, res) => res.status(201).json(await chatService.createGroup(uid(req), req.body))));
 chatRouter.get('/groups/:id', asyncHandler(async (req, res) => { const c = await chatService.assertAccess(uid(req), req.params.id); res.json(await chatService.conversationDTO(c, uid(req))); }));
 chatRouter.put('/groups/:id', validate(z.object({ name: z.string().optional(), description: z.string().optional(), image: z.string().optional() })), asyncHandler(async (req, res) => res.json(await chatService.updateGroup(uid(req), req.params.id, req.body))));
 chatRouter.delete('/groups/:id', asyncHandler(async (req, res) => res.json(await chatService.deleteGroup(uid(req), req.params.id))));

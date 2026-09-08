@@ -7,8 +7,8 @@ import { chatSettingsRepo, conversationRepo } from './chat.repository';
 import { emitToUsers } from './chat.events';
 
 // Status — WhatsApp's 24-hour stories, scoped to colleagues instead of a phone book. The audience is
-// everyone the poster already shares a conversation with, which for this app means their branch and
-// department cohort. Expiry is enforced by Mongo (TTL index), not by a query filter, so a status
+// everyone the poster already shares a conversation with, which for this app means their branch
+// cohort. Expiry is enforced by Mongo (TTL index), not by a query filter, so a status
 // cannot outlive its 24 hours even if a client asks for it directly.
 
 const TTL_MS = 24 * 60 * 60 * 1000;

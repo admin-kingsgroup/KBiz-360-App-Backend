@@ -8,7 +8,6 @@ export const conversationRepo = {
   create: (data: Partial<ConversationDoc>) => ConversationModel().create(data),
   findById: (id: string) => (Types.ObjectId.isValid(id) ? ConversationModel().findById(id).lean<ConversationDoc>() : Promise.resolve(null)),
   findByDirectKey: (directKey: string) => ConversationModel().findOne({ directKey }).lean<ConversationDoc>(),
-  findByDeptKey: (deptKey: string) => ConversationModel().findOne({ deptKey }).lean<ConversationDoc>(),
   listForUser: (userId: string) =>
     ConversationModel().find({ participantIds: userId }).sort({ lastActivityAt: -1 }).limit(200).lean<ConversationDoc[]>(),
   raw: () => ConversationModel(),

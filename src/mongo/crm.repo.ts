@@ -44,16 +44,6 @@ export interface CrmBranch {
   isHO?: boolean;
   status?: string;
 }
-export interface CrmDepartment {
-  _id: Types.ObjectId;
-  tenant_id?: Types.ObjectId;
-  company_id?: Types.ObjectId;
-  branch_id?: Types.ObjectId;
-  name?: string;
-  code?: string;
-  status?: string;
-}
-
 const oid = (id: string): Types.ObjectId | null => (Types.ObjectId.isValid(id) ? new Types.ObjectId(id) : null);
 
 // The CRM is READ-ONLY from this app. `guardReadOnly` wraps a collection so any write op throws
@@ -123,9 +113,6 @@ export const crmRepo = {
     if (!ids?.length) return [];
     return col('branches').find({ _id: { $in: ids } }).toArray() as Promise<CrmBranch[]>;
   },
-  async listDepartments(filter: Record<string, unknown> = {}): Promise<CrmDepartment[]> {
-    return col('departments').find(filter).toArray() as Promise<CrmDepartment[]>;
-  },
 
   // ── WRITES (user provisioning — the ONLY sanctioned CRM writes; routed through crmWriteDb) ──
   async createUser(doc: Record<string, unknown>): Promise<CrmUser> {
@@ -189,8 +176,9 @@ export const crmRepo = {
       { $pull: { branch_ids: branchId }, $set: { updated_at: new Date() } },
     );
   },
-  // Departments are per-branch rows expanded company-wide at read time, so deleting "one"
-  // department means deleting every row of that (company, name) — hence deleteMany by filter.
+  // CRM hygiene on branch delete: the shared CRM db still keeps per-branch department rows
+  // (managed by the CRM, no longer surfaced in this app) — drop a deleted branch's rows the
+  // way the CRM's own branch delete does.
   async deleteDepartmentsWhere(filter: Record<string, unknown>): Promise<number> {
     return (await writeCol('departments').deleteMany(filter)).deletedCount ?? 0;
   },

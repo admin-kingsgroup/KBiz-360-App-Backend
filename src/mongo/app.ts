@@ -8,6 +8,7 @@ import { chatRouter } from './chat/chat.router';
 import { callsRouter } from './calls/calls.router';
 import { remindersRouter } from './reminders/reminders.router';
 import { attendanceRouter } from './attendance/attendance.router';
+import { hrRouter } from './hr/hr.router';
 import { alertsRouter } from './alerts/alerts.router';
 import { alertsIngestRouter } from './alerts/alertsIngest.router';
 import { clientErrorsRouter } from './clientErrors.router';
@@ -36,11 +37,12 @@ export function createMongoApp(): Express {
   // the JWT; the HMAC in the URL (minted server-side in getMessage) is the auth.
   app.get('/api/email/img', asyncHandler(proxyEmailImage));
   app.use('/api/admin', adminRouter); // super-admin: app-access toggles
-  app.use('/api', directoryRouter); // /users, /companies, /branches, /departments
+  app.use('/api', directoryRouter); // /users, /companies, /branches
   app.use('/api', chatRouter); // /conversations, /messages, /groups
   app.use('/api', callsRouter); // /calls/* (audio calling: signaling REST + history + analytics)
   app.use('/api/reminders', remindersRouter); // reminders (CRUD + review/approval, real users)
   app.use('/api/attendance', attendanceRouter); // attendance (punch in/out + today + team)
+  app.use('/api/hr', hrRouter); // HR self-service (leave balance/applications + regularisation requests)
   app.use('/api/alerts', alertsRouter); // system alerts (Home feed, access-filtered per user)
   app.use('/api', uploadsRouter); // /uploads (chat media)
   app.use('/api', emailRouter); // /email/* (Microsoft 365 via Graph)

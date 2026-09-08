@@ -10,6 +10,7 @@ import { registerCallHandlers } from './calls/call.socket';
 import { ensureCallIndexes } from './calls/call.models';
 import { ensureReminderIndexes } from './reminders/reminder.model';
 import { ensureAttendanceIndexes } from './attendance/attendance.model';
+import { ensureRegularizationIndexes } from './hr/regularization.model';
 import { ensureOfficeGeofenceIndexes } from './attendance/office.model';
 import { ensureChatIndexes } from './chat/chat.models';
 import { hydratePresence, startPresenceHeartbeat, stopPresenceHeartbeat } from './chat/chat.events';
@@ -18,6 +19,7 @@ import { ensureClientErrorIndexes } from './clientErrors.router';
 import { startEmailPolling } from '../email/email.poll';
 import { startReminderDueSweep, stopReminderDueSweep } from './reminders/reminder.sweep';
 import { startAttendanceDayClose, stopAttendanceDayClose } from './attendance/attendance.dayclose';
+import { startLeaveDecisionSweep, stopLeaveDecisionSweep } from './hr/leaveDecision.sweep';
 import { startAlertAttachmentSweep, stopAlertAttachmentSweep } from './alerts/alert.sweep';
 
 // Entrypoint for the MongoDB-backed backend (real CRM auth + directory).
@@ -30,8 +32,9 @@ async function bootstrap(): Promise<void> {
   await ensureCallIndexes(); // call_logs / active_calls (TTL) / push_devices indexes
   await ensureReminderIndexes(); // reminders indexes
   await ensureAttendanceIndexes(); // attendance indexes
+  await ensureRegularizationIndexes(); // attendance regularisation requests
   await ensureOfficeGeofenceIndexes(); // office geofence (per-branch) indexes
-  await ensureChatIndexes(); // conversation indexes (drops legacy unique deptKey → many groups per dept)
+  await ensureChatIndexes(); // conversation indexes (+ one-time branchId backfill from retired deptKey)
   await hydratePresence(); // last-seen Map survives restarts (user_presence is its durability)
   await ensureAlertIndexes(); // alert_events indexes (channel feed + newest-first listing)
   await ensureClientErrorIndexes(); // client crash reports (30d TTL)
@@ -52,12 +55,14 @@ async function bootstrap(): Promise<void> {
   startAlertAttachmentSweep(); // reap stored alert PDFs before their event docs TTL out
   startPresenceHeartbeat(); // stamps lastSeenAt for online users every 60s (a crash loses ≤60s)
   startAttendanceDayClose(); // 10pm branch-wise attendance day-close summary to each attendance channel
+  startLeaveDecisionSweep(); // "Leave approved/rejected" push when the ERP decides an application
 
   const shutdown = async (): Promise<void> => {
     stopReminderDueSweep();
     stopAlertAttachmentSweep();
     stopPresenceHeartbeat();
     stopAttendanceDayClose();
+    stopLeaveDecisionSweep();
     await disconnectMongo();
     httpServer.close(() => process.exit(0));
   };

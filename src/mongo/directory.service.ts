@@ -1,9 +1,9 @@
 import { Types } from 'mongoose';
 import * as bcrypt from 'bcryptjs';
-import { crmRepo, type CrmBranch, type CrmCompany, type CrmDepartment, type CrmRole, type CrmUser } from './crm.repo';
+import { crmRepo, type CrmBranch, type CrmCompany, type CrmRole, type CrmUser } from './crm.repo';
 import { userPositions } from './userPositions';
 import { userAvatars } from './userAvatars';
-import { appDepartments } from './appDepartments';
+import { userBusinessAccess } from './userBusinessAccess';
 import { accessService, type MongoAccess } from './access';
 import { appAccess } from './appAccess';
 import { Forbidden, BadRequest } from '../common/errors';
@@ -31,6 +31,7 @@ function mapUser(u: CrmUser, roles: Map<string, CrmRole>) {
     branchIds: (u.branch_ids ?? []).map(String),
     position: null as string | null, // app-set job title, overlaid by listUsers/getUser
     avatar: null as string | null, // app-set profile picture url, overlaid by listUsers/getUser
+    businessIds: [] as string[], // explicit business grants (kb360_app), overlaid by listUsers/getUser
   };
 }
 const mapCompany = (c: CrmCompany) => ({ id: String(c._id), name: c.name, status: c.status ?? null });
@@ -43,17 +44,6 @@ const mapBranch = (b: CrmBranch) => ({
   isHO: b.isHO ?? false,
   companyId: b.company_id ? String(b.company_id) : null,
 });
-const mapDept = (d: CrmDepartment) => ({
-  id: String(d._id),
-  name: d.name ?? null,
-  code: d.code ?? null,
-  branchId: d.branch_id ? String(d.branch_id) : null,
-  companyId: d.company_id ? String(d.company_id) : null,
-  icon: null as string | null,
-  color: null as string | null,
-  appOwned: false, // CRM department (read-only)
-});
-
 async function roleMap(): Promise<Map<string, CrmRole>> {
   const roles = await crmRepo.listRoles();
   return new Map(roles.map((r) => [String(r._id), r]));
@@ -104,7 +94,8 @@ export const directoryService = {
     const ids = mapped.map((m) => m.id);
     const positions = await userPositions.mapFor(ids);
     const avatars = await userAvatars.mapFor(ids);
-    const result = mapped.map((m) => ({ ...m, position: positions[m.id] ?? null, avatar: avatars[m.id] ?? null }));
+    const bizGrants = await userBusinessAccess.mapFor(ids);
+    const result = mapped.map((m) => ({ ...m, position: positions[m.id] ?? null, avatar: avatars[m.id] ?? null, businessIds: bizGrants[m.id] ?? [] }));
     // Deactivated users (app access disabled by a super-admin) are hidden from every directory-driven
     // list — New Group members, the new-chat picker, reminders, alerts, business detail — so a
     // deactivated user never appears anywhere in the app. Only the admin "Team & Users" screen passes
@@ -122,16 +113,19 @@ export const directoryService = {
     const mapped = mapUser(u, roles);
     const positions = await userPositions.mapFor([mapped.id]);
     const avatars = await userAvatars.mapFor([mapped.id]);
-    return { ...mapped, position: positions[mapped.id] ?? null, avatar: avatars[mapped.id] ?? null };
+    const bizGrants = await userBusinessAccess.mapFor([mapped.id]);
+    return { ...mapped, position: positions[mapped.id] ?? null, avatar: avatars[mapped.id] ?? null, businessIds: bizGrants[mapped.id] ?? [] };
   },
 
   async listCompanies(access: MongoAccess) {
     const companies = await crmRepo.listCompanies(tenantFilter(access));
     if (access.companyWide) return companies.map(mapCompany);
-    // Branch-scoped users only see the companies they actually have a branch in.
+    // Branch-scoped users see the companies they actually have a branch in, plus any business a
+    // super-admin granted them explicitly (business access without branch membership).
     const ids = (access.branchIds ?? []).filter((b) => Types.ObjectId.isValid(b)).map((b) => new Types.ObjectId(b));
     const myBranches = await crmRepo.branchesByIds(ids);
     const myCompanyIds = new Set(myBranches.map((b) => (b.company_id ? String(b.company_id) : '')).filter(Boolean));
+    for (const bid of await userBusinessAccess.listFor(access.userId)) myCompanyIds.add(bid);
     return companies.filter((c) => myCompanyIds.has(String(c._id))).map(mapCompany);
   },
 
@@ -149,125 +143,6 @@ export const directoryService = {
     return scoped
       .sort((a, b) => a.level - b.level)
       .map((r) => ({ id: String(r._id), name: r.name, level: r.level, permissions: r.permissions ?? [] }));
-  },
-
-  async listDepartments(access: MongoAccess, branchId?: string) {
-    // Departments are company-wide: every branch of a company carries the company's FULL department
-    // set. CRM rows are branch-bound per-branch docs, so the company set is expanded across all
-    // (in-scope) branches at read time — a new branch gets every department and a new department
-    // reaches every branch with no seeding step on either create path.
-    const depts = await crmRepo.listDepartments(tenantFilter(access));
-    const branches = access.companyWide
-      ? await crmRepo.listBranches(tenantFilter(access))
-      : await crmRepo.branchesByIds((access.branchIds ?? []).filter((b) => Types.ObjectId.isValid(b)).map((b) => new Types.ObjectId(b)));
-    const targets = branchId ? branches.filter((b) => String(b._id) === branchId) : branches;
-    const nameKey = (s: string | null | undefined): string => (s ?? '').trim().toLowerCase();
-
-    // Branch-bound CRM rows keep their own ids — existing department groups key off them (deptKey).
-    const inScope = new Set(targets.map((b) => String(b._id)));
-    const crmMapped = depts.filter((d) => d.branch_id && inScope.has(String(d.branch_id))).map(mapDept);
-    const have = new Set(crmMapped.map((m) => `${m.branchId}:${nameKey(m.name ?? m.code)}`));
-
-    // Expand each company's distinct department names to branches missing them. The OLDEST row per
-    // (company, name) is canonical so the id a branch sees never drifts — deptKey "<branchId>:<id>"
-    // stays unique per branch and previously created groups keep resolving.
-    const canonical = new Map<string, CrmDepartment>();
-    for (const d of [...depts].sort((a, b) => String(a._id).localeCompare(String(b._id)))) {
-      const key = `${d.company_id ? String(d.company_id) : ''}:${nameKey(d.name ?? d.code)}`;
-      if (!canonical.has(key)) canonical.set(key, d);
-    }
-    const crmExpanded: ReturnType<typeof mapDept>[] = [];
-    for (const d of canonical.values()) {
-      for (const b of targets) {
-        if (d.company_id && String(b.company_id ?? '') !== String(d.company_id)) continue;
-        const k = `${String(b._id)}:${nameKey(d.name ?? d.code)}`;
-        if (have.has(k)) continue;
-        have.add(k);
-        crmExpanded.push({ ...mapDept(d), branchId: String(b._id) });
-      }
-    }
-
-    // Merge app-created departments, expanding company-wide ones (branchId null) the same way. A
-    // (branch, name) already covered by a CRM department is skipped so same-named departments never
-    // show as duplicate tiles.
-    const apps = await appDepartments.listByTenant(access.tenantId);
-    const appExpanded = apps.flatMap((a) =>
-      targets
-        .filter((b) => {
-          if (a.companyId && String(b.company_id) !== a.companyId) return false;
-          if (a.branchId && String(b._id) !== a.branchId) return false;
-          if (have.has(`${String(b._id)}:${nameKey(a.name)}`)) return false;
-          have.add(`${String(b._id)}:${nameKey(a.name)}`);
-          return true;
-        })
-        .map((b) => ({
-          id: String(a._id), // same id across branches; deptKey "<branchId>:<id>" stays unique per branch
-          name: a.name,
-          code: null as string | null,
-          branchId: String(b._id),
-          companyId: a.companyId,
-          icon: a.icon ?? null,
-          color: a.color ?? null,
-          appOwned: true,
-        })),
-    );
-    return [...crmMapped, ...crmExpanded, ...appExpanded];
-  },
-
-  // Super-admin: raw app-created departments (un-expanded) for the management screen.
-  async listAppDepartments(access: MongoAccess) {
-    const apps = await appDepartments.listByTenant(access.tenantId);
-    return apps.map((a) => ({
-      id: String(a._id),
-      name: a.name,
-      companyId: a.companyId ?? null,
-      branchId: a.branchId ?? null,
-      icon: a.icon ?? null,
-      color: a.color ?? null,
-    }));
-  },
-
-  // Super-admin department management (app-created departments live in kb360_app; CRM is read-only).
-  async createDepartment(userId: string, input: { name: string; companyId: string | null; branchId?: string | null; icon?: string | null; color?: string | null }) {
-    const access = await accessService.accessForUserId(userId);
-    if (!access) throw Forbidden('Session user not found');
-    return appDepartments.create({
-      name: input.name.trim(),
-      companyId: input.companyId ?? null,
-      branchId: input.branchId ?? null,
-      icon: input.icon ?? null,
-      color: input.color ?? null,
-      tenantId: access.tenantId,
-      createdBy: userId,
-    });
-  },
-  async updateDepartment(_userId: string, id: string, patch: { name?: string; companyId?: string | null; branchId?: string | null; icon?: string | null; color?: string | null }) {
-    const set: Partial<{ name: string; companyId: string | null; branchId: string | null; icon: string | null; color: string | null }> = {};
-    if (patch.name !== undefined) set.name = patch.name.trim();
-    if (patch.companyId !== undefined) set.companyId = patch.companyId;
-    if (patch.branchId !== undefined) set.branchId = patch.branchId;
-    if (patch.icon !== undefined) set.icon = patch.icon;
-    if (patch.color !== undefined) set.color = patch.color;
-    return appDepartments.update(id, set);
-  },
-  // Delete a department — app-created ones are soft-removed (active:false); CRM-synced ones are
-  // hard-deleted the way the CRM itself does it. Because per-branch CRM rows are expanded
-  // company-wide at read time, deleting one visible tile must remove EVERY row of that
-  // (company, name) — otherwise the canonical row just re-expands it on the next read.
-  async deleteDepartment(userId: string, id: string) {
-    const app = await appDepartments.byId(id);
-    if (app) return appDepartments.remove(id);
-    const access = await accessService.accessForUserId(userId);
-    if (!access) throw Forbidden('Session user not found');
-    const depts = await crmRepo.listDepartments(tenantFilter(access));
-    const target = depts.find((d) => String(d._id) === id);
-    if (!target) throw BadRequest('Department not found');
-    const nameKey = (s: string | null | undefined): string => (s ?? '').trim().toLowerCase();
-    const siblings = depts.filter(
-      (d) => String(d.company_id ?? '') === String(target.company_id ?? '') && nameKey(d.name ?? d.code) === nameKey(target.name ?? target.code),
-    );
-    await crmRepo.deleteDepartmentsWhere({ _id: { $in: siblings.map((d) => d._id) } });
-    return { ok: true };
   },
 
   // ── Deletes (super-admin). The CRM app hard-deletes these tenant-scoped, so we do the same —
@@ -386,7 +261,7 @@ export const directoryService = {
   },
 
   // ── User provisioning (writes to the CRM users collection so the account can log in normally) ──
-  async createUser(adminId: string, input: { email: string; password: string; firstName?: string; lastName?: string; phone?: string; roleId?: string; branchIds?: string[] }) {
+  async createUser(adminId: string, input: { email: string; password: string; firstName?: string; lastName?: string; phone?: string; roleId?: string; branchIds?: string[]; businessIds?: string[] }) {
     const access = await accessService.accessForUserId(adminId);
     if (!access) throw Forbidden('Session user not found');
     const email = input.email.trim().toLowerCase();
@@ -413,10 +288,11 @@ export const directoryService = {
       updated_at: now,
     };
     const created = await crmRepo.createUser(doc);
+    if (input.businessIds?.length) await userBusinessAccess.setBusinesses(String(created._id), input.businessIds, adminId);
     return mapUser(created, await roleMap());
   },
 
-  async updateUser(adminId: string, id: string, patch: { firstName?: string; lastName?: string; phone?: string; roleId?: string; branchIds?: string[]; password?: string; status?: string }) {
+  async updateUser(adminId: string, id: string, patch: { firstName?: string; lastName?: string; phone?: string; roleId?: string; branchIds?: string[]; businessIds?: string[]; password?: string; status?: string }) {
     const access = await accessService.accessForUserId(adminId);
     if (!access) throw Forbidden('Session user not found');
     const set: Record<string, unknown> = { updated_at: new Date() };
@@ -429,6 +305,8 @@ export const directoryService = {
     if (patch.password) { if (patch.password.length < 6) throw BadRequest('Password must be at least 6 characters'); set.password = await bcrypt.hash(patch.password, 10); }
     const updated = await crmRepo.updateUser(id, set);
     if (!updated) throw BadRequest('User not found');
+    // Explicit business grants live app-side (kb360_app) — the CRM users collection stays untouched.
+    if (patch.businessIds !== undefined) await userBusinessAccess.setBusinesses(id, patch.businessIds, adminId);
     return mapUser(updated, await roleMap());
   },
 

@@ -7,7 +7,7 @@ import { requireAuth, requireSuper } from './middleware';
 import { accessService, type MongoAccess } from './access';
 import { directoryService } from './directory.service';
 
-// Read-only directory of the CRM (users / companies / branches / departments), access-scoped.
+// Read-only directory of the CRM (users / companies / branches), access-scoped.
 export const directoryRouter: Router = Router();
 
 async function getAccess(req: Request): Promise<MongoAccess> {
@@ -63,26 +63,7 @@ directoryRouter.get(
   }),
 );
 
-directoryRouter.get(
-  '/departments',
-  requireAuth,
-  asyncHandler(async (req, res) => {
-    const branchId = typeof req.query.branchId === 'string' ? req.query.branchId : undefined;
-    res.json(await directoryService.listDepartments(await getAccess(req), branchId));
-  }),
-);
-
-// Super-admin department management (app-created departments; the CRM is read-only).
 const uid = (req: Request): string => { if (!req.auth) throw Unauthorized(); return req.auth.userId; };
-const deptBody = z.object({
-  name: z.string().min(1).max(80),
-  companyId: z.string().nullable().optional(),
-  branchId: z.string().nullable().optional(),
-  icon: z.string().max(8).nullable().optional(),
-  color: z.string().max(16).nullable().optional(),
-});
-directoryRouter.get('/departments/app', requireAuth, requireSuper,
-  asyncHandler(async (req, res) => res.json(await directoryService.listAppDepartments(await getAccess(req)))));
 
 // Super-admin: create a business (writes to the CRM companies collection).
 directoryRouter.post('/companies', requireAuth, requireSuper, validate(z.object({ name: z.string().min(1).max(120) })),
@@ -109,6 +90,7 @@ const userBody = z.object({
   phone: z.string().max(40).nullable().optional(),
   roleId: z.string().optional(),
   branchIds: z.array(z.string()).optional(),
+  businessIds: z.array(z.string()).max(100).optional(), // explicit business grants (app-side)
   status: z.string().optional(),
 });
 directoryRouter.post('/users', requireAuth, requireSuper, validate(userBody.extend({ password: z.string().min(6) })),
@@ -138,12 +120,6 @@ directoryRouter.put('/kbiz/membership/:userId', requireAuth, requireSuper, valid
 // Super-admin: edit a role's permission list (writes to the CRM roles collection).
 directoryRouter.put('/roles/:id/permissions', requireAuth, requireSuper, validate(z.object({ permissions: z.array(z.string()) })),
   asyncHandler(async (req, res) => res.json(await directoryService.setRolePermissions(uid(req), req.params.id, req.body.permissions))));
-directoryRouter.post('/departments', requireAuth, requireSuper, validate(deptBody),
-  asyncHandler(async (req, res) => res.status(201).json(await directoryService.createDepartment(uid(req), req.body))));
-directoryRouter.put('/departments/:id', requireAuth, requireSuper, validate(deptBody.partial()),
-  asyncHandler(async (req, res) => res.json(await directoryService.updateDepartment(uid(req), req.params.id, req.body))));
-directoryRouter.delete('/departments/:id', requireAuth, requireSuper,
-  asyncHandler(async (req, res) => res.json(await directoryService.deleteDepartment(uid(req), req.params.id))));
 
 // Super-admin deletes (mirror the CRM's own tenant-scoped hard deletes; guards in the service:
 // a business must have no branches left, and you can never delete your own account).

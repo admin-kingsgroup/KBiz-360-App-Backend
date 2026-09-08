@@ -21,10 +21,8 @@ export interface ConversationDoc {
   createdBy: string;
   tenantId: string | null;
   directKey: string | null; // sorted "a|b" for direct dedupe
-  deptKey: string | null; // "<branchId>:<departmentId>" grouping key (NON-unique: a dept can have many groups)
-  companyId: string | null; // business/company this group belongs to (company → branch → department → groups)
+  companyId: string | null; // business/company this group belongs to (company → branch → groups)
   branchId: string | null; // branch this group belongs to
-  departmentId: string | null; // department this group belongs to (branch → department → many groups)
   name: string | null; // group
   description: string | null;
   image: string | null;
@@ -58,15 +56,13 @@ const ConversationSchema = new Schema<ConversationDoc>(
     members: { type: [MemberSchema], default: [] },
     createdBy: { type: String, required: true },
     tenantId: { type: String, default: null },
-    // NOTE: no `default: null`. These back sparse-unique indexes; a sparse index still
+    // NOTE: no `default: null`. This backs a sparse-unique index; a sparse index still
     // indexes a doc whose field is present-but-null, so `default: null` makes the 2nd
-    // doc-without-a-key collide (E11000). Leaving them unset means the field is absent and
+    // doc-without-a-key collide (E11000). Leaving it unset means the field is absent and
     // correctly skipped by the sparse index. Real values are set explicitly where needed.
     directKey: { type: String },
-    deptKey: { type: String },
     companyId: { type: String, default: null }, // business/company this group belongs to (not unique)
     branchId: { type: String, default: null }, // branch this group belongs to (not unique)
-    departmentId: { type: String, default: null }, // department this group belongs to (not unique)
     name: { type: String, default: null },
     description: { type: String, default: null },
     image: { type: String, default: null },
@@ -83,8 +79,6 @@ const ConversationSchema = new Schema<ConversationDoc>(
   { timestamps: true },
 );
 ConversationSchema.index({ directKey: 1 }, { unique: true, sparse: true });
-// deptKey is NON-unique now — a (branch, department) can hold many groups. Just a lookup index.
-ConversationSchema.index({ deptKey: 1 });
 ConversationSchema.index({ participantIds: 1, lastActivityAt: -1 });
 
 // ─────────── Message ───────────
@@ -196,19 +190,24 @@ export function MessageModel(): Model<MessageDoc> {
   return _Message;
 }
 
-// Drops the LEGACY unique deptKey index (so a department can hold many groups), then syncs the current
-// index set. We drop it explicitly first (not just syncIndexes) to be certain it's gone. Safe at startup.
+// Syncs the conversation index set (syncIndexes also DROPS any index the schema no longer declares,
+// which is how the retired department system's deptKey index goes away). Safe at startup.
 export async function ensureChatIndexes(): Promise<void> {
   const model = ConversationModel();
   try {
-    const existing = await model.collection.indexes();
-    const legacy = existing.find((ix) => ix.key && (ix.key as Record<string, number>).deptKey === 1 && ix.unique);
-    if (legacy?.name) {
-      await model.collection.dropIndex(legacy.name);
+    // Legacy groups from the retired department system stored their branch only inside
+    // deptKey ("<branchId>:<departmentId>") with no explicit branchId. Backfill branchId once so
+    // those groups keep filing under their branch chip; the stale deptKey/departmentId fields are
+    // simply no longer read. Raw collection op: the schema no longer knows these fields.
+    const res = await model.collection.updateMany(
+      { deptKey: { $type: 'string' }, $or: [{ branchId: null }, { branchId: { $exists: false } }] },
+      [{ $set: { branchId: { $arrayElemAt: [{ $split: ['$deptKey', ':'] }, 0] } } }],
+    );
+    if (res.modifiedCount) {
       // eslint-disable-next-line no-console
-      console.log(`[kb360] dropped legacy unique deptKey index "${legacy.name}" — many groups per department now allowed`);
+      console.log(`[kb360] backfilled branchId from legacy deptKey on ${res.modifiedCount} conversation(s)`);
     }
-  } catch { /* collection/index may not exist yet — ignore */ }
+  } catch { /* collection may not exist yet — ignore */ }
   await model.syncIndexes();
   // Messages gained the delta-sync and disappearing-message (TTL) indexes — build them too, or
   // catch-up sync collection-scans and expired messages never actually get removed.

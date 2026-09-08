@@ -278,11 +278,8 @@ export const chatService = {
       description: c.description ?? null,
       createdBy: c.createdBy,
       members: c.members.map((m) => ({ userId: m.userId, role: m.role })),
-      deptKey: c.deptKey ?? null,
       companyId: c.companyId ?? null, // business this group belongs to
-      // branch this group belongs to: explicit field, else derived from the dept key
-      branchId: c.branchId ?? (c.deptKey ? c.deptKey.split(':')[0] : null),
-      departmentId: c.departmentId ?? (c.deptKey ? c.deptKey.split(':')[1] : null),
+      branchId: c.branchId ?? null, // branch this group belongs to
     };
   },
 
@@ -743,11 +740,10 @@ export const chatService = {
   },
 
   // ── groups ──
-  async createGroup(userId: string, input: { name: string; memberIds: string[]; description?: string; image?: string; companyId?: string; branchId?: string; departmentId?: string }) {
+  async createGroup(userId: string, input: { name: string; memberIds: string[]; description?: string; image?: string; companyId?: string; branchId?: string }) {
     if (!input.name?.trim()) throw BadRequest('Group name required');
     let companyId = input.companyId?.trim() || null;
     const branchId = input.branchId?.trim() || null;
-    const departmentId = input.departmentId?.trim() || null;
     // Access guard: only super-admins / company-wide roles may create a group in a branch they don't
     // belong to (the New Group picker is access-scoped, but enforce it server-side too).
     if (branchId) {
@@ -757,7 +753,7 @@ export const chatService = {
       const allowed = (await canCreateGroup(userId)) || (!!access && (access.companyWide || (access.branchIds ?? []).includes(branchId)));
       if (!allowed) throw Forbidden('You can only create groups in your own branch');
       // Anchor the group to its business: the branch's company must match the selected one
-      // (or fills it in when omitted), so a group always lives under business → branch → department.
+      // (or fills it in when omitted), so a group always lives under business → branch.
       if (Types.ObjectId.isValid(branchId)) {
         const branch = (await crmRepo.branchesByIds([new Types.ObjectId(branchId)]))[0];
         const branchCompanyId = branch?.company_id ? String(branch.company_id) : null;
@@ -779,57 +775,6 @@ export const chatService = {
       image: input.image ?? null,
       companyId, // business this group belongs to (validated/derived from the branch above)
       branchId, // branch this group belongs to
-      departmentId, // department this group belongs to (branch → department → many groups)
-      deptKey: branchId && departmentId ? `${branchId}:${departmentId}` : null, // non-unique lookup key
-      lastActivityAt: now,
-    })) as unknown as ConversationDoc;
-    emitToUsers(participantIds, CHAT_EVENTS.CONVERSATION_NEW, { conversationId: String(conv._id) });
-    return this.conversationDTO(conv, userId);
-  },
-
-  // Get-or-create the AUTO group chat for a (branch, department). Members = everyone in that branch
-  // (CRM branch_ids). Only a branch member or a super-admin may open/create it. Idempotent via deptKey.
-  async getOrCreateDepartmentGroup(userId: string, input: { branchId: string; departmentId: string; name: string }) {
-    const { branchId, departmentId } = input;
-    if (!Types.ObjectId.isValid(branchId)) throw BadRequest('Invalid branch');
-    const deptKey = `${branchId}:${departmentId}`;
-    const access = await accessService.accessForUserId(userId);
-    const isSuper = !!access?.isSuper;
-
-    const branchUsers = await crmRepo.listUsers({ branch_ids: new Types.ObjectId(branchId) });
-    const branchMemberIds = branchUsers.map((u) => String(u._id));
-    if (!isSuper && !branchMemberIds.includes(userId)) throw Forbidden('You are not in this branch');
-
-    const existing = await conversationRepo.findByDeptKey(deptKey);
-    if (existing) {
-      // Ensure the opener is a participant (new branch member / super-admin opening it).
-      if (!existing.participantIds.includes(userId)) {
-        await ConversationModel().updateOne(
-          { _id: existing._id },
-          {
-            $addToSet: { participantIds: userId },
-            $push: { members: { userId, role: isSuper ? 'admin' : 'member', joinedAt: new Date(), lastReadAt: null, unread: 0, muted: false, mutedUntil: null, archived: false, pinned: false } },
-          },
-        );
-        const refreshed = await conversationRepo.findById(String(existing._id));
-        return this.conversationDTO(refreshed as ConversationDoc, userId);
-      }
-      return this.conversationDTO(existing, userId);
-    }
-
-    const participantIds = [...new Set([userId, ...branchMemberIds])];
-    const me = await crmRepo.getUserById(userId);
-    const branch = (await crmRepo.branchesByIds([new Types.ObjectId(branchId)]))[0];
-    const now = new Date();
-    const conv = (await conversationRepo.create({
-      type: 'group',
-      participantIds,
-      members: participantIds.map((uid) => ({ userId: uid, role: uid === userId ? 'admin' : 'member', joinedAt: now, lastReadAt: uid === userId ? now : null, unread: 0, muted: false, mutedUntil: null, archived: false, pinned: false })),
-      createdBy: userId,
-      tenantId: me?.tenant_id ? String(me.tenant_id) : null,
-      name: input.name?.trim() || 'Group',
-      companyId: branch?.company_id ? String(branch.company_id) : null, // business, derived from the branch
-      deptKey,
       lastActivityAt: now,
     })) as unknown as ConversationDoc;
     emitToUsers(participantIds, CHAT_EVENTS.CONVERSATION_NEW, { conversationId: String(conv._id) });
