@@ -706,11 +706,11 @@ export const attendanceService = {
 
   // POST /attendance/admin/day — admin correction: mark a user PRESENT (with business-local
   // times, default 10:00–19:00) or ABSENT for one calendar day. Stored as method 'Manual' with
-  // adjustedBy/adjustedAt so corrected days are distinguishable from real punches. Manager-only
-  // (route), target must belong to the viewer's tenant.
+  // adjustedBy/adjustedAt so corrected days are distinguishable from real punches. SUPER-ADMIN
+  // only (route + here), target must belong to the viewer's tenant.
   async adminSetDay(adminId: string, body: { userId: string; date: string; present: boolean; inTime?: string; outTime?: string }) {
     const viewer = await accessService.accessForUserId(adminId);
-    if (!viewer?.canManage) throw Forbidden('Requires super_admin or company_manager');
+    if (!viewer?.isSuper) throw Forbidden('Only the super admin can change a recorded day — ask for a correction instead');
     if (!DAY_KEY_RE.test(body.date) || body.date > todayKey()) throw BadRequest('Invalid date — expected YYYY-MM-DD, not in the future');
     if ((body.inTime && !HHMM_RE.test(body.inTime)) || (body.outTime && !HHMM_RE.test(body.outTime))) throw BadRequest('Times must be HH:mm');
     const target = await crmRepo.getUserById(body.userId);
@@ -753,10 +753,11 @@ export const attendanceService = {
   // device recorded (history/team expose it as `adjusted`; the ERP attendance drawer flags it too).
   // A day with no punch at all becomes a 'Manual' row at the given times, the shape adminSetDay
   // writes. Instants arrive as ISO (the device's own clock — what the admin sees is what is saved).
-  // Manager-only (route), target must belong to the viewer's tenant.
+  // SUPER-ADMIN only (route + here; owner rule 2026-09-08 — everyone else files a regularisation
+  // request that the super admin approves), target must belong to the viewer's tenant.
   async adminSetTimes(adminId: string, body: { userId: string; date: string; checkInAt: string; checkOutAt?: string | null }) {
     const viewer = await accessService.accessForUserId(adminId);
-    if (!viewer?.canManage) throw Forbidden('Requires super_admin or company_manager');
+    if (!viewer?.isSuper) throw Forbidden('Only the super admin can change a recorded time — ask for a correction instead');
     if (!DAY_KEY_RE.test(body.date) || body.date > todayKey()) throw BadRequest('Invalid date — expected YYYY-MM-DD, not in the future');
     const target = await crmRepo.getUserById(body.userId);
     if (!target) throw BadRequest('User not found');

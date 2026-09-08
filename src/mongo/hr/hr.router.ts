@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { asyncHandler } from '../../common/asyncHandler';
 import { validate } from '../../common/validate';
 import { Unauthorized } from '../../common/errors';
-import { requireAuth, requireManage } from '../middleware';
+import { requireAuth, requireSuper } from '../middleware';
 import { leaveService } from './leave.service';
 import { regularizationService } from './regularization.service';
 import { myMonthService } from './myMonth.service';
@@ -85,13 +85,15 @@ hrRouter.put('/regularizations/:id/cancel', requireAuth, asyncHandler(async (req
   res.json(await regularizationService.cancel(req.auth.userId, req.params.id));
 }));
 
-// Manager queue + decision (service re-checks canManage and tenant, like the attendance admin paths).
-hrRouter.get('/regularizations/pending', requireAuth, requireManage, asyncHandler(async (req, res) => {
+// Super-admin queue + decision. Approving a request WRITES the day's times, so it carries the
+// same gate as the direct editor (owner rule 2026-09-08: only the super admin changes a recorded
+// time). The service re-checks isSuper and the tenant, like the attendance admin paths.
+hrRouter.get('/regularizations/pending', requireAuth, requireSuper, asyncHandler(async (req, res) => {
   if (!req.auth) throw Unauthorized();
   res.json(await regularizationService.pendingForAdmin(req.auth.userId));
 }));
 
-hrRouter.put('/regularizations/:id/decision', requireAuth, requireManage, validate(regularizationDecisionSchema), asyncHandler(async (req, res) => {
+hrRouter.put('/regularizations/:id/decision', requireAuth, requireSuper, validate(regularizationDecisionSchema), asyncHandler(async (req, res) => {
   if (!req.auth) throw Unauthorized();
   res.json(await regularizationService.decide(req.auth.userId, req.params.id, req.body));
 }));

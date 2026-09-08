@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { asyncHandler } from '../../common/asyncHandler';
 import { validate } from '../../common/validate';
 import { Unauthorized } from '../../common/errors';
-import { requireAuth, requireManage } from '../middleware';
+import { requireAuth, requireManage, requireSuper } from '../middleware';
 import { attendanceService, type PunchBody } from './attendance.service';
 
 // Mounted at /api/attendance. The device posts punches (it owns geofence/Wi-Fi/Face detection);
@@ -65,8 +65,10 @@ attendanceRouter.get('/history/user/:userId', requireAuth, requireManage, asyncH
   res.json(await attendanceService.historyForUserAsAdmin(req.auth.userId, req.params.userId, Number.isFinite(days) ? (days as number) : undefined));
 }));
 
-// Admin correction — mark a user present/absent for one day (manager-only; audit-stamped).
-attendanceRouter.post('/admin/day', requireAuth, requireManage,
+// Admin correction — mark a user present/absent for one day (SUPER-ADMIN only; audit-stamped).
+// Owner rule 2026-09-08: only the super admin may CHANGE a recorded time. Everyone else asks
+// for a correction (POST /api/hr/regularizations) and the super admin approves it.
+attendanceRouter.post('/admin/day', requireAuth, requireSuper,
   validate(z.object({
     userId: z.string().min(1),
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -89,7 +91,7 @@ export const adminTimesSchema = z.object({
   checkInAt: z.string().datetime(),
   checkOutAt: z.string().datetime().nullable().optional(),
 });
-attendanceRouter.put('/admin/day/times', requireAuth, requireManage, validate(adminTimesSchema), asyncHandler(async (req, res) => {
+attendanceRouter.put('/admin/day/times', requireAuth, requireSuper, validate(adminTimesSchema), asyncHandler(async (req, res) => {
   if (!req.auth) throw Unauthorized();
   res.json(await attendanceService.adminSetTimes(req.auth.userId, req.body));
 }));

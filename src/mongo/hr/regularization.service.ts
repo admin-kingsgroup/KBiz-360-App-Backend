@@ -8,9 +8,11 @@ import { dayKeyIn } from '../attendance/attendanceBranch';
 import { RegularizationModel, type RegularizationDoc } from './regularization.model';
 import { hrBranchCodeFor, nameOfUser, postToBranchHrGroup } from './hrNotify';
 
-// Attendance regularisation: request → manager decision. Approval writes the day through
-// attendanceService.applyAdminTimes — the same evidence-preserving correction the admin's own
-// time editor uses (a real punch keeps its method/photos/fix; only the times move; the day is
+// Attendance regularisation: request → SUPER-ADMIN decision. This is the only way anybody but
+// the super admin gets a recorded time changed (owner rule 2026-09-08) — including the case the
+// feature exists for, a forgotten check-in or check-out. Approval writes the day through
+// attendanceService.applyAdminTimes — the same evidence-preserving correction the super admin's
+// own time editor uses (a real punch keeps its method/photos/fix; only the times move; the day is
 // stamped adjustedBy/adjustedAt), so history/team/ERP all read the corrected day identically.
 
 const ATTENDANCE_TZ = process.env.ATTENDANCE_TZ || 'Asia/Kolkata';
@@ -117,7 +119,7 @@ export const regularizationService = {
       await postToBranchHrGroup({
         branchCode,
         title: `🛠 ${nameOfUser(user)} asked to regularise ${plan.date} · in ${fmtWall(plan.checkInAt, tz)} · out ${fmtWall(plan.checkOutAt, tz)}`,
-        body: `Reason: ${plan.reason}\nApprove or reject in the app → Attendance → Regularisations.`,
+        body: `Reason: ${plan.reason}\nThe Super Admin can approve or reject it in the app → Attendance → Regularisations.`,
         dedupeKey: `attendance-regularize-${String(doc._id)}`,
       });
     })();
@@ -138,10 +140,10 @@ export const regularizationService = {
   },
 
   /** GET /hr/regularizations/pending — the manager's queue (oldest first), names attached.
-   *  Manager-only (route), and scoped to the viewer's tenant like every admin attendance read. */
+   *  Super-admin only (route), and scoped to the viewer's tenant like every admin attendance read. */
   async pendingForAdmin(adminId: string): Promise<RegularizationDto[]> {
     const viewer = await accessService.accessForUserId(adminId);
-    if (!viewer?.canManage) throw Forbidden('Requires super_admin or company_manager');
+    if (!viewer?.isSuper) throw Forbidden('Only the super admin can decide attendance corrections');
     const rows = (await RegularizationModel().find({ status: 'pending' }).sort({ appliedAt: 1 }).limit(200).lean()) as RegularizationDoc[];
     if (!rows.length) return [];
     const ids = [...new Set(rows.map((r) => r.userId))].filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id));
@@ -162,7 +164,7 @@ export const regularizationService = {
    *  applyAdminTimes) or reject (note required). Tells the requester either way (My Alerts). */
   async decide(adminId: string, id: string, body: { action: 'approve' | 'reject'; note?: string }): Promise<RegularizationDto> {
     const viewer = await accessService.accessForUserId(adminId);
-    if (!viewer?.canManage) throw Forbidden('Requires super_admin or company_manager');
+    if (!viewer?.isSuper) throw Forbidden('Only the super admin can decide attendance corrections');
     if (!Types.ObjectId.isValid(id)) throw NotFound('No such request');
     const doc = await RegularizationModel().findById(id);
     if (!doc) throw NotFound('No such request');
