@@ -47,9 +47,8 @@ describe('alert channel registry', () => {
     expect(ALERT_GRANT_IDS.some((g) => g.endsWith('-hr'))).toBe(false);
   });
 
-  it('resolves a puncher\'s branch via code → alias → city (BOMMB staff must count as BOM)', () => {
+  it('resolves a puncher\'s branch via code → alias → city (legacy MUM staff must count as BOM)', () => {
     expect(attendanceBranchCode({ code: 'BOM' })).toBe('BOM');
-    expect(attendanceBranchCode({ code: 'BOMMB', city: 'Mumbai' })).toBe('BOM'); // alias
     expect(attendanceBranchCode({ code: 'MUM' })).toBe('BOM'); // legacy alias
     expect(attendanceBranchCode({ code: '', city: 'Ahmedabad' })).toBe('AMD'); // city fallback
     // Every branch reports now — the Africa branches are no longer dropped for want of a channel.

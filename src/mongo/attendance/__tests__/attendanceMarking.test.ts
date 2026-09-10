@@ -238,7 +238,7 @@ describe('branchAutoClose (branch code → local zone + office-end stamp)', () =
   });
   it('falls back to IST at 7pm for Indian/unknown/missing branches', () => {
     expect(branchAutoClose({ code: 'BOM' })).toEqual({ tz: 'Asia/Kolkata', stamp: '19:00' });
-    expect(branchAutoClose({ code: 'BOMMB' })).toEqual({ tz: 'Asia/Kolkata', stamp: '19:00' });
+    expect(branchAutoClose({ code: 'MHUB' })).toEqual({ tz: 'Asia/Kolkata', stamp: '19:00' });
     expect(branchAutoClose({ code: null })).toEqual({ tz: 'Asia/Kolkata', stamp: '19:00' });
     expect(branchAutoClose(null)).toEqual({ tz: 'Asia/Kolkata', stamp: '19:00' });
   });

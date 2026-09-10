@@ -5,10 +5,9 @@
 // Dar es Salaam, Lubumbashi and the Mumbai hub was silently dropped. The day-close report now goes
 // to each branch's group chat, and every branch has one, so the question is simply "which code?".
 //
-// Resolution stays code → alias → city, for one hard-won reason: real Mumbai staff sit under the
-// BOMMB branch doc ("Mumbai Main Branch"), and legacy tenants used MUM. Neither is a branch that
-// reports on its own; both are Mumbai.
-const BRANCH_CODE_ALIASES: Record<string, string> = { BOMMB: 'BOM', MUM: 'BOM' };
+// Resolution stays code → alias → city, for one hard-won reason: legacy tenants used MUM for
+// Mumbai, which is not a branch that reports on its own — it is Mumbai, so it resolves to BOM.
+const BRANCH_CODE_ALIASES: Record<string, string> = { MUM: 'BOM' };
 const CITY_TO_BRANCH: Record<string, string> = { mumbai: 'BOM', ahmedabad: 'AMD' };
 
 /** The reporting branch code for a CRM branch doc — '' when it cannot be resolved. */

@@ -20,9 +20,9 @@ describe('finance group routing', () => {
     expect(isReportGroupFor('HQ - AMD Finance', 'finance', 'BOM')).toBe(false);
     expect(isReportGroupFor('HO - QA Finance', 'finance', 'QA')).toBe(false);
     expect(isReportGroupFor('BOM - Branch Accounts', 'finance', 'BOM')).toBe(false);
-    // A code that merely SITS INSIDE the name is not a match — the BOM/BOMMB substring trap.
-    expect(isReportGroupFor('HQ - BOMMB Finance', 'finance', 'BOM')).toBe(false);
-    expect(isReportGroupFor('HQ - BOM Finance', 'finance', 'BOMMB')).toBe(false);
+    // A code that merely SITS INSIDE the name is not a match — the short-code substring trap.
+    expect(isReportGroupFor('HQ - BOMX Finance', 'finance', 'BOM')).toBe(false);
+    expect(isReportGroupFor('HQ - BOM Finance', 'finance', 'BOMX')).toBe(false);
   });
 
   it('refuses a blank branch code rather than matching something', () => {
@@ -73,7 +73,7 @@ describe('hr group routing', () => {
     expect(isReportGroupFor('HQ - AMD HR', 'hr', 'BOM')).toBe(false);
     expect(isReportGroupFor('HQ - BOM Finance', 'hr', 'BOM')).toBe(false);
     expect(isReportGroupFor('HQ - BOM HR', 'finance', 'BOM')).toBe(false);
-    expect(isReportGroupFor('HQ - BOMMB HR', 'hr', 'BOM')).toBe(false); // the BOM/BOMMB substring trap
+    expect(isReportGroupFor('HQ - BOMX HR', 'hr', 'BOM')).toBe(false); // the short-code substring trap
   });
 
   it('says which group it expected when there is none', () => {

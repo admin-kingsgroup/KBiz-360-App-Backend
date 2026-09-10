@@ -105,7 +105,7 @@ const AUTO_CLOSE_STAMP = process.env.ATTENDANCE_AUTOCLOSE_TIME || '19:00';
 // The stamp is BRANCH-LOCAL (owner call, 08-07): stamping 19:00 IST was writing 16:30 local
 // checkouts in NBO/DAR and 15:30 local in FBM. African branches close at their OFFICE END time,
 // not 7pm (owner call, 08-07). CRM branch docs carry only code/city, so both the IANA zone and
-// the stamp are resolved from the branch code here; unknown codes (BOM/AMD/BOMMB/…) fall back to
+// the stamp are resolved from the branch code here; unknown codes (BOM/AMD/MHUB/…) fall back to
 // the business timezone (IST) at the 7pm default.
 const BRANCH_AUTO_CLOSE: Record<string, { tz: string; stamp: string }> = {
   NBO: { tz: 'Africa/Nairobi', stamp: '18:30' },       // Kenya, UTC+3 — office 8:30–6:30
@@ -394,7 +394,7 @@ async function postPunchToBranchGroup(userId: string, action: 'in' | 'out', at: 
     if (!Types.ObjectId.isValid(branchId)) return; // no branch at all → no room this belongs in
     const [branch] = await crmRepo.branchesByIds([new Types.ObjectId(branchId)]);
     const branchCode = attendanceBranchCode(branch ?? null);
-    if (!branchCode) return; // unresolvable code (BOMMB/MUM and cities are handled inside)
+    if (!branchCode) return; // unresolvable code (MUM and cities are handled inside)
     const { tz } = branchAutoClose({ code: branchCode });
     await postAttendanceToBranchGroup({
       branchCode,
@@ -990,7 +990,7 @@ export const attendanceService = {
     const branches: CrmBranch[] = branchOids.length ? await crmRepo.branchesByIds(branchOids) : [];
     const branchById = new Map(branches.map((b) => [String(b._id), b]));
 
-    // Bucket by reporting branch CODE (BOMMB/MUM and the city fallback resolve to Mumbai).
+    // Bucket by reporting branch CODE (MUM and the city fallback resolve to Mumbai).
     const buckets = new Map<string, CrmUser[]>();
     for (const u of tracked) {
       const code = attendanceBranchCode(branchById.get(branchIdOf(u)) ?? null);
