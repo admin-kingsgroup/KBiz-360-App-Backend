@@ -9,6 +9,7 @@ import { callsRouter } from './calls/calls.router';
 import { remindersRouter } from './reminders/reminders.router';
 import { attendanceRouter } from './attendance/attendance.router';
 import { hrRouter } from './hr/hr.router';
+import { approvalsRouter } from './approvals/approvals.router';
 import { alertsRouter } from './alerts/alerts.router';
 import { alertsIngestRouter } from './alerts/alertsIngest.router';
 import { clientErrorsRouter } from './clientErrors.router';
@@ -43,6 +44,7 @@ export function createMongoApp(): Express {
   app.use('/api/reminders', remindersRouter); // reminders (CRUD + review/approval, real users)
   app.use('/api/attendance', attendanceRouter); // attendance (punch in/out + today + team)
   app.use('/api/hr', hrRouter); // HR self-service (leave balance/applications + regularisation requests)
+  app.use('/api/approvals', approvalsRouter); // approval requests (chain: branch manager → company manager → business owner)
   app.use('/api/alerts', alertsRouter); // system alerts (Home feed, access-filtered per user)
   app.use('/api', uploadsRouter); // /uploads (chat media)
   app.use('/api', emailRouter); // /email/* (Microsoft 365 via Graph)

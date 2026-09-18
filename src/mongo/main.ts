@@ -11,6 +11,7 @@ import { ensureCallIndexes } from './calls/call.models';
 import { ensureReminderIndexes } from './reminders/reminder.model';
 import { ensureAttendanceIndexes } from './attendance/attendance.model';
 import { ensureRegularizationIndexes } from './hr/regularization.model';
+import { ensureApprovalIndexes } from './approvals/approval.model';
 import { ensureOfficeGeofenceIndexes } from './attendance/office.model';
 import { ensureChatIndexes } from './chat/chat.models';
 import { hydratePresence, startPresenceHeartbeat, stopPresenceHeartbeat } from './chat/chat.events';
@@ -33,6 +34,7 @@ async function bootstrap(): Promise<void> {
   await ensureReminderIndexes(); // reminders indexes
   await ensureAttendanceIndexes(); // attendance indexes
   await ensureRegularizationIndexes(); // attendance regularisation requests
+  await ensureApprovalIndexes(); // approval requests (chain of approvers)
   await ensureOfficeGeofenceIndexes(); // office geofence (per-branch) indexes
   await ensureChatIndexes(); // conversation indexes (+ one-time branchId backfill from retired deptKey)
   await hydratePresence(); // last-seen Map survives restarts (user_presence is its durability)
