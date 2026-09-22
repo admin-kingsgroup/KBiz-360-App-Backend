@@ -8,8 +8,9 @@ import { accessService, type MongoAccess } from './access';
 import { appAccess } from './appAccess';
 import { Forbidden, BadRequest } from '../common/errors';
 
-// Read-only directory built from the CRM. Access-scoped: company-wide roles see all in the tenant;
-// branch-scoped roles see only their branches (and users overlapping those branches).
+// Read-only directory built from the CRM. People are tenant-wide for everyone (see listUsers);
+// companies and branches stay access-scoped: company-wide roles see all in the tenant, branch-scoped
+// roles see only their branches.
 const tenantFilter = (access: MongoAccess): Record<string, unknown> =>
   access.tenantId && Types.ObjectId.isValid(access.tenantId) ? { tenant_id: new Types.ObjectId(access.tenantId) } : {};
 
@@ -86,11 +87,15 @@ async function ensureKbizBom(access: MongoAccess, adminId: string): Promise<{ co
 export const directoryService = {
   async listUsers(access: MongoAccess, opts: { includeDisabled?: boolean } = {}) {
     const roles = await roleMap();
+    // People are TENANT-wide, not branch-wide (owner decision 2026-09-22): anyone in the company can
+    // start a chat with anyone else, so the New Chat / Add Members pickers list the whole tenant.
+    // Before this, a branch-scoped role (Branch Manager / HOD / Employee) only saw users sharing one
+    // of their branches — an NBO-only user could not message or even resolve the name of a Mumbai
+    // colleague. Companies and branches (listCompanies / listBranches) stay branch-scoped: that is
+    // where the branch structure is shown, and pickers that must stay per-branch (New Group) filter
+    // on `branchIds` client-side.
     const users = await crmRepo.listUsers(tenantFilter(access));
-    const scoped = access.companyWide
-      ? users
-      : users.filter((u) => (u.branch_ids ?? []).some((b) => access.branchIds!.includes(String(b))));
-    const mapped = scoped.map((u) => mapUser(u, roles));
+    const mapped = users.map((u) => mapUser(u, roles));
     const ids = mapped.map((m) => m.id);
     const positions = await userPositions.mapFor(ids);
     const avatars = await userAvatars.mapFor(ids);
@@ -108,7 +113,9 @@ export const directoryService = {
   async getUser(access: MongoAccess, id: string) {
     const u = await crmRepo.getUserById(id);
     if (!u) return null;
-    if (!access.companyWide && !(u.branch_ids ?? []).some((b) => access.branchIds!.includes(String(b)))) return null;
+    // Tenant-wide like listUsers (a DM partner's profile must open from any branch); the tenant
+    // boundary still holds.
+    if (access.tenantId && u.tenant_id && String(u.tenant_id) !== access.tenantId) return null;
     const roles = await roleMap();
     const mapped = mapUser(u, roles);
     const positions = await userPositions.mapFor([mapped.id]);
