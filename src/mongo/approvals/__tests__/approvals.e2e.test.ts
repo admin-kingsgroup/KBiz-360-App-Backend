@@ -49,6 +49,7 @@ beforeAll(async () => {
   await crm.collection('users').insertMany([
     user('emp', 'Rohan', 'Mehta', roles.emp, [BOM, DEAD]),
     user('outsider', 'Nandni', 'Shah', roles.emp, [BOM]),
+    user('fin', 'Kiran', 'Rao', roles.emp, []),
     user('bm', 'Faiz', 'Patel', roles.bm, [BOM]),
     user('bmNbo', 'Aamir', 'Shaikh', roles.bm, [NBO, DEAD]),
     user('bmNoApp', 'No', 'App', roles.bm, [BOM], false),
@@ -72,28 +73,46 @@ afterAll(async () => {
   await mongo.disconnectMongo();
 }, 30000);
 
-const picks = () => [
+// Level 1: BOTH managers · Level 2: EITHER the owner or finance · Level 3: Nandni
+const LEVELS = () => [
+  { label: 'Managers', mode: 'all', approverIds: [ids.bm, ids.cm] },
+  { mode: 'any', approverIds: [ids.owner, ids.fin] },
+  { approverIds: [ids.outsider] },
+];
+const legacyPicks = () => [
   { step: 'branch_manager', userId: ids.bm },
   { step: 'company_manager', userId: ids.cm },
   { step: 'business_owner', userId: ids.owner },
 ];
-const raise = async (title: string) => {
-  const res = await request(app).post('/api/approvals').set(as('emp')).send({ title, details: `${title} — details`, approvers: picks() });
+const raise = async (title: string, body: Record<string, unknown> = { levels: LEVELS() }) => {
+  const res = await request(app).post('/api/approvals').set(as('emp')).send({ title, details: `${title} — details`, ...body });
   expect(res.status).toBe(201);
   return res.body as any;
 };
 const listOf = async (who: string, query = '') => (await request(app).get(`/api/approvals${query}`).set(as(who))).body as any;
+const getAs = (who: string, id: string) => request(app).get(`/api/approvals/${id}`).set(as(who));
+const decide = (who: string, id: string, action: string, note?: string) => request(app).put(`/api/approvals/${id}/decision`).set(as(who)).send({ action, ...(note ? { note } : {}) });
+const levelStatuses = (a: any): string[][] => a.levels.map((l: any) => [l.status, ...l.approvers.map((x: any) => x.status)]);
 
-describe('approvals — chain over HTTP (local throwaway Mongo)', () => {
+describe('approvals — N-level chain over HTTP (local throwaway Mongo)', () => {
   it('no token → 401', async () => {
     if (!ready) return;
     expect((await request(app).get('/api/approvals')).status).toBe(401);
   });
 
-  it('hierarchy: three steps, own-branch manager only, app-less and dead-branch people excluded', async () => {
+  it('hierarchy: level-builder limits, everyone pickable (never yourself, never app-less), a role-based suggestion, and the legacy steps', async () => {
     if (!ready) return;
     const res = await request(app).get('/api/approvals/hierarchy').set(as('emp'));
     expect(res.status).toBe(200);
+    expect(res.body.levels).toEqual({ min: 1, max: 10, maxApproversPerLevel: 10, labelMaxLength: 40, modes: ['all', 'any'], defaultMode: 'all' });
+    expect(res.body.approvers.map((c: any) => c.name)).toEqual(['Aamir Shaikh', 'Afshin Dhanani', 'Faiz Patel', 'Kiran Rao', 'Nandni Shah', 'Pravesh Jha']);
+    expect(res.body.approvers.find((c: any) => c.id === ids.bm)).toMatchObject({ name: 'Faiz Patel', initials: 'FP', email: 'bm@e2e.test', role: 'branch_manager', level: 3, branches: ['BOM'] });
+    expect(res.body.suggestedLevels).toEqual([
+      { order: 1, label: 'Branch manager', mode: 'all', approverIds: [ids.bm], candidateIds: [ids.bm] },
+      { order: 2, label: 'Company manager', mode: 'all', approverIds: [ids.cm], candidateIds: [ids.cm] },
+      { order: 3, label: 'Business owner', mode: 'all', approverIds: [ids.owner], candidateIds: [ids.owner] },
+    ]);
+    // the previous app build's fixed chain is still served
     expect(res.body.totalSteps).toBe(3);
     expect(res.body.steps.map((s: any) => [s.order, s.key, s.label, s.required])).toEqual([
       [1, 'branch_manager', 'Branch manager', true],
@@ -102,89 +121,224 @@ describe('approvals — chain over HTTP (local throwaway Mongo)', () => {
     ]);
     expect(res.body.steps[0].candidates.map((c: any) => c.name)).toEqual(['Faiz Patel']);
     expect(res.body.steps[0].defaultApproverId).toBe(ids.bm);
-    expect(res.body.steps[2].candidates[0]).toMatchObject({ id: ids.owner, name: 'Afshin Dhanani', initials: 'AD' });
-    // a branch manager's own form starts one step up
-    const bm = await request(app).get('/api/approvals/hierarchy').set(as('bm'));
-    expect(bm.body.steps.map((s: any) => s.key)).toEqual(['company_manager', 'business_owner']);
+    expect(res.body.categories).toContain('Salary');
+    expect(res.body.limits).toMatchObject({ title: 120, details: 2000, note: 500, levels: 10, approversPerLevel: 10 });
+  });
+
+  it('approvers: the searchable people picker', async () => {
+    if (!ready) return;
+    const all = await request(app).get('/api/approvals/approvers').set(as('emp'));
+    expect(all.status).toBe(200);
+    expect(all.body.total).toBe(6);
+    expect(all.body.items.map((c: any) => c.id)).not.toContain(ids.emp);
+    expect(all.body.items.map((c: any) => c.id)).not.toContain(ids.bmNoApp);
+    const byName = await request(app).get('/api/approvals/approvers?q=faiz').set(as('emp'));
+    expect(byName.body.items.map((c: any) => c.name)).toEqual(['Faiz Patel']);
+    const byBranch = await request(app).get('/api/approvals/approvers?q=nbo&limit=1').set(as('emp'));
+    expect(byBranch.body).toMatchObject({ total: 1, items: [{ name: 'Aamir Shaikh' }] });
+    const byRole = await request(app).get('/api/approvals/approvers?q=branch_manager').set(as('emp'));
+    expect(byRole.body.items.map((c: any) => c.name)).toEqual(['Aamir Shaikh', 'Faiz Patel']);
   });
 
   it('create refuses a bad chain', async () => {
     if (!ready) return;
-    const post = (approvers: unknown) => request(app).post('/api/approvals').set(as('emp')).send({ title: 'x', details: 'y', approvers });
-    expect((await post(picks().slice(0, 2))).status).toBe(400); // a step left empty
-    expect((await post([{ step: 'branch_manager', userId: ids.bmNbo }, ...picks().slice(1)])).status).toBe(400); // other branch
-    expect((await post([{ step: 'branch_manager', userId: ids.bmNoApp }, ...picks().slice(1)])).status).toBe(400); // cannot open the app
-    expect((await request(app).post('/api/approvals').set(as('emp')).send({ title: '', details: 'y', approvers: picks() })).status).toBe(400);
+    const post = (body: unknown) => request(app).post('/api/approvals').set(as('emp')).send({ title: 'x', details: 'y', ...(body as object) });
+    const code = async (body: unknown) => {
+      const r = await post(body);
+      return [r.status, r.body.error.code];
+    };
+    expect(await code({})).toEqual([400, 'VALIDATION']); // neither levels nor approvers
+    expect(await code({ levels: [] })).toEqual([400, 'VALIDATION']);
+    expect(await code({ levels: [{ approverIds: [] }] })).toEqual([400, 'VALIDATION']);
+    expect(await code({ levels: [{ approverIds: [ids.emp] }] })).toEqual([400, 'BAD_REQUEST']); // yourself
+    expect(await code({ levels: [{ approverIds: [ids.bm] }, { approverIds: [ids.bm] }] })).toEqual([400, 'BAD_REQUEST']); // twice
+    expect(await code({ levels: [{ approverIds: [ids.bmNoApp] }] })).toEqual([400, 'BAD_REQUEST']); // cannot open the app
+    expect(await code({ levels: [{ approverIds: [String(new Types.ObjectId())] }] })).toEqual([400, 'BAD_REQUEST']); // nobody
+    expect((await post({ levels: [{ mode: 'majority', approverIds: [ids.bm] }] })).status).toBe(400);
+    expect((await request(app).post('/api/approvals').set(as('emp')).send({ title: '', details: 'y', levels: LEVELS() })).status).toBe(400);
+    // legacy role picks are still checked against the fixed hierarchy
+    expect(await code({ approvers: legacyPicks().slice(0, 2) })).toEqual([400, 'BAD_REQUEST']);
+    expect(await code({ approvers: [{ step: 'branch_manager', userId: ids.bmNbo }, ...legacyPicks().slice(1)] })).toEqual([400, 'BAD_REQUEST']);
   });
 
-  it('level 1 → level 2 → level 3, each only when the one before approved', async () => {
+  it('level 1 (both) → level 2 (either) → level 3, each only when the one before is done', async () => {
     if (!ready) return;
     const created = await raise('Salary release approval');
     const id = created.id;
-    expect(created).toMatchObject({ status: 'pending', category: 'Salary', totalSteps: 3, currentStep: 1, isMine: true, canAct: false, canCancel: true });
+    expect(created).toMatchObject({ status: 'pending', category: 'Salary', totalLevels: 3, currentLevel: 1, isMine: true, canAct: false, canCancel: true, myDecision: null });
     expect(created.requester.name).toBe('Rohan Mehta');
+    expect(created.currentApprovers.map((p: any) => p.name)).toEqual(['Faiz Patel', 'Pravesh Jha']);
+    expect(created.levels.map((l: any) => [l.order, l.label, l.mode, l.status, l.isCurrent, l.approvedCount, l.requiredCount])).toEqual([
+      [1, 'Managers', 'all', 'pending', true, 0, 2],
+      [2, 'Level 2', 'any', 'waiting', false, 0, 1],
+      [3, 'Level 3', 'all', 'waiting', false, 0, 1],
+    ]);
+    expect(created.levels[1].approvers.map((a: any) => a.approver.name)).toEqual(['Afshin Dhanani', 'Kiran Rao']);
+    // mirrors for the previous app build: one row per approver, unique row numbers
+    expect(created).toMatchObject({ totalSteps: 3, currentStep: 1 });
     expect(created.currentApprover.name).toBe('Faiz Patel');
-    expect(created.steps.map((s: any) => [s.status, s.isCurrent])).toEqual([['pending', true], ['waiting', false], ['waiting', false]]);
+    expect(created.steps.map((s: any) => [s.order, s.level, s.key, s.label, s.approver.name, s.status, s.isCurrent])).toEqual([
+      [1, 1, 'level_1', 'Managers', 'Faiz Patel', 'pending', true],
+      [2, 1, 'level_1', 'Managers', 'Pravesh Jha', 'pending', true],
+      [3, 2, 'level_2', 'Level 2', 'Afshin Dhanani', 'waiting', false],
+      [4, 2, 'level_2', 'Level 2', 'Kiran Rao', 'waiting', false],
+      [5, 3, 'level_3', 'Level 3', 'Nandni Shah', 'waiting', false],
+    ]);
 
-    // it has come to level 1 ONLY
-    expect((await listOf('bm', '?scope=actionable')).items.map((i: any) => [i.id, i.canAct])).toEqual([[id, true]]);
-    expect((await request(app).get('/api/approvals/counts').set(as('bm'))).body.actionable).toBe(1);
-    expect((await listOf('cm')).items).toEqual([]);
-    expect((await request(app).get(`/api/approvals/${id}`).set(as('cm'))).status).toBe(404);
-    expect((await request(app).get(`/api/approvals/${id}`).set(as('outsider'))).status).toBe(404);
-    const early = await request(app).put(`/api/approvals/${id}/decision`).set(as('cm')).send({ action: 'approve' });
+    // it has come to level 1 ONLY — both managers, nobody else (the owner is a super admin and
+    // may look anything up by id; finance and Nandni cannot)
+    for (const who of ['bm', 'cm']) expect((await listOf(who, '?scope=actionable')).items.map((i: any) => [i.id, i.canAct])).toEqual([[id, true]]);
+    expect((await request(app).get('/api/approvals/counts').set(as('cm'))).body.actionable).toBe(1);
+    expect((await listOf('fin')).items).toEqual([]);
+    expect((await listOf('owner')).items).toEqual([]);
+    expect((await getAs('fin', id)).status).toBe(404);
+    expect((await getAs('outsider', id)).status).toBe(404);
+    const early = await decide('fin', id, 'approve');
     expect([early.status, early.body.error.code]).toEqual([409, 'NOT_YOUR_TURN']);
-    expect((await request(app).put(`/api/approvals/${id}/decision`).set(as('outsider')).send({ action: 'approve' })).status).toBe(404);
+    expect((await decide('bmNbo', id, 'approve')).status).toBe(404);
 
-    // level 1 approves → it moves to level 2
-    const one = await request(app).put(`/api/approvals/${id}/decision`).set(as('bm')).send({ action: 'approve', note: 'fine by me' });
+    // ONE manager approves → the level stays open for the other
+    const one = await decide('bm', id, 'approve', 'fine by me');
     expect(one.status).toBe(200);
-    expect(one.body).toMatchObject({ status: 'pending', currentStep: 2, canAct: false, myDecision: 'approved' });
-    expect(one.body.steps[0]).toMatchObject({ status: 'approved', note: 'fine by me', isCurrent: false });
-    expect(one.body.steps[1]).toMatchObject({ status: 'pending', isCurrent: true });
-    const again = await request(app).put(`/api/approvals/${id}/decision`).set(as('bm')).send({ action: 'approve' });
+    expect(one.body).toMatchObject({ status: 'pending', currentLevel: 1, canAct: false, myDecision: 'approved' });
+    expect(one.body.levels[0]).toMatchObject({ status: 'pending', isCurrent: true, approvedCount: 1, requiredCount: 2 });
+    expect(one.body.levels[0].approvers[0]).toMatchObject({ status: 'approved', note: 'fine by me' });
+    expect(one.body.currentApprovers.map((p: any) => p.name)).toEqual(['Pravesh Jha']);
+    const again = await decide('bm', id, 'approve');
     expect([again.status, again.body.error.code]).toEqual([409, 'ALREADY_DECIDED']);
     expect((await listOf('bm', '?scope=actionable')).items).toEqual([]);
     expect((await listOf('bm')).items.map((i: any) => i.id)).toEqual([id]); // still sees what they decided
     expect((await listOf('cm', '?scope=actionable')).items.map((i: any) => i.id)).toEqual([id]);
+    expect((await getAs('fin', id)).status).toBe(404); // level 2 still hears nothing
 
-    // level 2, then level 3 → approved
-    expect((await request(app).put(`/api/approvals/${id}/decision`).set(as('cm')).send({ action: 'approve' })).body.currentStep).toBe(3);
-    const done = await request(app).put(`/api/approvals/${id}/decision`).set(as('owner')).send({ action: 'approve' });
-    expect(done.body).toMatchObject({ status: 'approved', currentStep: null, currentApprover: null, canAct: false });
+    // the OTHER manager approves → level 1 closes, level 2 (either owner or finance) opens
+    const two = await decide('cm', id, 'approve');
+    expect(two.body).toMatchObject({ status: 'pending', currentLevel: 2 });
+    expect(levelStatuses(two.body)).toEqual([['approved', 'approved', 'approved'], ['pending', 'pending', 'pending'], ['waiting', 'waiting']]);
+    expect(two.body.levels[0].decidedAt).toBeTruthy();
+    for (const who of ['owner', 'fin']) expect((await listOf(who, '?scope=actionable')).items.map((i: any) => i.canAct)).toEqual([true]);
+    expect((await getAs('outsider', id)).status).toBe(404);
+
+    // finance approves first → the owner's slot is skipped, but they keep seeing it
+    const three = await decide('fin', id, 'approve');
+    expect(three.body).toMatchObject({ status: 'pending', currentLevel: 3 });
+    expect(levelStatuses(three.body)).toEqual([['approved', 'approved', 'approved'], ['approved', 'skipped', 'approved'], ['pending', 'pending']]);
+    expect((await listOf('owner', '?scope=actionable')).items).toEqual([]);
+    expect((await listOf('owner')).items.map((i: any) => [i.id, i.canAct, i.myDecision])).toEqual([[id, false, null]]);
+    const late = await decide('owner', id, 'approve');
+    expect([late.status, late.body.error.code]).toEqual([409, 'ALREADY_DECIDED']);
+
+    // level 3 → approved
+    expect((await listOf('outsider', '?scope=actionable')).items.map((i: any) => i.id)).toEqual([id]);
+    const done = await decide('outsider', id, 'approve');
+    expect(done.body).toMatchObject({ status: 'approved', currentLevel: null, currentApprovers: [], currentStep: null, currentApprover: null, canAct: false });
     expect(done.body.decidedAt).toBeTruthy();
-    expect(done.body.steps.map((s: any) => s.status)).toEqual(['approved', 'approved', 'approved']);
-    const late = await request(app).put(`/api/approvals/${id}/decision`).set(as('owner')).send({ action: 'reject' });
-    expect([late.status, late.body.error.code]).toEqual([409, 'NOT_PENDING']);
+    expect(done.body.levels.map((l: any) => l.status)).toEqual(['approved', 'approved', 'approved']);
+    const after = await decide('outsider', id, 'reject');
+    expect([after.status, after.body.error.code]).toEqual([409, 'NOT_PENDING']);
 
     const mine = await listOf('emp', '?status=approved');
     expect(mine.items.map((i: any) => i.id)).toEqual([id]);
     expect(mine.counts).toMatchObject({ all: 1, approved: 1, pending: 0, rejected: 0 });
   });
 
-  it('a rejection ends it — later levels never see it', async () => {
+  it('a rejection by anyone on the level ends it — the rest of the level and later levels never act', async () => {
     if (!ready) return;
     const { id } = await raise('Client visit expense approval');
-    const res = await request(app).put(`/api/approvals/${id}/decision`).set(as('bm')).send({ action: 'reject', note: 'over budget' });
-    expect(res.body).toMatchObject({ status: 'rejected', category: 'Expense', myDecision: 'rejected', currentStep: null });
-    expect(res.body.steps.map((s: any) => s.status)).toEqual(['rejected', 'skipped', 'skipped']);
-    expect((await listOf('cm')).items.map((i: any) => i.id)).not.toContain(id);
-    expect((await request(app).get(`/api/approvals/${id}`).set(as('cm'))).status).toBe(404);
-    expect((await request(app).get(`/api/approvals/${id}`).set(as('owner'))).status).toBe(200); // super-admin oversight
-    expect((await listOf('emp', '?status=rejected')).items[0].steps[0].note).toBe('over budget');
+    const res = await decide('cm', id, 'reject', 'over budget');
+    expect(res.body).toMatchObject({ status: 'rejected', category: 'Expense', myDecision: 'rejected', currentLevel: null });
+    expect(levelStatuses(res.body)).toEqual([['rejected', 'skipped', 'rejected'], ['skipped', 'skipped', 'skipped'], ['skipped', 'skipped']]);
+    expect((await getAs('bm', id)).status).toBe(200); // it had reached their level
+    expect((await listOf('bm', '?scope=actionable')).items).toEqual([]);
+    expect((await getAs('fin', id)).status).toBe(404); // never got there
+    expect((await getAs('owner', id)).status).toBe(200); // super-admin oversight
+    expect((await listOf('emp', '?status=rejected')).items[0].levels[0].approvers[1].note).toBe('over budget');
   });
 
-  it('the requester can withdraw while it is pending — nobody else can', async () => {
+  it('the requester can withdraw while it is pending — what was decided stays, the rest is skipped', async () => {
     if (!ready) return;
     const { id } = await raise('Work from home request');
     expect((await request(app).put(`/api/approvals/${id}/cancel`).set(as('bm'))).status).toBe(404);
+    expect((await decide('bm', id, 'approve')).status).toBe(200);
     const res = await request(app).put(`/api/approvals/${id}/cancel`).set(as('emp'));
     expect(res.body).toMatchObject({ status: 'cancelled', canCancel: false, category: 'HR' });
-    expect(res.body.steps.map((s: any) => s.status)).toEqual(['skipped', 'skipped', 'skipped']);
-    expect((await listOf('bm', '?scope=actionable')).items).toEqual([]);
+    expect(levelStatuses(res.body)).toEqual([['skipped', 'approved', 'skipped'], ['skipped', 'skipped', 'skipped'], ['skipped', 'skipped']]);
+    expect((await getAs('bm', id)).status).toBe(200); // they decided — they keep it
+    expect((await getAs('cm', id)).status).toBe(404); // withdrawn before they acted — gone
+    expect((await listOf('cm', '?scope=actionable')).items).toEqual([]);
     expect((await request(app).put(`/api/approvals/${id}/cancel`).set(as('emp'))).status).toBe(409);
     const all = await listOf('emp', '?limit=2&page=1');
     expect([all.total, all.items.length, all.hasMore]).toEqual([3, 2, true]);
     expect(all.items[0].id).toBe(id); // newest first
+  });
+
+  it('the previous app build still works: role picks become one single-person level per step', async () => {
+    if (!ready) return;
+    const created = await raise('Leave approval', { approvers: legacyPicks() });
+    expect(created).toMatchObject({ category: 'Leave', totalLevels: 3, totalSteps: 3, currentStep: 1 });
+    expect(created.levels.map((l: any) => [l.key, l.label, l.mode, l.approvers.length])).toEqual([
+      ['branch_manager', 'Branch manager', 'all', 1],
+      ['company_manager', 'Company manager', 'all', 1],
+      ['business_owner', 'Business owner', 'all', 1],
+    ]);
+    expect(created.steps.map((s: any) => [s.order, s.key, s.approver.name, s.status])).toEqual([
+      [1, 'branch_manager', 'Faiz Patel', 'pending'],
+      [2, 'company_manager', 'Pravesh Jha', 'waiting'],
+      [3, 'business_owner', 'Afshin Dhanani', 'waiting'],
+    ]);
+    const one = await decide('bm', created.id, 'approve');
+    expect(one.body).toMatchObject({ currentLevel: 2, currentStep: 2 });
+    expect(one.body.currentApprover.name).toBe('Pravesh Jha');
+    expect(one.body.steps.map((s: any) => s.status)).toEqual(['approved', 'pending', 'waiting']);
+    // a branch manager's own legacy form still starts one step up
+    const bm = await request(app).get('/api/approvals/hierarchy').set(as('bm'));
+    expect(bm.body.steps.map((s: any) => s.key)).toEqual(['company_manager', 'business_owner']);
+  });
+
+  it('boot migration: a request written before N-level chains keeps moving', async () => {
+    if (!ready) return;
+    const { migrateLegacyApprovalChains } = require('../approval.migrate');
+    const coll = mongo.appDb().db.collection('approval_requests');
+    const _id = new Types.ObjectId();
+    const at = new Date('2026-09-19T05:00:00Z');
+    await coll.insertOne({
+      _id,
+      tenantId: null,
+      requesterId: ids.emp,
+      title: 'Old-style purchase approval',
+      details: 'written by the previous build',
+      category: 'Purchase',
+      status: 'pending',
+      currentStep: 1,
+      steps: [
+        { key: 'branch_manager', label: 'Branch manager', approverId: ids.bm, status: 'approved', decidedAt: at, note: 'ok' },
+        { key: 'company_manager', label: 'Company manager', approverId: ids.cm, status: 'pending', decidedAt: null, note: '' },
+        { key: 'business_owner', label: 'Business owner', approverId: ids.owner, status: 'waiting', decidedAt: null, note: '' },
+      ],
+      submittedAt: at,
+      decidedAt: null,
+      createdAt: at,
+      updatedAt: at,
+    });
+    expect(await migrateLegacyApprovalChains()).toBe(1);
+    expect(await migrateLegacyApprovalChains()).toBe(0); // idempotent
+    const raw = await coll.findOne({ _id });
+    expect(raw.steps).toBeUndefined();
+    expect(raw.currentStep).toBeUndefined();
+    expect(raw.currentLevel).toBe(1);
+
+    const id = String(_id);
+    const asCm = await getAs('cm', id);
+    expect(asCm.status).toBe(200);
+    expect(asCm.body).toMatchObject({ currentLevel: 2, currentStep: 2, canAct: true, totalLevels: 3 });
+    expect(asCm.body.levels[0]).toMatchObject({ key: 'branch_manager', label: 'Branch manager', status: 'approved' });
+    expect(asCm.body.levels[0].approvers[0]).toMatchObject({ status: 'approved', note: 'ok', decidedAt: at.toISOString() });
+    expect(asCm.body.steps.map((s: any) => [s.key, s.status])).toEqual([['branch_manager', 'approved'], ['company_manager', 'pending'], ['business_owner', 'waiting']]);
+    expect((await listOf('cm', '?scope=actionable')).items.map((i: any) => i.id)).toContain(id);
+    expect((await listOf('bm')).items.map((i: any) => i.id)).toContain(id);
+    // …and the chain carries on from where it was
+    const res = await decide('cm', id, 'approve');
+    expect(res.body).toMatchObject({ currentLevel: 3 });
+    expect(res.body.currentApprovers.map((p: any) => p.name)).toEqual(['Afshin Dhanani']);
   });
 });

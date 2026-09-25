@@ -44,7 +44,7 @@ export function createMongoApp(): Express {
   app.use('/api/reminders', remindersRouter); // reminders (CRUD + review/approval, real users)
   app.use('/api/attendance', attendanceRouter); // attendance (punch in/out + today + team)
   app.use('/api/hr', hrRouter); // HR self-service (leave balance/applications + regularisation requests)
-  app.use('/api/approvals', approvalsRouter); // approval requests (chain: branch manager → company manager → business owner)
+  app.use('/api/approvals', approvalsRouter); // approval requests (chain of levels the requester builds; one or more approvers per level)
   app.use('/api/alerts', alertsRouter); // system alerts (Home feed, access-filtered per user)
   app.use('/api', uploadsRouter); // /uploads (chat media)
   app.use('/api', emailRouter); // /email/* (Microsoft 365 via Graph)
