@@ -1,7 +1,7 @@
 import { config } from '../../config';
 import { callDeviceRepo } from '../calls/call.repository';
 
-// Push for the approval chain. Same shape as reminder.push: the shared Expo push-token registry
+// Push for the approval chain (levels). Same shape as reminder.push: the shared Expo push-token registry
 // (push_devices, populated via /api/calls/register-device), a plain POST to Expo. Tapping one
 // carries data { type: 'approval', id } so the app can open that request's sheet.
 const isExpoPushToken = (t: string): boolean => /^Expo(nent)?PushToken\[[^\]]+\]$/.test(t);
@@ -71,9 +71,11 @@ export const approvalPush = {
   sendYourTurn: (userId: string, requesterName: string, title: string, approvalId: string): Promise<number> =>
     sendToUser(userId, `${requesterName} needs your approval`, title, approvalId),
 
-  // Requester: one step approved, the request moved on to the next approver.
-  sendStepApproved: (userId: string, byName: string, step: number, total: number, nextName: string, title: string, approvalId: string): Promise<number> =>
-    sendToUser(userId, `${byName} approved · step ${step} of ${total}`, `${title} — now with ${nextName}`, approvalId),
+  // Requester: someone on a level approved — either the level closed and the request moved on
+  // (`tail` = "now with Faiz Patel, Pravesh Jha") or the level is still collecting approvals
+  // (`tail` = "still waiting on Pravesh Jha").
+  sendLevelProgress: (userId: string, byName: string, level: number, total: number, tail: string, title: string, approvalId: string): Promise<number> =>
+    sendToUser(userId, `${byName} approved · level ${level} of ${total}`, `${title} — ${tail}`, approvalId),
 
   // Requester: the last step approved — the request is through.
   sendApproved: (userId: string, title: string, approvalId: string): Promise<number> =>
