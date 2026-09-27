@@ -26,22 +26,29 @@ const { MongoClient } = require('mongodb');
 
 const APPLY = process.argv.includes('--apply');
 const CODES = ['BOM', 'AMD', 'NBO', 'DAR', 'FBM', 'MHUB'];
+// Groups may be named with either spelling of an Africa branch: the ERP renamed the codes on
+// 2026-09-16 (NBO→HNBO, DAR→HDAR, FBM→HFBM). The grant always uses the app's short code.
+const SPELLINGS = { NBO: ['nbo', 'hnbo'], DAR: ['dar', 'hdar'], FBM: ['fbm', 'hfbm'] };
 const squash = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const spellings = (code) => SPELLINGS[code] || [squash(code)];
+const ALL_SPELLINGS = CODES.flatMap(spellings);
 
-const hrKeys = (c) => [`hq${c}hr`, `${c}hrteam`, `${c}hr`];
-const financeKeys = (c) => [`hq${c}finance`, `${c}financeteam`];
-const erpKeys = (c) => [`${c}branchaccounts`, `${c}ticketing`, `${c}holidays`];
+const hrKeys = (code) => spellings(code).flatMap((c) => [`hq${c}hr`, `${c}hrteam`, `${c}hr`]);
+const financeKeys = (code) => spellings(code).flatMap((c) => [`hq${c}finance`, `${c}financeteam`]);
+const erpKeys = (code) => spellings(code).flatMap((c) => [`${c}branchaccounts`, `${c}ticketing`, `${c}holidays`]);
 // "INB Ticketing AMD/BOM", "Hub Holidays BOM/AMD" … either order.
-const pairRoomOf = (name, c) => {
+const pairRoomOf = (name, code) => {
   const n = squash(name);
   for (const pre of ['inb', 'hub']) {
     for (const desk of ['ticketing', 'holidays']) {
       const head = `${pre}${desk}`;
       if (!n.startsWith(head)) continue;
       const rest = n.slice(head.length);
-      for (const other of CODES.map(squash)) {
-        if (other === c) continue;
-        if (rest === `${c}${other}` || rest === `${other}${c}`) return true;
+      for (const c of spellings(code)) {
+        for (const other of ALL_SPELLINGS) {
+          if (spellings(code).includes(other)) continue;
+          if (rest === `${c}${other}` || rest === `${other}${c}`) return true;
+        }
       }
     }
   }
@@ -81,10 +88,9 @@ const pairRoomOf = (name, c) => {
     const members = (gs) => [...new Set(gs.flatMap((g) => (g.participantIds || []).map(String)))];
 
     for (const code of CODES) {
-      const c = squash(code);
-      const fin = find(financeKeys(c));
-      const hr = find(hrKeys(c));
-      const erp = [...find(erpKeys(c)), ...groups.filter((g) => pairRoomOf(g.name, c))];
+      const fin = find(financeKeys(code));
+      const hr = find(hrKeys(code));
+      const erp = [...find(erpKeys(code)), ...groups.filter((g) => pairRoomOf(g.name, code))];
       const hrSource = hr.length ? hr : fin;
       give(members(hrSource), `${code}-attendance`);
       give(members(fin), `${code}-erp-reports`);

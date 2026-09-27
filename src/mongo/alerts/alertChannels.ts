@@ -71,6 +71,16 @@ export const ALERT_CHANNELS: AlertChannelDef[] = [
 
 export const ALERT_GRANT_IDS: string[] = ALERT_CHANNELS.map((c) => c.grant);
 
+// The ERP renamed the Africa branch CODES in the shared branches collection on 2026-09-16
+// (wave 29: NBO→HNBO, DAR→HDAR, FBM→HFBM). The app keeps the short codes for its channels and
+// branch chips, so every code arriving from the ERP, the CRM or a user's branch row goes
+// through here first — otherwise a Nairobi alert or a Nairobi user matches no channel at all.
+const BRANCH_CODE_ALIASES: Record<string, string> = { HNBO: 'NBO', HDAR: 'DAR', HFBM: 'FBM' };
+export const canonicalBranchCode = (code: string | null | undefined): string => {
+  const c = String(code ?? '').trim().toUpperCase();
+  return BRANCH_CODE_ALIASES[c] ?? c;
+};
+
 // Ingest-facing lookup: external systems address a channel by (module, branchCode). The ingest
 // route also accepts 'finance' as an alias for 'accounts' and 'sales-invoice' for 'sales'
 // (the ERP's own vocabulary).
@@ -78,7 +88,7 @@ export function channelForModuleBranch(module: string, branchCode: string): Aler
   const mod = module === 'finance' ? 'accounts' : module === 'sales-invoice' ? 'sales' : module;
   return (
     ALERT_CHANNELS.find(
-      (c) => c.module === mod && c.branchCode.toLowerCase() === (branchCode ?? '').toLowerCase(),
+      (c) => c.module === mod && c.branchCode === canonicalBranchCode(branchCode),
     ) ?? null
   );
 }
@@ -96,7 +106,7 @@ export const USER_ALERTS_CHANNEL_ID = 'user_alerts';
 // The grants a user holds by BELONGING to a branch rather than by a super-admin's switch: the
 // branch-wide channels of their branches. `branchCodes` null = a company-wide role → every branch.
 export function branchWideGrants(branchCodes: string[] | null): string[] {
-  const codes = branchCodes === null ? null : new Set(branchCodes.map((c) => c.toUpperCase()));
+  const codes = branchCodes === null ? null : new Set(branchCodes.map(canonicalBranchCode));
   return ALERT_CHANNELS.filter((c) => c.branchWide && (codes === null || codes.has(c.branchCode))).map((c) => c.grant);
 }
 

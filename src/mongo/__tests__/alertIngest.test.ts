@@ -2,6 +2,7 @@ import {
   ALERT_CHANNELS,
   ALERT_GRANT_IDS,
   branchWideGrants,
+  canonicalBranchCode,
   channelForModuleBranch,
   visibleChannelIds,
 } from '../alerts/alertChannels';
@@ -44,6 +45,19 @@ describe('alert channel registry', () => {
     }
     expect(channelForModuleBranch('leads', 'MHUB')).toBeNull();
     expect(channelForModuleBranch('crm-reports', 'MHUB')).toBeNull();
+  });
+
+  it("the ERP's wave-29 Africa codes (HNBO/HDAR/HFBM) land in the NBO/DAR/FBM channels", () => {
+    expect(canonicalBranchCode('hnbo')).toBe('NBO');
+    expect(canonicalBranchCode(' HDAR ')).toBe('DAR');
+    expect(canonicalBranchCode('HFBM')).toBe('FBM');
+    expect(canonicalBranchCode('BOM')).toBe('BOM');
+    expect(canonicalBranchCode(null)).toBe('');
+    expect(channelForModuleBranch('erp', 'HNBO')?.id).toBe('tk_erp_nbo');
+    expect(channelForModuleBranch('leads', 'HFBM')?.id).toBe('tk_lead_fbm');
+    expect(channelForModuleBranch('attendance', 'HDAR')?.id).toBe('tk_hr_dar');
+    // A Nairobi user's branch row now says HNBO — they must still get Nairobi's CRM channels.
+    expect(branchWideGrants(['HNBO'])).toEqual(['NBO-leads', 'NBO-crm-reports']);
   });
 
   it('only CRM and CRM Reports are branch-wide — HR / ERP / ERP Reports stay grant-only', () => {
