@@ -44,6 +44,10 @@ export async function ensureAlertIndexes(): Promise<void> {
   await col().createIndex({ channelId: 1, time: -1 });
   await col().createIndex({ time: -1 });
   await col().createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+  await col().createIndex(
+    { channelId: 1, dedupeKey: 1 },
+    { unique: true, partialFilterExpression: { dedupeKey: { $type: 'string' } } },
+  );
 }
 
 // Wall-clock time in the business timezone (same convention as attendance.service).
@@ -63,12 +67,31 @@ export const alertService = {
     ev: { source: string; title: string; body: string; context: string; attachment?: { name: string; url: string; key?: string } },
     // The user who caused the event (e.g. the puncher) — excluded from the push fan-out.
     actorUserId?: string | null,
-  ): Promise<void> {
+    // Idempotency key, unique per channel: a re-fired cron slot or a retried POST carrying the
+    // same key records nothing and pushes nothing the second time.
+    dedupeKey?: string,
+  ): Promise<{ duplicate: boolean }> {
     const now = new Date();
-    await col().insertOne({ channelId, ...ev, time: now, readBy: [], createdAt: now, expiresAt: eventExpiry(now) });
+    const doc = { channelId, ...ev, time: now, readBy: [], createdAt: now, expiresAt: eventExpiry(now), ...(dedupeKey ? { dedupeKey } : {}) };
+    if (dedupeKey) {
+      try {
+        const res = await col().updateOne({ channelId, dedupeKey }, { $setOnInsert: doc }, { upsert: true });
+        if (!res.upsertedCount) return { duplicate: true };
+      } catch (e) {
+        if ((e as { code?: number }).code === 11000) return { duplicate: true }; // lost a concurrent race
+        throw e;
+      }
+    } else {
+      await col().insertOne(doc);
+    }
     emitToAll('alert:new', { channelId });
     // Closed apps don't hear the socket — push to everyone who can see this channel.
     void alertPush.sendChannelAlert(channelId, ev.title, ev.body, actorUserId);
+    return { duplicate: false };
+  },
+
+  async hasEvent(channelId: string, dedupeKey: string): Promise<boolean> {
+    return !!(await col().findOne({ channelId, dedupeKey }, { projection: { _id: 1 } }));
   },
 
   // Personal "User Alerts" event addressed to a single user, with a push to just them.

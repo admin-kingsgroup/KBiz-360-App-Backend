@@ -22,7 +22,15 @@ describe('branch-wide alert audience', () => {
     expect(branchMembers(aud(), 'amd').sort()).toEqual(['amd-sales', 'gm', 'hub-accountant', 'super']);
   });
 
+  it('an H-coded Africa branch row (HNBO) is the NBO audience', () => {
+    const a = aud();
+    a.branchIdsByCode.set('NBO', ['b-hnbo']); // built through canonicalBranchCode in baseAudience
+    a.members.push({ id: 'nbo-sales', branchIds: ['b-hnbo'] });
+    expect(branchMembers(a, 'HNBO').sort()).toEqual(['gm', 'nbo-sales', 'super']);
+    expect(branchMembers(a, 'NBO').sort()).toEqual(['gm', 'nbo-sales', 'super']);
+  });
+
   it('a branch with no CRM row reaches only company-wide roles', () => {
-    expect(branchMembers(aud(), 'NBO').sort()).toEqual(['gm', 'super']);
+    expect(branchMembers(aud(), 'DAR').sort()).toEqual(['gm', 'super']);
   });
 });

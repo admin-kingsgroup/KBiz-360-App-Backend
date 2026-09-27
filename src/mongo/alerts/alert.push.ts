@@ -2,7 +2,7 @@ import { config } from '../../config';
 import { callDeviceRepo } from '../calls/call.repository';
 import { crmRepo } from '../crm.repo';
 import { appDb } from '../connection';
-import { ALERT_CHANNELS, USER_ALERTS_CHANNEL_ID } from './alertChannels';
+import { ALERT_CHANNELS, USER_ALERTS_CHANNEL_ID, canonicalBranchCode } from './alertChannels';
 
 // Push notifications for system alerts. The socket 'alert:new' only reaches OPEN apps —
 // this is what taps people on the shoulder when the app is closed. Audience per channel
@@ -77,7 +77,7 @@ async function baseAudience(): Promise<Audience> {
   }
   const branchIdsByCode = new Map<string, string[]>();
   for (const b of await crmRepo.listBranches({})) {
-    const code = String(b.code ?? '').toUpperCase();
+    const code = canonicalBranchCode(b.code); // HNBO row → the NBO channels
     if (code) branchIdsByCode.set(code, [...(branchIdsByCode.get(code) ?? []), String(b._id)]);
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -90,7 +90,7 @@ async function baseAudience(): Promise<Audience> {
 // A branch-wide channel's audience: everyone who belongs to its branch — the same people
 // alertGrants.effectiveFor lets see it in the feed.
 export function branchMembers(aud: Audience, branchCode: string): string[] {
-  const ids = new Set(aud.branchIdsByCode.get(branchCode.toUpperCase()) ?? []);
+  const ids = new Set(aud.branchIdsByCode.get(canonicalBranchCode(branchCode)) ?? []);
   return [...aud.companyWideIds, ...aud.members.filter((m) => m.branchIds.some((b) => ids.has(b))).map((m) => m.id)];
 }
 

@@ -9,7 +9,7 @@ import { userWorkBranches } from './userWorkBranches';
 import { attendanceExempt } from '../attendanceExempt';
 import { attendanceHidden } from '../attendanceHidden';
 import { alertService } from '../alerts/alert.service';
-import { reportChat } from '../alerts/reportChat.service';
+import { channelForModuleBranch } from '../alerts/alertChannels';
 import { attendanceBranchCode, dayKeyIn } from './attendanceBranch';
 import { punchChatLine, punchDedupeKey } from './punchMessage';
 import { userPositions } from '../userPositions';
@@ -87,13 +87,13 @@ function fmtTime(d: Date | null, tz: string = ATTENDANCE_TZ): string | null {
 
 // Attendance PUNCH-alert kill-switch (owner call, 07-31; ATTENDANCE_ALERTS=on in production):
 // gates the personal "You checked in" alert a puncher gets in My Alerts. It no longer gates the
-// day-close report — that is a branch's own daily record and posts to the branch group regardless.
+// day-close report — that is a branch's own daily record and posts to the HR channel regardless.
 const ATTENDANCE_ALERTS_ENABLED = process.env.ATTENDANCE_ALERTS === 'on';
 
-// Live punch line in the branch's GROUP CHAT (owner call, 2026-08-25) — separate switch from the
-// one above: that one gates the puncher's PERSONAL "You checked in" in My Alerts, this one gates
-// what a whole room sees. On by default; ATTENDANCE_PUNCH_CHAT=off silences the rooms without a
-// redeploy, and the 10pm day-close summary keeps posting either way.
+// Live punch line in the branch's HR alert channel (owner call, 2026-08-25; a group chat until
+// 2026-09-27) — separate switch from the one above: that one gates the puncher's PERSONAL "You
+// checked in" in My Alerts, this one gates what the branch's HR audience sees. On by default;
+// ATTENDANCE_PUNCH_CHAT=off silences it without a redeploy, and the 10pm summary keeps posting.
 const PUNCH_CHAT_ENABLED = process.env.ATTENDANCE_PUNCH_CHAT !== 'off';
 
 // Forgotten check-outs (owner call, 07-31): the 10pm sweep closes any day still open, stamping the
@@ -350,42 +350,42 @@ function mapMe(doc: AttendanceDoc | null) {
 
 // One attempt per (branch, day) per process. The sweep ticks every minute across a six-hour
 // window so that every branch's own 10pm falls inside it; without this, each tick after a branch
-// has reported would re-read the whole directory and its attendance to discover that the chat
-// post is a duplicate. A failed attempt is remembered too — a branch whose group has been renamed
-// must not log the same warning 360 times a night.
+// has reported would re-read the whole directory and its attendance to discover that the HR
+// event is a duplicate. A failed attempt is remembered too — a branch with no HR channel must not
+// log the same warning 360 times a night.
 const reportedTonight = new Set<string>();
 
-// A punch also shows up LIVE in the puncher's branch group — "🟢 Priya Patel checked in · 9:42 AM
-// · Geofence" — in the SAME room the 10pm day-close summary posts to ("HQ - <CODE> Finance", the
-// hub's "MHUB - Finance Team"). Reusing that group is what makes this work on day one: every
-// branch already has one, and nobody has to create or populate a new room.
+// A punch also shows up LIVE in the branch's HR alert channel — "🟢 Priya Patel checked in ·
+// 9:42 AM · Geofence" in "HR - BOM" — next to the 10pm day-close summary. Until 2026-09-27 both
+// posted into the branch's HR / Finance GROUP CHAT; the owner moved them into the app's Alerts
+// section ("stop that and send in this alert"). HR is grant-only: supers plus the people a
+// super-admin switches on in Team & Users (seeded from those groups' members).
 //
 // Which branch: the explicit working-branch assignment, else the user's first CRM branch — the
 // same rule the day-close report and the team view resolve with, so a person's live line and
-// their line in that night's summary can never land in different rooms.
+// their line in that night's summary can never land in different channels.
 //
 // Times are the BRANCH's wall clock, not IST: Nairobi reads Nairobi.
 //
 // Never throws and never blocks the punch — callers fire it with `void`. A branch that resolves
-// to no code, a group renamed past recognition, chat storage down: all of it is a log warning.
-// Recording attendance must not depend on being able to announce it.
+// to no code or has no HR channel is a log warning. Recording attendance must not depend on
+// being able to announce it.
 //
 // Hidden (director) users never reach here — their attendance is private by design, the same
 // reason they are absent from the day-close summary.
-// Attendance posts belong in the branch's HR room (owner call, 2026-09-06) — "HQ - BOM HR" /
-// "BOM - HR Team" — not the finance group they used to share with the money reports. A branch
-// that has no HR group yet falls back to its finance group, so the alert still lands somewhere
-// people see it instead of vanishing until the room is created.
-async function postAttendanceToBranchGroup(input: Omit<Parameters<typeof reportChat.post>[0], 'group'>): Promise<Awaited<ReturnType<typeof reportChat.post>>> {
-  try {
-    return await reportChat.post({ ...input, group: 'hr' });
-  } catch (e) {
-    if (!/^No hr group for branch/.test((e as Error).message)) throw e;
-    return await reportChat.post({ ...input, group: 'finance' });
-  }
+async function postAttendanceAlert(input: { branchCode: string; title: string; body?: string; dedupeKey?: string; actorUserId?: string }): Promise<{ duplicate: boolean; group: string }> {
+  const channel = channelForModuleBranch('attendance', input.branchCode);
+  if (!channel) throw new Error(`No HR alert channel for branch "${input.branchCode}"`);
+  const { duplicate } = await alertService.record(channel.id, {
+    source: 'Attendance',
+    title: input.title,
+    body: input.body ?? '',
+    context: `TK ${channel.branchCode} · HR`,
+  }, input.actorUserId ?? null, input.dedupeKey);
+  return { duplicate, group: channel.name };
 }
 
-async function postPunchToBranchGroup(userId: string, action: 'in' | 'out', at: Date, via: string | null): Promise<void> {
+async function postPunchToHrChannel(userId: string, action: 'in' | 'out', at: Date, via: string | null): Promise<void> {
   try {
     const user = await crmRepo.getUserById(userId);
     if (!user) return;
@@ -396,10 +396,11 @@ async function postPunchToBranchGroup(userId: string, action: 'in' | 'out', at: 
     const branchCode = attendanceBranchCode(branch ?? null);
     if (!branchCode) return; // unresolvable code (MUM and cities are handled inside)
     const { tz } = branchAutoClose({ code: branchCode });
-    await postAttendanceToBranchGroup({
+    await postAttendanceAlert({
       branchCode,
       title: punchChatLine({ name: nameOf(user), action, time: fmtTime(at, tz), via }),
       dedupeKey: punchDedupeKey(branchCode, dayKeyIn(tz, at), userId, action),
+      actorUserId: userId, // their own "You checked in" is in My Alerts — no second push
     });
   } catch (e) {
     // eslint-disable-next-line no-console
@@ -454,9 +455,9 @@ export const attendanceService = {
       checkInPhotoUrl: body.facePhotoUrl ?? null,
     });
     // Two fire-and-forget announcements: the puncher's own "You checked in" in My Alerts, and the
-    // live line in their branch's group chat. NEVER for hidden users — their punches surface nowhere.
+    // live line in their branch's HR channel. NEVER for hidden users — their punches surface nowhere.
     if (ATTENDANCE_ALERTS_ENABLED && !hidden) void alertService.recordAttendancePunch(userId, 'in', now, saved?.method ?? null);
-    if (PUNCH_CHAT_ENABLED && !hidden) void postPunchToBranchGroup(userId, 'in', now, saved?.method ?? null);
+    if (PUNCH_CHAT_ENABLED && !hidden) void postPunchToHrChannel(userId, 'in', now, saved?.method ?? null);
     return mapMe(saved);
   },
 
@@ -491,9 +492,9 @@ export const attendanceService = {
       faceVerified: hidden ? today.faceVerified : true,
       checkOutPhotoUrl: body.facePhotoUrl ?? null,
     });
-    // Same pair as check-in: the puncher's own My Alerts event, and the branch group's live line.
+    // Same pair as check-in: the puncher's own My Alerts event, and the branch HR channel's line.
     if (ATTENDANCE_ALERTS_ENABLED && !hidden) void alertService.recordAttendancePunch(userId, 'out', outAt, saved?.method ?? null);
-    if (PUNCH_CHAT_ENABLED && !hidden) void postPunchToBranchGroup(userId, 'out', outAt, saved?.method ?? null);
+    if (PUNCH_CHAT_ENABLED && !hidden) void postPunchToHrChannel(userId, 'out', outAt, saved?.method ?? null);
     return mapMe(saved);
   },
 
@@ -940,13 +941,12 @@ export const attendanceService = {
     return closed;
   },
 
-  // Daily attendance DAY-CLOSE report, branch-wise → the branch's GROUP CHAT.
+  // Daily attendance DAY-CLOSE report, branch-wise → the branch's HR alert channel ("HR - BOM").
   //
-  // Where: "HQ - <CODE> Finance" (the hub posts to "MHUB - Finance Team"), the same groups the
-  // daily finance reports land in. It used to post into the Attendance alert channels, which
-  // existed for BOM and AMD alone — so Nairobi, Dar es Salaam, Lubumbashi and the hub, whose
-  // people punch every day, were bucketed into a channel that did not exist and silently dropped.
-  // Every branch has a group, so every branch now gets its report.
+  // Where: since 2026-09-27 the "HR - <CODE>" channel, which exists for every branch including
+  // the hub. Before that it posted into the branch's HR / Finance group chat; before THAT into
+  // Attendance channels that existed for BOM and AMD alone, so Nairobi, Dar es Salaam, Lubumbashi
+  // and the hub were silently dropped. Every branch has an HR channel, so every branch reports.
   //
   // When: 22:00 in the BRANCH's own night, not 22:00 IST. FBM's 10pm is 01:30 IST the NEXT
   // calendar day, which is why the day being reported is the branch-local one: at that instant
@@ -955,7 +955,7 @@ export const attendanceService = {
   // each branch self-gates here (autoCloseDue is the same 10pm-local predicate the auto-close
   // uses), so one tick loop serves every zone.
   //
-  // Idempotent per (branch, day) through the chat post's own dedupe key, so ticking every minute
+  // Idempotent per (branch, day) through the HR event's dedupe key, so ticking every minute
   // from 10pm posts exactly once and a restart cannot double-post. `force` (the admin/manual path)
   // skips both the hour gate and the dedupe.
   async dayCloseReport(opts: { dateKey?: string; only?: string; force?: boolean } = {}): Promise<{ day: string; posted: { branch: string; group: string; present: number; total: number }[] }> {
@@ -1041,7 +1041,7 @@ export const attendanceService = {
       if (absentNames.length) bodyLines.push('', 'ABSENT', ...absentNames.map((n) => `• ${n}`));
 
       try {
-        const res = await postAttendanceToBranchGroup({
+        const res = await postAttendanceAlert({
           branchCode,
           title: `🕘 Attendance · ${branchCode} · ${presentCount}/${total} present · ${day}`,
           body: bodyLines.join('\n'),
