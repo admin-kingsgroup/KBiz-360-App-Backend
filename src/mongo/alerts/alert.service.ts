@@ -8,6 +8,7 @@ import { userWorkBranches } from '../attendance/userWorkBranches';
 import { emitToAll } from '../chat/chat.events';
 import { alertGrants } from './alertGrants';
 import { alertPush } from './alert.push';
+import type { AlertContact } from './alertContact';
 import { ANNOUNCEMENTS_CHANNEL_ID, USER_ALERTS_CHANNEL_ID, visibleChannelIds } from './alertChannels';
 
 // System-alert EVENTS (kb360_app.alert_events). Events are shared per channel; read-state is
@@ -23,6 +24,7 @@ export interface AlertEventDto {
   time: number; // epoch ms
   read: boolean;
   attachment?: { name: string; url: string }; // e.g. the ERP's invoice PDF (served from /uploads or S3)
+  contact?: AlertContact; // e.g. a converted lead's client → WhatsApp / Call buttons in the app
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -64,7 +66,8 @@ export const alertService = {
   async record(
     channelId: string,
     // attachment.key = storage key, persisted for future file cleanup; DTO exposes only {name,url}.
-    ev: { source: string; title: string; body: string; context: string; attachment?: { name: string; url: string; key?: string } },
+    // contact = someone to reach from the card; stored and listed, never pushed (see alertContact).
+    ev: { source: string; title: string; body: string; context: string; attachment?: { name: string; url: string; key?: string }; contact?: AlertContact },
     // The user who caused the event (e.g. the puncher) — excluded from the push fan-out.
     actorUserId?: string | null,
     // Idempotency key, unique per channel: a re-fired cron slot or a retried POST carrying the
@@ -170,7 +173,7 @@ export const alertService = {
       { $limit: MAX_EVENTS },
     ]).toArray();
     return {
-      events: docs.map((d: { _id: unknown; channelId: string; source: string; title: string; body: string; context: string; time: Date; readBy?: string[]; attachment?: { name: string; url: string } }) => ({
+      events: docs.map((d: { _id: unknown; channelId: string; source: string; title: string; body: string; context: string; time: Date; readBy?: string[]; attachment?: { name: string; url: string }; contact?: AlertContact }) => ({
         id: String(d._id),
         channelId: d.channelId,
         source: d.source,
@@ -180,6 +183,7 @@ export const alertService = {
         time: new Date(d.time).getTime(),
         read: (d.readBy ?? []).includes(userId),
         ...(d.attachment ? { attachment: { name: d.attachment.name, url: d.attachment.url } } : {}),
+        ...(d.contact?.phone ? { contact: { ...(d.contact.name ? { name: d.contact.name } : {}), phone: d.contact.phone } } : {}),
       })),
     };
   },

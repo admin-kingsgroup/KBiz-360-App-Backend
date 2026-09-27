@@ -71,6 +71,13 @@ export const ALERT_CHANNELS: AlertChannelDef[] = [
 
 export const ALERT_GRANT_IDS: string[] = ALERT_CHANNELS.map((c) => c.grant);
 
+// Branch-wide channels open by branch MEMBERSHIP only — owner, 2026-09-27: "if the lead is of BOM
+// branch then only BOM users can see that alert, no other branch user". A stored grant naming one
+// (the admin API used to accept any ALERT_GRANT_ID) must never widen that to another branch's user,
+// so these are neither storable nor honoured from storage.
+const BRANCH_WIDE_GRANTS = new Set(ALERT_CHANNELS.filter((c) => c.branchWide).map((c) => c.grant));
+export const isBranchWideGrant = (grant: string): boolean => BRANCH_WIDE_GRANTS.has(grant);
+
 // The ERP renamed the Africa branch CODES in the shared branches collection on 2026-09-16
 // (wave 29: NBO→HNBO, DAR→HDAR, FBM→HFBM). The app keeps the short codes for its channels and
 // branch chips, so every code arriving from the ERP, the CRM or a user's branch row goes
@@ -108,6 +115,12 @@ export const USER_ALERTS_CHANNEL_ID = 'user_alerts';
 export function branchWideGrants(branchCodes: string[] | null): string[] {
   const codes = branchCodes === null ? null : new Set(branchCodes.map(canonicalBranchCode));
   return ALERT_CHANNELS.filter((c) => c.branchWide && (codes === null || codes.has(c.branchCode))).map((c) => c.grant);
+}
+
+// What a user can see: the grants a super-admin stored (branch-wide ones dropped — see
+// isBranchWideGrant) plus the branch-wide grants of the branches they belong to.
+export function effectiveGrants(stored: string[], branchCodes: string[] | null): string[] {
+  return [...new Set([...stored.filter((g) => !isBranchWideGrant(g)), ...branchWideGrants(branchCodes)])];
 }
 
 // Channels a user may see: super-admins see every channel; everyone else sees exactly the

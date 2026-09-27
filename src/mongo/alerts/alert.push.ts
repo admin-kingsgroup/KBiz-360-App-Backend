@@ -124,13 +124,15 @@ async function sendToUsers(userIds: string[], title: string, text: string, chann
 }
 
 export const alertPush = {
-  // Channel event → everyone who can see the channel (supers + grant holders, + the branch's
-  // members for a branch-wide channel), minus the actor.
+  // Channel event → everyone who can see the channel (supers, plus the grant holders of a
+  // grant-only channel or the members of a branch-wide one's branch), minus the actor.
   async sendChannelAlert(channelId: string, title: string, body: string, actorUserId?: string | null): Promise<void> {
     try {
       const channel = ALERT_CHANNELS.find((c) => c.id === channelId);
       if (!channel) return; // announcements go through sendAnnouncement
-      const [aud, holders] = await Promise.all([baseAudience(), grantHolders(channel.grant)]);
+      // A branch-wide channel reaches its branch only — stored grants for it are ignored, exactly
+      // as alertGrants.effectiveFor ignores them for the feed.
+      const [aud, holders] = await Promise.all([baseAudience(), channel.branchWide ? [] : grantHolders(channel.grant)]);
       const { superIds, disabled } = aud;
       const branch = channel.branchWide ? branchMembers(aud, channel.branchCode) : [];
       const audience = [...superIds, ...holders, ...branch].filter((id) => !disabled.has(id) && id !== String(actorUserId ?? ''));
