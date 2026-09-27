@@ -65,14 +65,18 @@ alertsIngestRouter.post(
   validate(z.object({
     // Everything except the legacy Finance and CRM families was retired 2026-08-19 — those
     // reports go to the branch group chats via /chat below, and an emitter still aiming here must
-    // fail loudly rather than write into a feed nobody reads. 'leads' (CRM Alerts: a lead
-    // converted into a query) was added 2026-09-27.
-    module: z.enum(['finance', 'accounts', 'crm', 'leads']),
+    // fail loudly rather than write into a feed nobody reads. Added 2026-09-27: 'leads' (CRM),
+    // 'erp' (ERP), 'erp-reports' (ERP Reports), 'crm-reports' (CRM Reports). HR (attendance) is
+    // written by this backend itself, so it is not ingestable.
+    module: z.enum(['finance', 'accounts', 'crm', 'leads', 'erp', 'erp-reports', 'crm-reports']),
     branchCode: z.string().trim().min(2).max(10),
     title: z.string().trim().min(1).max(160),
     body: z.string().trim().max(2000).optional(),
     source: z.string().trim().min(1).max(80),
     context: z.string().trim().max(120).optional(),
+    // Idempotency, unique per channel ("ar-BOM-2026-09-27"): a re-fired cron slot or a retry
+    // records nothing the second time and answers { duplicate: true }.
+    dedupeKey: z.string().trim().min(1).max(120).optional(),
     attachment: z.object({
       name: z.string().trim().min(1).max(120),
       mime: z.literal('application/pdf').optional(),
@@ -80,12 +84,17 @@ alertsIngestRouter.post(
     }).optional(),
   })),
   asyncHandler(async (req, res) => {
-    const { module, branchCode, title, body, source, context, attachment } = req.body as {
+    const { module, branchCode, title, body, source, context, attachment, dedupeKey } = req.body as {
       module: string; branchCode: string; title: string; body?: string; source: string; context?: string;
-      attachment?: { name: string; mime?: string; data: string };
+      attachment?: { name: string; mime?: string; data: string }; dedupeKey?: string;
     };
     const channel = channelForModuleBranch(module, branchCode);
     if (!channel) throw BadRequest(`No alert channel for module "${module}" / branch "${branchCode}"`);
+    // Cheap early answer for a repeat, before any PDF is uploaded (record() still guards the race).
+    if (dedupeKey && await alertService.hasEvent(channel.id, dedupeKey)) {
+      res.json({ ok: true, channelId: channel.id, duplicate: true });
+      return;
+    }
 
     let stored: { name: string; url: string; key: string } | undefined;
     if (attachment) {
@@ -112,16 +121,18 @@ alertsIngestRouter.post(
     }
 
     // Default context embeds the branch code — the app buckets events into branch sections by it.
-    const MODULE_LABEL: Record<string, string> = { accounts: 'Finance', leads: 'CRM Alerts' };
+    const MODULE_LABEL: Record<string, string> = {
+      accounts: 'Finance', crm: 'CRM Payments', leads: 'CRM', erp: 'ERP', 'erp-reports': 'ERP Reports', 'crm-reports': 'CRM Reports',
+    };
     const label = MODULE_LABEL[channel.module] ?? channel.module.toUpperCase();
-    await alertService.record(channel.id, {
+    const { duplicate } = await alertService.record(channel.id, {
       source,
       title,
       body: body ?? '',
       context: context ?? `TK ${channel.branchCode} · ${label}`,
       ...(stored ? { attachment: stored } : {}),
-    });
-    res.json({ ok: true, channelId: channel.id, ...(stored ? { attachmentUrl: stored.url } : {}) });
+    }, null, dedupeKey);
+    res.json({ ok: true, channelId: channel.id, ...(duplicate ? { duplicate: true } : {}), ...(stored && !duplicate ? { attachmentUrl: stored.url } : {}) });
   }),
 );
 

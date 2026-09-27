@@ -10,36 +10,57 @@ import { attendanceBranchCode } from '../attendance/attendanceBranch';
 // Pure unit tests — no DB. The live ingest path is exercised by the smoke/e2e flow.
 
 describe('alert channel registry', () => {
-  it('registers the external channels next to attendance', () => {
-    // The legacy Finance and CRM families (hidden in the app, still fed by the CRM backend) and
-    // the CRM Alerts lead-conversion feed. Every other report posts into a branch GROUP CHAT now.
+  it('registers the legacy pair and the five Alerts groups (HR · CRM · ERP · CRM Reports · ERP Reports)', () => {
+    const six = ['bom', 'amd', 'nbo', 'dar', 'fbm', 'mhub'];
+    const five = ['bom', 'amd', 'nbo', 'dar', 'fbm'];
     expect(ALERT_CHANNELS.map((c) => c.id)).toEqual([
       'tk_fin_bom', 'tk_fin_amd', 'tk_crm_bom', 'tk_crm_amd',
-      'tk_lead_bom', 'tk_lead_amd', 'tk_lead_nbo', 'tk_lead_dar', 'tk_lead_fbm',
+      ...six.map((b) => `tk_hr_${b}`),
+      ...five.map((b) => `tk_lead_${b}`),
+      ...six.map((b) => `tk_erp_${b}`),
+      ...five.map((b) => `tk_crmrep_${b}`),
+      ...six.map((b) => `tk_erprep_${b}`),
     ]);
-    expect(ALERT_GRANT_IDS).toEqual([
-      'BOM-accounts', 'AMD-accounts', 'BOM-crm', 'AMD-crm',
-      'BOM-leads', 'AMD-leads', 'NBO-leads', 'DAR-leads', 'FBM-leads',
-    ]);
+    expect(ALERT_CHANNELS.find((c) => c.id === 'tk_hr_mhub')).toMatchObject({ name: 'HR - MHUB', grant: 'MHUB-attendance' });
+    expect(ALERT_CHANNELS.find((c) => c.id === 'tk_lead_bom')).toMatchObject({ name: 'CRM - BOM', grant: 'BOM-leads' });
+    expect(ALERT_CHANNELS.find((c) => c.id === 'tk_erp_nbo')).toMatchObject({ name: 'ERP - NBO', grant: 'NBO-erp' });
+    expect(ALERT_CHANNELS.find((c) => c.id === 'tk_crmrep_dar')).toMatchObject({ name: 'CRM Reports - DAR', grant: 'DAR-crm-reports' });
+    expect(ALERT_CHANNELS.find((c) => c.id === 'tk_erprep_fbm')).toMatchObject({ name: 'ERP Reports - FBM', grant: 'FBM-erp-reports' });
+    // The legacy grant-only pair no longer shares the "CRM - BOM" name with the new CRM group.
+    expect(ALERT_CHANNELS.find((c) => c.id === 'tk_crm_bom')?.name).toBe('CRM Payments - BOM');
+    expect(new Set(ALERT_CHANNELS.map((c) => c.name)).size).toBe(ALERT_CHANNELS.length);
+    expect(new Set(ALERT_GRANT_IDS).size).toBe(ALERT_GRANT_IDS.length);
   });
 
-  it('CRM Alerts (leads) cover all five branches and are the ONLY branch-wide channels', () => {
+  it('ingest modules resolve to their group, per branch; the hub has no CRM channels', () => {
+    for (const br of ['BOM', 'AMD', 'NBO', 'DAR', 'FBM', 'MHUB']) {
+      expect(channelForModuleBranch('erp', br)?.id).toBe(`tk_erp_${br.toLowerCase()}`);
+      expect(channelForModuleBranch('erp-reports', br)?.id).toBe(`tk_erprep_${br.toLowerCase()}`);
+      expect(channelForModuleBranch('attendance', br)?.id).toBe(`tk_hr_${br.toLowerCase()}`);
+    }
     for (const br of ['BOM', 'AMD', 'NBO', 'DAR', 'FBM']) {
       expect(channelForModuleBranch('leads', br)?.id).toBe(`tk_lead_${br.toLowerCase()}`);
+      expect(channelForModuleBranch('crm-reports', br)?.id).toBe(`tk_crmrep_${br.toLowerCase()}`);
     }
-    expect(channelForModuleBranch('leads', 'MHUB')).toBeNull(); // the hub takes no leads
-    // The grant-only pair carries payment amounts — it must never open up to a whole branch.
-    expect(ALERT_CHANNELS.filter((c) => c.branchWide).every((c) => c.module === 'leads')).toBe(true);
+    expect(channelForModuleBranch('leads', 'MHUB')).toBeNull();
+    expect(channelForModuleBranch('crm-reports', 'MHUB')).toBeNull();
   });
 
-  it('branch membership grants exactly that branch’s CRM Alerts; company-wide roles get all', () => {
-    expect(branchWideGrants(['BOM'])).toEqual(['BOM-leads']);
-    expect(branchWideGrants(['bom', 'NBO'])).toEqual(['BOM-leads', 'NBO-leads']); // case-insensitive
+  it('only CRM and CRM Reports are branch-wide — HR / ERP / ERP Reports stay grant-only', () => {
+    const wide = [...new Set(ALERT_CHANNELS.filter((c) => c.branchWide).map((c) => c.module))].sort();
+    expect(wide).toEqual(['crm-reports', 'leads']);
+  });
+
+  it('branch membership grants that branch’s CRM + CRM Reports; company-wide roles get all', () => {
+    expect(branchWideGrants(['BOM'])).toEqual(['BOM-leads', 'BOM-crm-reports']);
+    expect(branchWideGrants(['bom', 'NBO'])).toEqual(['BOM-leads', 'NBO-leads', 'BOM-crm-reports', 'NBO-crm-reports']);
     expect(branchWideGrants(['MHUB'])).toEqual([]);
     expect(branchWideGrants([])).toEqual([]);
-    expect(branchWideGrants(null)).toEqual(['BOM-leads', 'AMD-leads', 'NBO-leads', 'DAR-leads', 'FBM-leads']);
-    // A BOM user sees BOM's CRM Alerts and nothing of the grant-only pair or other branches.
-    expect(visibleChannelIds(false, branchWideGrants(['BOM']))).toEqual(['tk_lead_bom']);
+    expect(branchWideGrants(null)).toHaveLength(10);
+    // A BOM salesperson sees BOM's CRM + CRM Reports and nothing of HR / ERP / ERP Reports.
+    expect(visibleChannelIds(false, branchWideGrants(['BOM']))).toEqual(['tk_lead_bom', 'tk_crmrep_bom']);
+    // …which only a grant opens.
+    expect(visibleChannelIds(false, ['BOM-attendance', 'BOM-erp', 'BOM-erp-reports'])).toEqual(['tk_hr_bom', 'tk_erp_bom', 'tk_erprep_bom']);
   });
 
   it('maps (module, branch) to the right channel, with finance → accounts aliasing', () => {

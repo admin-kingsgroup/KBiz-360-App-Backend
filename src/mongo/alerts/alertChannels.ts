@@ -2,7 +2,8 @@
 // external ERP/CRM ingest route. Channel ids match the frontend's pulse channel ids; `grant` uses
 // the app's existing access-grant format `${branchCode}-${module}` (see Frontend
 // makeAccessFilters.alertOK). `module` uses the frontend ModuleKey vocabulary
-// ('accounts' = Finance/KBiz Books, 'crm' = CRM, 'leads' = CRM Alerts: lead → query conversions).
+// ('accounts' = legacy Finance, 'crm' = legacy CRM Payments, 'attendance' = HR, 'leads' = CRM,
+// 'erp' = ERP, 'crm-reports' = CRM Reports, 'erp-reports' = ERP Reports).
 //
 // REMOVED 2026-08-19 — 'receivables' (Clients Receivables), 'payables' (Supplier Payables),
 // 'bankcash', 'hr' (Attendance), 'acct' (the per-voucher money feed), 'sales' (approved invoice
@@ -15,10 +16,14 @@
 // scripts/purge-alert-channels.js. Do not re-add them here without a matching Frontend release.
 // The 'Directors Attendance' channel went with them (owner call): hidden attendance is no longer
 // summarised anywhere, which is deliberate — it must never land in a branch group.
+//
+// REVERSED 2026-09-27 (owner: "stop that and send in this alert"): those feeds are alerts again,
+// regrouped as HR / ERP / ERP Reports below, and the group chats no longer receive them. The
+// retired ids and grant keys above stay retired — the new families use fresh ones.
 export interface AlertChannelDef {
   id: string;
-  branchCode: string; // ERP/CRM branch code the channel covers (BOM/AMD/NBO/DAR/FBM)
-  module: 'accounts' | 'crm' | 'leads';
+  branchCode: string; // ERP/CRM branch code the channel covers (BOM/AMD/NBO/DAR/FBM/MHUB)
+  module: 'accounts' | 'crm' | 'leads' | 'attendance' | 'erp' | 'erp-reports' | 'crm-reports';
   grant: string; // per-user grant string a super-admin assigns
   name: string;
   // Seen by EVERY user who belongs to the branch (CRM user.branch_ids) with no grant needed;
@@ -26,21 +31,42 @@ export interface AlertChannelDef {
   branchWide?: boolean;
 }
 
+// The Alerts section's groups, in the order the app shows them (owner, 2026-09-27):
+//   HR · CRM · ERP · CRM Reports · ERP Reports — one channel per branch in each.
+// HR / ERP / ERP Reports carry money or colleagues' hours, so they are GRANT-ONLY (supers + the
+// people a super-admin switches on in Team & Users). CRM / CRM Reports are BRANCH-WIDE.
+const HR_ERP_BRANCHES = ['BOM', 'AMD', 'NBO', 'DAR', 'FBM', 'MHUB'];
+const CRM_BRANCHES = ['BOM', 'AMD', 'NBO', 'DAR', 'FBM'];
+const family = (
+  prefix: string, module: AlertChannelDef['module'], label: string, codes: string[], branchWide = false,
+): AlertChannelDef[] => codes.map((code) => ({
+  id: `${prefix}_${code.toLowerCase()}`, branchCode: code, module, grant: `${code}-${module}`,
+  name: `${label} - ${code}`, ...(branchWide ? { branchWide: true } : {}),
+}));
+
 export const ALERT_CHANNELS: AlertChannelDef[] = [
-  // Fed live by the KBiz Books ERP backend via POST /api/alerts/ingest.
+  // LEGACY, hidden in the app. Finance: the old KBiz Books voucher feed. CRM Payments: fed by the
+  // CRM backend (module 'crm') — payments submitted/verified, ERP pushes, refund/reissue cases.
   { id: 'tk_fin_bom', branchCode: 'BOM', module: 'accounts', grant: 'BOM-accounts', name: 'Finance - BOM' },
   { id: 'tk_fin_amd', branchCode: 'AMD', module: 'accounts', grant: 'AMD-accounts', name: 'Finance - AMD' },
-  // Fed live by the CRM backend via POST /api/alerts/ingest.
-  { id: 'tk_crm_bom', branchCode: 'BOM', module: 'crm', grant: 'BOM-crm', name: 'CRM - BOM' },
-  { id: 'tk_crm_amd', branchCode: 'AMD', module: 'crm', grant: 'AMD-crm', name: 'CRM - AMD' },
-  // "CRM Alerts" — a lead converted into a query, posted by the CRM backend (module 'leads') into
-  // the QUERY's branch. Branch-wide: everyone in that branch sees it. Kept apart from the
-  // grant-only 'crm' pair above, which also carries payment amounts.
-  { id: 'tk_lead_bom', branchCode: 'BOM', module: 'leads', grant: 'BOM-leads', name: 'CRM Alerts - BOM', branchWide: true },
-  { id: 'tk_lead_amd', branchCode: 'AMD', module: 'leads', grant: 'AMD-leads', name: 'CRM Alerts - AMD', branchWide: true },
-  { id: 'tk_lead_nbo', branchCode: 'NBO', module: 'leads', grant: 'NBO-leads', name: 'CRM Alerts - NBO', branchWide: true },
-  { id: 'tk_lead_dar', branchCode: 'DAR', module: 'leads', grant: 'DAR-leads', name: 'CRM Alerts - DAR', branchWide: true },
-  { id: 'tk_lead_fbm', branchCode: 'FBM', module: 'leads', grant: 'FBM-leads', name: 'CRM Alerts - FBM', branchWide: true },
+  { id: 'tk_crm_bom', branchCode: 'BOM', module: 'crm', grant: 'BOM-crm', name: 'CRM Payments - BOM' },
+  { id: 'tk_crm_amd', branchCode: 'AMD', module: 'crm', grant: 'AMD-crm', name: 'CRM Payments - AMD' },
+  // HR — attendance: each check-in / check-out line and the 10 PM day-close summary, written by
+  // this backend's attendance service (they used to post into the branch HR / Finance group).
+  ...family('tk_hr', 'attendance', 'HR', HR_ERP_BRANCHES),
+  // CRM — a lead converted into a query, posted by the CRM backend (module 'leads') into the
+  // QUERY's branch. (Ids keep the 'lead' name it launched with as "CRM Alerts".)
+  ...family('tk_lead', 'leads', 'CRM', CRM_BRANCHES, true),
+  // ERP — live KBiz Books events (module 'erp'): approved-booking invoice PDFs, deal summaries
+  // (a hub deal lands in BOTH branches), and every posted money voucher. They used to post into
+  // "<BR> - Ticketing" / "<BR> - Holidays" / "<BR> - Branch Accounts" / the "Hub … A/B" rooms.
+  ...family('tk_erp', 'erp', 'ERP', HR_ERP_BRANCHES),
+  // CRM Reports — the CRM's daily 11:00 branch-local Query Ageing PDF (module 'crm-reports').
+  ...family('tk_crmrep', 'crm-reports', 'CRM Reports', CRM_BRANCHES, true),
+  // ERP Reports — the ERP's daily 11:00 branch-local Receivables / Payables ageing and Bank & Cash
+  // PDFs plus the weekly 61+ overdue nudge (module 'erp-reports'); they used to post into
+  // "HQ - <BR> Finance".
+  ...family('tk_erprep', 'erp-reports', 'ERP Reports', HR_ERP_BRANCHES),
 ];
 
 export const ALERT_GRANT_IDS: string[] = ALERT_CHANNELS.map((c) => c.grant);
