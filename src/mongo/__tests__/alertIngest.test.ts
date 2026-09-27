@@ -4,8 +4,11 @@ import {
   branchWideGrants,
   canonicalBranchCode,
   channelForModuleBranch,
+  effectiveGrants,
+  isBranchWideGrant,
   visibleChannelIds,
 } from '../alerts/alertChannels';
+import { contactSchema, e164 } from '../alerts/alertContact';
 import { attendanceBranchCode } from '../attendance/attendanceBranch';
 
 // Pure unit tests — no DB. The live ingest path is exercised by the smoke/e2e flow.
@@ -213,5 +216,52 @@ describe('requireServiceToken', () => {
       mw({ headers: { 'x-service-token': 'right-token' } }, {}, header);
       expect(header).toHaveBeenCalledWith();
     });
+  });
+});
+
+describe('branch-wide channels are for their own branch only (owner, 2026-09-27)', () => {
+  it('CRM and CRM Reports grants are branch-wide; HR / ERP / ERP Reports are not', () => {
+    expect(isBranchWideGrant('BOM-leads')).toBe(true);
+    expect(isBranchWideGrant('NBO-crm-reports')).toBe(true);
+    expect(isBranchWideGrant('BOM-erp')).toBe(false);
+    expect(isBranchWideGrant('BOM-attendance')).toBe(false);
+  });
+
+  it("a stored grant can never show another branch's CRM alerts", () => {
+    // An AMD user who somehow holds BOM-leads / BOM-crm-reports in storage (plus a real ERP grant).
+    const amd = effectiveGrants(['BOM-leads', 'BOM-crm-reports', 'BOM-erp'], ['AMD']);
+    expect(amd.sort()).toEqual(['AMD-crm-reports', 'AMD-leads', 'BOM-erp']);
+    expect(visibleChannelIds(false, amd)).not.toContain('tk_lead_bom');
+    expect(visibleChannelIds(false, amd)).toContain('tk_lead_amd');
+    // A BOM user sees BOM's CRM alerts only.
+    expect(visibleChannelIds(false, effectiveGrants([], ['BOM']))).toEqual(['tk_lead_bom', 'tk_crmrep_bom']);
+    // A user in no branch sees no CRM alerts at all.
+    expect(effectiveGrants(['BOM-leads'], [])).toEqual([]);
+    // Company-wide roles (branchCodes null) still see every branch's.
+    expect(effectiveGrants([], null)).toHaveLength(10);
+  });
+});
+
+describe('alert contact (the converted lead\'s client → WhatsApp / Call)', () => {
+  it('normalises to E.164', () => {
+    expect(e164('+91 98765-43210')).toBe('+919876543210');
+    expect(e164('0091 (98765) 43210')).toBe('+919876543210');
+    expect(e164('+254700000000')).toBe('+254700000000');
+  });
+
+  it('refuses numbers that are not international', () => {
+    expect(e164('9876543210')).toBeNull(); // no country code — could be anywhere
+    expect(e164('+0123456789')).toBeNull();
+    expect(e164('+12345')).toBeNull();
+    expect(e164('+91 98765 43210 ext 5')).toBeNull();
+    expect(e164('')).toBeNull();
+    expect(e164(null)).toBeNull();
+  });
+
+  it('ingest schema stores the normalised phone and fails loudly on a bad one', () => {
+    expect(contactSchema.parse({ name: ' Pradip Shimpi ', phone: '+91 98765 43210' })).toEqual({ name: 'Pradip Shimpi', phone: '+919876543210' });
+    expect(contactSchema.parse({ phone: '+254700000000' })).toEqual({ phone: '+254700000000' });
+    expect(contactSchema.safeParse({ phone: '9876543210' }).success).toBe(false);
+    expect(contactSchema.safeParse({ name: 'No phone' }).success).toBe(false);
   });
 });

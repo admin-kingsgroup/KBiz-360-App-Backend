@@ -8,6 +8,7 @@ import { getStorage } from '../../storage';
 import { requireServiceToken } from './serviceAuth';
 import { channelForModuleBranch } from './alertChannels';
 import { attachmentFilename } from './attachmentName';
+import { contactSchema, type AlertContact } from './alertContact';
 import { reportChat } from './reportChat.service';
 import { alertService } from './alert.service';
 
@@ -82,11 +83,14 @@ alertsIngestRouter.post(
       mime: z.literal('application/pdf').optional(),
       data: z.string().min(1).max(MAX_ATTACHMENT_B64),
     }).optional(),
+    // Someone to reach from the card — the CRM sends the converted lead's client. Stored with the
+    // event and shown as WhatsApp + Call buttons; never part of the push text.
+    contact: contactSchema.optional(),
   })),
   asyncHandler(async (req, res) => {
-    const { module, branchCode, title, body, source, context, attachment, dedupeKey } = req.body as {
+    const { module, branchCode, title, body, source, context, attachment, dedupeKey, contact } = req.body as {
       module: string; branchCode: string; title: string; body?: string; source: string; context?: string;
-      attachment?: { name: string; mime?: string; data: string }; dedupeKey?: string;
+      attachment?: { name: string; mime?: string; data: string }; dedupeKey?: string; contact?: AlertContact;
     };
     const channel = channelForModuleBranch(module, branchCode);
     if (!channel) throw BadRequest(`No alert channel for module "${module}" / branch "${branchCode}"`);
@@ -131,6 +135,7 @@ alertsIngestRouter.post(
       body: body ?? '',
       context: context ?? `TK ${channel.branchCode} · ${label}`,
       ...(stored ? { attachment: stored } : {}),
+      ...(contact ? { contact: { ...(contact.name ? { name: contact.name } : {}), phone: contact.phone } } : {}),
     }, null, dedupeKey);
     res.json({ ok: true, channelId: channel.id, ...(duplicate ? { duplicate: true } : {}), ...(stored && !duplicate ? { attachmentUrl: stored.url } : {}) });
   }),
