@@ -6,8 +6,9 @@ import { ALERT_CHANNELS, USER_ALERTS_CHANNEL_ID } from './alertChannels';
 
 // Push notifications for system alerts. The socket 'alert:new' only reaches OPEN apps —
 // this is what taps people on the shoulder when the app is closed. Audience per channel
-// event = super-admins + the channel's grant holders (exactly who can see it in the feed),
-// minus the acting user; announcements go to their recipient list ('*' = everyone).
+// event = super-admins + the channel's grant holders + (branch-wide channels) the branch's
+// members — exactly who can see it in the feed — minus the acting user; announcements go to
+// their recipient list ('*' = everyone).
 // Mirrors reminder.push.ts: shared push_devices Expo tokens, dry-run unless
 // EXPO_PUSH_ENABLED=true, batches of ≤100, fire-and-forget everywhere.
 
@@ -48,23 +49,49 @@ async function postToExpo(messages: ExpoMessage[]): Promise<void> {
 // A bulk booking approval can burst 100+ alert events; without a cache each one
 // would re-read roles + users from the throttled shared Atlas tier.
 const CACHE_MS = 60_000;
-let _cache: { at: number; superIds: string[]; disabled: Set<string> } | null = null;
+export interface Audience {
+  at: number;
+  superIds: string[];
+  disabled: Set<string>;
+  companyWideIds: string[]; // super_admin + company_manager (level ≤ 2) — every branch is theirs
+  members: { id: string; branchIds: string[] }[]; // everyone else, with their CRM branch_ids
+  branchIdsByCode: Map<string, string[]>; // 'BOM' → branch _ids carrying that code
+}
+let _cache: Audience | null = null;
 
-async function baseAudience(): Promise<{ superIds: string[]; disabled: Set<string> }> {
+async function baseAudience(): Promise<Audience> {
   if (_cache && Date.now() - _cache.at < CACHE_MS) return _cache;
   const roles = await crmRepo.listRoles();
   const superRoleIds = new Set(
     roles.filter((r) => r.level === 1 || (r.permissions ?? []).includes('*')).map((r) => String(r._id)),
   );
-  const users = await crmRepo.listUsers({ status: 'active' });
-  const superIds = users
-    .filter((u) => superRoleIds.has(String(u.role_id)) && u.access?.app !== false)
-    .map((u) => String(u._id));
+  // Same rule as access.deriveAccess: a missing role counts as level 5.
+  const levelOf = new Map(roles.map((r) => [String(r._id), r.level ?? 5]));
+  const users = (await crmRepo.listUsers({ status: 'active' })).filter((u) => u.access?.app !== false);
+  const superIds = users.filter((u) => superRoleIds.has(String(u.role_id))).map((u) => String(u._id));
+  const companyWideIds: string[] = [];
+  const members: Audience['members'] = [];
+  for (const u of users) {
+    if ((levelOf.get(String(u.role_id)) ?? 5) <= 2) companyWideIds.push(String(u._id));
+    else members.push({ id: String(u._id), branchIds: (u.branch_ids ?? []).map(String) });
+  }
+  const branchIdsByCode = new Map<string, string[]>();
+  for (const b of await crmRepo.listBranches({})) {
+    const code = String(b.code ?? '').toUpperCase();
+    if (code) branchIdsByCode.set(code, [...(branchIdsByCode.get(code) ?? []), String(b._id)]);
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const disabledDocs = await (appDb().collection('app_access') as any).find({ disabled: true }).toArray();
   const disabled = new Set<string>(disabledDocs.map((d: { userId?: string }) => String(d.userId)));
-  _cache = { at: Date.now(), superIds, disabled };
+  _cache = { at: Date.now(), superIds, disabled, companyWideIds, members, branchIdsByCode };
   return _cache;
+}
+
+// A branch-wide channel's audience: everyone who belongs to its branch — the same people
+// alertGrants.effectiveFor lets see it in the feed.
+export function branchMembers(aud: Audience, branchCode: string): string[] {
+  const ids = new Set(aud.branchIdsByCode.get(branchCode.toUpperCase()) ?? []);
+  return [...aud.companyWideIds, ...aud.members.filter((m) => m.branchIds.some((b) => ids.has(b))).map((m) => m.id)];
 }
 
 async function grantHolders(grant: string): Promise<string[]> {
@@ -97,13 +124,16 @@ async function sendToUsers(userIds: string[], title: string, text: string, chann
 }
 
 export const alertPush = {
-  // Channel event → everyone who can see the channel (supers + grant holders), minus the actor.
+  // Channel event → everyone who can see the channel (supers + grant holders, + the branch's
+  // members for a branch-wide channel), minus the actor.
   async sendChannelAlert(channelId: string, title: string, body: string, actorUserId?: string | null): Promise<void> {
     try {
       const channel = ALERT_CHANNELS.find((c) => c.id === channelId);
       if (!channel) return; // announcements go through sendAnnouncement
-      const [{ superIds, disabled }, holders] = await Promise.all([baseAudience(), grantHolders(channel.grant)]);
-      const audience = [...superIds, ...holders].filter((id) => !disabled.has(id) && id !== String(actorUserId ?? ''));
+      const [aud, holders] = await Promise.all([baseAudience(), grantHolders(channel.grant)]);
+      const { superIds, disabled } = aud;
+      const branch = channel.branchWide ? branchMembers(aud, channel.branchCode) : [];
+      const audience = [...superIds, ...holders, ...branch].filter((id) => !disabled.has(id) && id !== String(actorUserId ?? ''));
       await sendToUsers(audience, channel.name, body ? `${title} — ${body}` : title, channelId);
     } catch (e) {
       // eslint-disable-next-line no-console

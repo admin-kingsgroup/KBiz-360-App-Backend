@@ -122,11 +122,11 @@ export const alertService = {
   async listFor(userId: string): Promise<{ events: AlertEventDto[] }> {
     const access = await accessService.accessForUserId(userId);
     if (!access) return { events: [] };
-    const grants = await alertGrants.grantsFor(userId);
+    const grants = await alertGrants.effectiveFor(access);
     const channelIds = visibleChannelIds(access.isSuper, grants);
     // Supers: every registered channel + the full announcements history.
     // Everyone else: announcements addressed to them (directly or via '*') PLUS any
-    // channels a super-admin granted them (visibleChannelIds honors alertGrants).
+    // channels a super-admin granted them and the branch-wide channels of their branches.
     const visible: object[] = access.isSuper
       ? [{ channelId: { $in: [...channelIds, ANNOUNCEMENTS_CHANNEL_ID] } }]
       : [{ channelId: ANNOUNCEMENTS_CHANNEL_ID, recipients: { $in: [userId, '*'] } }];
@@ -170,7 +170,7 @@ export const alertService = {
     const access = await accessService.accessForUserId(userId);
     if (!access) return null;
     if (!access.isSuper) {
-      const grants = await alertGrants.grantsFor(userId);
+      const grants = await alertGrants.effectiveFor(access);
       const channelIds = new Set(visibleChannelIds(false, grants));
       const isAddressedAnnouncement = d.channelId === ANNOUNCEMENTS_CHANNEL_ID
         && (d.recipients ?? []).some((r: string) => r === userId || r === '*');

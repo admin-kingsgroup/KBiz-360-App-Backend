@@ -97,7 +97,7 @@ export const mongoAuth = {
       throw Forbidden('Your access to the app has been disabled by an administrator.');
     }
     const tokens = await issueTokens(access.userId, access.roleName);
-    access.alerts = await alertGrants.grantsFor(access.userId);
+    access.alerts = await alertGrants.effectiveFor(access);
     return { ...tokens, user: toPublic(user, access, await userAvatars.urlFor(access.userId)), access };
   },
 
@@ -105,7 +105,7 @@ export const mongoAuth = {
     const user = await crmRepo.getUserById(userId);
     if (!user) throw Unauthorized('Session user not found');
     const access = await accessService.accessForUser(user);
-    access.alerts = await alertGrants.grantsFor(access.userId);
+    access.alerts = await alertGrants.effectiveFor(access);
     return { user: toPublic(user, access, await userAvatars.urlFor(access.userId)), access };
   },
 

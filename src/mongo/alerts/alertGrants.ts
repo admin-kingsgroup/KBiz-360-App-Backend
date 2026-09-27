@@ -1,5 +1,8 @@
+import { Types } from 'mongoose';
 import { appDb } from '../connection';
-import { ALERT_GRANT_IDS } from './alertChannels';
+import { crmRepo } from '../crm.repo';
+import type { MongoAccess } from '../access';
+import { ALERT_GRANT_IDS, branchWideGrants } from './alertChannels';
 
 // Per-user SYSTEM-ALERT visibility grants, controlled by super-admins (mirrors attendanceExempt).
 // Stored in kb360_app (CRM is READ-ONLY). ABSENCE of a record = no grants; super-admins see every
@@ -21,6 +24,20 @@ export const alertGrants = {
   async grantsFor(userId: string): Promise<string[]> {
     const doc = await col().findOne({ userId });
     return (doc?.alerts as string[] | undefined) ?? [];
+  },
+
+  // What the user can actually see: their stored grants PLUS the branch-wide channels of the
+  // branches they belong to ("BOM-leads" for anyone in BOM). The feed, the attachment gate and
+  // auth (→ the app's access.alerts, which decides which cards render) all read this — never
+  // grantsFor alone. Derived, never stored: moving a user between branches moves their alerts.
+  async effectiveFor(access: MongoAccess): Promise<string[]> {
+    const stored = await this.grantsFor(access.userId);
+    let codes: string[] | null = null; // null = company-wide role → every branch
+    if (access.branchIds !== null) {
+      const ids = access.branchIds.filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id));
+      codes = ids.length ? (await crmRepo.branchesByIds(ids)).map((b) => String(b.code ?? '').toUpperCase()).filter(Boolean) : [];
+    }
+    return [...new Set([...stored, ...branchWideGrants(codes)])];
   },
 
   // Grants for a set of users: { [userId]: grants[] } (missing record = []).

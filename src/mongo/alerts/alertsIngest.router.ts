@@ -65,8 +65,9 @@ alertsIngestRouter.post(
   validate(z.object({
     // Everything except the legacy Finance and CRM families was retired 2026-08-19 — those
     // reports go to the branch group chats via /chat below, and an emitter still aiming here must
-    // fail loudly rather than write into a feed nobody reads.
-    module: z.enum(['finance', 'accounts', 'crm']),
+    // fail loudly rather than write into a feed nobody reads. 'leads' (CRM Alerts: a lead
+    // converted into a query) was added 2026-09-27.
+    module: z.enum(['finance', 'accounts', 'crm', 'leads']),
     branchCode: z.string().trim().min(2).max(10),
     title: z.string().trim().min(1).max(160),
     body: z.string().trim().max(2000).optional(),
@@ -111,7 +112,7 @@ alertsIngestRouter.post(
     }
 
     // Default context embeds the branch code — the app buckets events into branch sections by it.
-    const MODULE_LABEL: Record<string, string> = { accounts: 'Finance' };
+    const MODULE_LABEL: Record<string, string> = { accounts: 'Finance', leads: 'CRM Alerts' };
     const label = MODULE_LABEL[channel.module] ?? channel.module.toUpperCase();
     await alertService.record(channel.id, {
       source,
