@@ -5,9 +5,13 @@ import {
   canonicalBranchCode,
   channelForModuleBranch,
   effectiveGrants,
+  grantableGrants,
+  grantsWithinBranches,
   isBranchWideGrant,
   visibleChannelIds,
+  type AlertChannelDef,
 } from '../alerts/alertChannels';
+import { channelAudience, type Audience } from '../alerts/alert.push';
 import { contactSchema, e164 } from '../alerts/alertContact';
 import { attendanceBranchCode } from '../attendance/attendanceBranch';
 
@@ -228,9 +232,9 @@ describe('branch-wide channels are for their own branch only (owner, 2026-09-27)
   });
 
   it("a stored grant can never show another branch's CRM alerts", () => {
-    // An AMD user who somehow holds BOM-leads / BOM-crm-reports in storage (plus a real ERP grant).
-    const amd = effectiveGrants(['BOM-leads', 'BOM-crm-reports', 'BOM-erp'], ['AMD']);
-    expect(amd.sort()).toEqual(['AMD-crm-reports', 'AMD-leads', 'BOM-erp']);
+    // An AMD user who somehow holds BOM-leads / BOM-crm-reports in storage (plus a real AMD ERP grant).
+    const amd = effectiveGrants(['BOM-leads', 'BOM-crm-reports', 'AMD-erp'], ['AMD']);
+    expect(amd.sort()).toEqual(['AMD-crm-reports', 'AMD-erp', 'AMD-leads']);
     expect(visibleChannelIds(false, amd)).not.toContain('tk_lead_bom');
     expect(visibleChannelIds(false, amd)).toContain('tk_lead_amd');
     // A BOM user sees BOM's CRM alerts only.
@@ -239,6 +243,55 @@ describe('branch-wide channels are for their own branch only (owner, 2026-09-27)
     expect(effectiveGrants(['BOM-leads'], [])).toEqual([]);
     // Company-wide roles (branchCodes null) still see every branch's.
     expect(effectiveGrants([], null)).toHaveLength(10);
+  });
+});
+
+describe('grant-only alerts need access to their branch or hub (owner, 2026-09-28)', () => {
+  it("a stored HR / ERP / ERP Reports grant for another branch opens nothing", () => {
+    // The 09-27 seed gave BOM-erp to everyone in "INB Ticketing BOM/NBO" — NBO staff included.
+    const nbo = effectiveGrants(['BOM-erp', 'BOM-erp-reports', 'BOM-attendance', 'NBO-erp'], ['NBO']);
+    expect(nbo.sort()).toEqual(['NBO-crm-reports', 'NBO-erp', 'NBO-leads']);
+    expect(visibleChannelIds(false, nbo)).not.toContain('tk_erp_bom');
+    expect(visibleChannelIds(false, nbo)).toContain('tk_erp_nbo');
+    // The hub is a branch like any other: MHUB-erp needs MHUB access.
+    expect(effectiveGrants(['MHUB-erp', 'BOM-erp'], ['MHUB'])).toEqual(['MHUB-erp']);
+    expect(effectiveGrants(['MHUB-erp'], ['BOM'])).toEqual(['BOM-leads', 'BOM-crm-reports']);
+    // A user in both keeps both; the Africa HNBO spelling of their branch row still counts as NBO.
+    expect(effectiveGrants(['BOM-erp', 'NBO-erp'], ['BOM', 'HNBO']).filter((g) => g.endsWith('-erp')).sort()).toEqual(['BOM-erp', 'NBO-erp']);
+    // Company-wide roles keep whatever they were granted.
+    expect(effectiveGrants(['BOM-erp', 'MHUB-erp-reports'], null)).toEqual(expect.arrayContaining(['BOM-erp', 'MHUB-erp-reports']));
+    // No branch at all → no grant counts.
+    expect(effectiveGrants(['BOM-erp'], [])).toEqual([]);
+  });
+
+  it('grantsWithinBranches keeps only grants naming one of the codes', () => {
+    expect(grantsWithinBranches(['BOM-erp', 'AMD-erp', 'bogus'], ['bom'])).toEqual(['BOM-erp']);
+    expect(grantsWithinBranches(['BOM-erp', 'bogus'], null)).toEqual(['BOM-erp', 'bogus']);
+  });
+
+  it('Team & Users offers only the grant-only switches of the user’s own branches', () => {
+    expect(grantableGrants(['BOM'])).toEqual(['BOM-accounts', 'BOM-crm', 'BOM-attendance', 'BOM-erp', 'BOM-erp-reports']);
+    expect(grantableGrants(['MHUB'])).toEqual(['MHUB-attendance', 'MHUB-erp', 'MHUB-erp-reports']);
+    expect(grantableGrants(['HFBM'])).toEqual(['FBM-attendance', 'FBM-erp', 'FBM-erp-reports']);
+    expect(grantableGrants([])).toEqual([]);
+    expect(grantableGrants(null)).toEqual(ALERT_CHANNELS.filter((c) => !c.branchWide).map((c) => c.grant));
+  });
+
+  it('push reaches only the grant holders who have access to the branch', () => {
+    const aud: Audience = {
+      at: 0,
+      superIds: ['sup'],
+      disabled: new Set(),
+      companyWideIds: ['sup', 'cm'],
+      members: [{ id: 'bom1', branchIds: ['b-bom'] }, { id: 'nbo1', branchIds: ['b-nbo'] }, { id: 'hub1', branchIds: ['b-mhub'] }],
+      branchIdsByCode: new Map([['BOM', ['b-bom']], ['NBO', ['b-nbo']], ['MHUB', ['b-mhub']]]),
+    };
+    const ch = (id: string) => ALERT_CHANNELS.find((c) => c.id === id) as AlertChannelDef;
+    // BOM-erp held by a BOM user, an NBO user and a company manager: the NBO user is dropped.
+    expect(channelAudience(aud, ch('tk_erp_bom'), ['bom1', 'nbo1', 'cm'])).toEqual(['sup', 'bom1', 'cm']);
+    expect(channelAudience(aud, ch('tk_erp_mhub'), ['bom1', 'hub1'])).toEqual(['sup', 'hub1']);
+    // Branch-wide channels are unchanged: every branch member, no grant needed.
+    expect(channelAudience(aud, ch('tk_lead_bom'), [])).toEqual(['sup', 'sup', 'cm', 'bom1']);
   });
 });
 

@@ -34,7 +34,8 @@ export interface AlertChannelDef {
 // The Alerts section's groups, in the order the app shows them (owner, 2026-09-27):
 //   HR · CRM · ERP · CRM Reports · ERP Reports — one channel per branch in each.
 // HR / ERP / ERP Reports carry money or colleagues' hours, so they are GRANT-ONLY (supers + the
-// people a super-admin switches on in Team & Users). CRM / CRM Reports are BRANCH-WIDE.
+// people a super-admin switches on in Team & Users, and only among those with access to that
+// branch or hub — see grantsWithinBranches). CRM / CRM Reports are BRANCH-WIDE.
 const HR_ERP_BRANCHES = ['BOM', 'AMD', 'NBO', 'DAR', 'FBM', 'MHUB'];
 const CRM_BRANCHES = ['BOM', 'AMD', 'NBO', 'DAR', 'FBM'];
 const family = (
@@ -117,10 +118,32 @@ export function branchWideGrants(branchCodes: string[] | null): string[] {
   return ALERT_CHANNELS.filter((c) => c.branchWide && (codes === null || codes.has(c.branchCode))).map((c) => c.grant);
 }
 
+// Every grant names ONE branch's channel ("BOM-erp" → tk_erp_bom). Owner, 2026-09-28: "only the
+// user get alerts whoever have access of that branch or hub" — a grant counts only for a user whose
+// branch access (CRM branch_ids; `branchCodes` null = company-wide role → every branch and the hub)
+// includes that channel's branch. A BOM-erp grant held by an NBO-only user (the 09-27 seed gave one
+// to everyone in the shared "INB/Hub … BOM/NBO" rooms) opens nothing.
+const GRANT_BRANCH = new Map(ALERT_CHANNELS.map((c) => [c.grant, c.branchCode]));
+export function grantsWithinBranches(grants: string[], branchCodes: string[] | null): string[] {
+  if (branchCodes === null) return grants;
+  const mine = new Set(branchCodes.map(canonicalBranchCode));
+  return grants.filter((g) => {
+    const branch = GRANT_BRANCH.get(g);
+    return !!branch && mine.has(branch);
+  });
+}
+
+// The switches Team & Users may turn on for a user: the grant-only channels of their own branches.
+export function grantableGrants(branchCodes: string[] | null): string[] {
+  return grantsWithinBranches(ALERT_CHANNELS.filter((c) => !c.branchWide).map((c) => c.grant), branchCodes);
+}
+
 // What a user can see: the grants a super-admin stored (branch-wide ones dropped — see
-// isBranchWideGrant) plus the branch-wide grants of the branches they belong to.
+// isBranchWideGrant — and other branches' dropped — see grantsWithinBranches) plus the branch-wide
+// grants of the branches they belong to.
 export function effectiveGrants(stored: string[], branchCodes: string[] | null): string[] {
-  return [...new Set([...stored.filter((g) => !isBranchWideGrant(g)), ...branchWideGrants(branchCodes)])];
+  const held = grantsWithinBranches(stored.filter((g) => !isBranchWideGrant(g)), branchCodes);
+  return [...new Set([...held, ...branchWideGrants(branchCodes)])];
 }
 
 // Channels a user may see: super-admins see every channel; everyone else sees exactly the
