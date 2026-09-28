@@ -1,4 +1,4 @@
-import { Types } from 'mongoose';
+import { Types, type SortOrder } from 'mongoose';
 import { AppError, BadRequest, Forbidden, NotFound } from '../../common/errors';
 import { accessService } from '../access';
 import { crmRepo, type CrmUser } from '../crm.repo';
@@ -26,6 +26,14 @@ const addDays = (key: string, n: number): string => {
 
 // Same look-back the leave ask gets — anything older is HR's to fix on the ERP report.
 export const REGULARIZE_BACK_DAYS = 62;
+
+// The three states the admin queue can be read in (the app's Pending / Approved / Rejected tabs).
+// 'cancelled' is deliberately absent: a withdrawn request was never decided, so it belongs to the
+// requester's own trail, not to the decision queue.
+export const ADMIN_QUEUE_STATUSES = ['pending', 'approved', 'rejected'] as const;
+export type AdminQueueStatus = (typeof ADMIN_QUEUE_STATUSES)[number];
+export const asAdminQueueStatus = (v: unknown): AdminQueueStatus =>
+  (ADMIN_QUEUE_STATUSES as readonly string[]).includes(String(v)) ? (v as AdminQueueStatus) : 'pending';
 
 export interface RegularizationBody {
   date: string;
@@ -139,12 +147,16 @@ export const regularizationService = {
     return present(doc.toObject() as RegularizationDoc);
   },
 
-  /** GET /hr/regularizations/pending — the manager's queue (oldest first), names attached.
-   *  Super-admin only (route), and scoped to the viewer's tenant like every admin attendance read. */
-  async pendingForAdmin(adminId: string): Promise<RegularizationDto[]> {
+  /** GET /hr/regularizations/pending[?status=] — the manager's queue, names attached.
+   *  Super-admin only (route), and scoped to the viewer's tenant like every admin attendance read.
+   *  `status` defaults to 'pending' (the queue's original, and only, meaning), so older clients that
+   *  send no query keep the exact response they had. The decided tabs read newest-decided first —
+   *  a settled request is looked up by "what did we just do", not by how long it waited. */
+  async pendingForAdmin(adminId: string, status: AdminQueueStatus = 'pending'): Promise<RegularizationDto[]> {
     const viewer = await accessService.accessForUserId(adminId);
     if (!viewer?.isSuper) throw Forbidden('Only the super admin can decide attendance corrections');
-    const rows = (await RegularizationModel().find({ status: 'pending' }).sort({ appliedAt: 1 }).limit(200).lean()) as RegularizationDoc[];
+    const sort: Record<string, SortOrder> = status === 'pending' ? { appliedAt: 1 } : { decidedAt: -1 };
+    const rows = (await RegularizationModel().find({ status }).sort(sort).limit(200).lean()) as RegularizationDoc[];
     if (!rows.length) return [];
     const ids = [...new Set(rows.map((r) => r.userId))].filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id));
     const users = await crmRepo.listUsers({ _id: { $in: ids } });
