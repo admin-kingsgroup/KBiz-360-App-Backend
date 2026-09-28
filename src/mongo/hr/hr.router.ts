@@ -5,7 +5,7 @@ import { validate } from '../../common/validate';
 import { Unauthorized } from '../../common/errors';
 import { requireAuth, requireSuper } from '../middleware';
 import { leaveService } from './leave.service';
-import { regularizationService } from './regularization.service';
+import { regularizationService, asAdminQueueStatus } from './regularization.service';
 import { myMonthService } from './myMonth.service';
 
 // Mounted at /api/hr. Self-service HR for the app: paid-leave balance + applications (shared
@@ -90,7 +90,9 @@ hrRouter.put('/regularizations/:id/cancel', requireAuth, asyncHandler(async (req
 // time). The service re-checks isSuper and the tenant, like the attendance admin paths.
 hrRouter.get('/regularizations/pending', requireAuth, requireSuper, asyncHandler(async (req, res) => {
   if (!req.auth) throw Unauthorized();
-  res.json(await regularizationService.pendingForAdmin(req.auth.userId));
+  // ?status=pending|approved|rejected drives the app's three tabs. Anything else (and no query at
+  // all) falls back to 'pending', so the endpoint keeps its original behaviour for older clients.
+  res.json(await regularizationService.pendingForAdmin(req.auth.userId, asAdminQueueStatus(req.query.status)));
 }));
 
 hrRouter.put('/regularizations/:id/decision', requireAuth, requireSuper, validate(regularizationDecisionSchema), asyncHandler(async (req, res) => {
