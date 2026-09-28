@@ -14,6 +14,7 @@ const aud = (): Audience => ({
     { id: 'no-branch', branchIds: [] },
   ],
   branchIdsByCode: new Map([['BOM', ['b-bom']], ['AMD', ['b-amd']], ['MHUB', ['b-mhub']]]),
+  erpIds: new Set(),
 });
 
 describe('branch-wide alert audience', () => {

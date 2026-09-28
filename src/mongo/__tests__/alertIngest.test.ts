@@ -8,10 +8,15 @@ import {
   grantableGrants,
   grantsWithinBranches,
   isBranchWideGrant,
+  needsErpAccess,
+  usableGrants,
   visibleChannelIds,
   type AlertChannelDef,
 } from '../alerts/alertChannels';
 import { channelAudience, type Audience } from '../alerts/alert.push';
+import { buildChannelAudience, type AudiencePerson } from '../alerts/alertAudience.service';
+import { erpAccessIdsFrom } from '../alerts/erpAccess';
+import { Types } from 'mongoose';
 import { contactSchema, e164 } from '../alerts/alertContact';
 import { attendanceBranchCode } from '../attendance/attendanceBranch';
 
@@ -285,6 +290,7 @@ describe('grant-only alerts need access to their branch or hub (owner, 2026-09-2
       companyWideIds: ['sup', 'cm'],
       members: [{ id: 'bom1', branchIds: ['b-bom'] }, { id: 'nbo1', branchIds: ['b-nbo'] }, { id: 'hub1', branchIds: ['b-mhub'] }],
       branchIdsByCode: new Map([['BOM', ['b-bom']], ['NBO', ['b-nbo']], ['MHUB', ['b-mhub']]]),
+      erpIds: new Set(['bom1', 'nbo1', 'hub1', 'cm']),
     };
     const ch = (id: string) => ALERT_CHANNELS.find((c) => c.id === id) as AlertChannelDef;
     // BOM-erp held by a BOM user, an NBO user and a company manager: the NBO user is dropped.
@@ -316,5 +322,94 @@ describe('alert contact (the converted lead\'s client → WhatsApp / Call)', () 
     expect(contactSchema.parse({ phone: '+254700000000' })).toEqual({ phone: '+254700000000' });
     expect(contactSchema.safeParse({ phone: '9876543210' }).success).toBe(false);
     expect(contactSchema.safeParse({ name: 'No phone' }).success).toBe(false);
+  });
+});
+
+describe('ERP and ERP Reports need ERP access (owner, 2026-09-28)', () => {
+  it('only the ERP and ERP Reports grants need it', () => {
+    expect(needsErpAccess('BOM-erp')).toBe(true);
+    expect(needsErpAccess('MHUB-erp-reports')).toBe(true);
+    expect(needsErpAccess('BOM-attendance')).toBe(false);
+    expect(needsErpAccess('BOM-leads')).toBe(false);
+  });
+
+  it('a BOM user without ERP access keeps HR but loses ERP / ERP Reports, whatever is stored', () => {
+    const stored = ['BOM-erp', 'BOM-erp-reports', 'BOM-attendance'];
+    expect(usableGrants(stored, ['BOM'], false)).toEqual(['BOM-attendance']);
+    expect(usableGrants(stored, ['BOM'], true)).toEqual(stored);
+    expect(visibleChannelIds(false, effectiveGrants(stored, ['BOM'], false))).toEqual(['tk_hr_bom', 'tk_lead_bom', 'tk_crmrep_bom']);
+    // Company-wide roles too.
+    expect(effectiveGrants(['BOM-erp'], null, false)).not.toContain('BOM-erp');
+    // …and no ERP switch is offered to them.
+    expect(grantableGrants(['BOM'], false)).toEqual(['BOM-accounts', 'BOM-crm', 'BOM-attendance']);
+  });
+
+  it("ERP access is the ERP's own rule: an active Books row AND access.erp not switched off", () => {
+    const id = () => new Types.ObjectId();
+    const [a, b, c, d] = [id(), id(), id(), id()];
+    const users = [
+      { _id: a, email: 'Faiz@Travkings.com' }, // Books row, no kill-switch → yes (case-insensitive)
+      { _id: b, email: 'harshit@travkings.com' }, // no Books row → no
+      { _id: c, email: 'sughra@travkings.com', access: { erp: false } }, // kill-switch → no
+      { _id: d, email: 'accounts.bom@travkings.com', access: { erp: true } },
+    ];
+    const ids = erpAccessIdsFrom(users, ['faiz@travkings.com', 'sughra@travkings.com', 'accounts.bom@travkings.com']);
+    expect([...ids].sort()).toEqual([String(a), String(d)].sort());
+  });
+
+  it('push skips ERP grant holders without ERP access; HR is unaffected', () => {
+    const aud: Audience = {
+      at: 0,
+      superIds: ['sup'],
+      disabled: new Set(),
+      companyWideIds: ['sup'],
+      members: [{ id: 'acc', branchIds: ['b-bom'] }, { id: 'sales', branchIds: ['b-bom'] }],
+      branchIdsByCode: new Map([['BOM', ['b-bom']]]),
+      erpIds: new Set(['acc']),
+    };
+    const ch = (cid: string) => ALERT_CHANNELS.find((c) => c.id === cid) as AlertChannelDef;
+    expect(channelAudience(aud, ch('tk_erp_bom'), ['acc', 'sales'])).toEqual(['sup', 'acc']);
+    expect(channelAudience(aud, ch('tk_erprep_bom'), ['acc', 'sales'])).toEqual(['sup', 'acc']);
+    expect(channelAudience(aud, ch('tk_hr_bom'), ['acc', 'sales'])).toEqual(['sup', 'acc', 'sales']);
+  });
+});
+
+describe('"Who sees this" for one alert channel', () => {
+  const ch = (cid: string) => ALERT_CHANNELS.find((c) => c.id === cid) as AlertChannelDef;
+  const person = (p: Partial<AudiencePerson> & { id: string }): AudiencePerson => ({
+    name: p.id, email: `${p.id}@x.com`, role: 'employee', isSuper: false, codes: ['BOM'], hasErp: false, stored: [], ...p,
+  });
+  const people = [
+    person({ id: 'Zed Super', isSuper: true, codes: null }),
+    person({ id: 'Rohaan', hasErp: true, stored: ['BOM-erp'] }),
+    person({ id: 'Asif', hasErp: true }),
+    person({ id: 'Harshit', stored: ['BOM-erp'] }), // seeded, but no ERP access
+    person({ id: 'Faiz', role: 'company_manager', codes: null, hasErp: true, stored: ['BOM-erp'] }),
+    person({ id: 'Aamir', codes: ['HNBO'], hasErp: true, stored: ['BOM-erp'] }), // other branch → not listed
+  ];
+
+  it('ERP - BOM: supers first, then the BOM switches by name, then those without ERP access', () => {
+    const rows = buildChannelAudience(ch('tk_erp_bom'), people);
+    expect(rows.map((r) => [r.name, r.why, r.canToggle])).toEqual([
+      ['Zed Super', 'super', false],
+      ['Asif', 'off', true],
+      ['Faiz', 'on', true],
+      ['Rohaan', 'on', true],
+      ['Harshit', 'no-erp', false],
+    ]);
+  });
+
+  it('HR - BOM needs no ERP access: everyone in BOM gets a switch', () => {
+    const rows = buildChannelAudience(ch('tk_hr_bom'), people);
+    expect(rows.filter((r) => r.why !== 'super').map((r) => [r.name, r.why])).toEqual([
+      ['Asif', 'off'], ['Faiz', 'off'], ['Harshit', 'off'], ['Rohaan', 'off'],
+    ]);
+  });
+
+  it('CRM - NBO is branch-wide: the NBO people (HNBO rows included) and company-wide roles, no switches', () => {
+    const rows = buildChannelAudience(ch('tk_lead_nbo'), people);
+    expect(rows.map((r) => [r.name, r.why, r.canToggle])).toEqual([
+      ['Zed Super', 'super', false], ['Aamir', 'branch', false], ['Faiz', 'branch', false],
+    ]);
   });
 });
