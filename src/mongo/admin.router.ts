@@ -91,11 +91,28 @@ adminRouter.get(
     const access = await accessService.accessForUserId(req.auth.userId);
     if (!access) throw Unauthorized();
     const users = await directoryService.listUsers(access, { includeDisabled: true });
-    res.json(await alertGrants.mapFor(users.map((u) => u.id)));
+    res.json(await alertGrants.mapFor(users));
+  }),
+);
+
+// GET /api/admin/alert-visibility/grantable → { [userId]: grants[] } — the switches Team & Users may
+// offer each user: the grant-only channels of the branches (and hub) they have access to. A switch
+// for another branch would be dropped on save and could never open anything (owner, 2026-09-28).
+adminRouter.get(
+  '/alert-visibility/grantable',
+  requireAuth,
+  requireSuper,
+  asyncHandler(async (req, res) => {
+    if (!req.auth) throw Unauthorized();
+    const access = await accessService.accessForUserId(req.auth.userId);
+    if (!access) throw Unauthorized();
+    const users = await directoryService.listUsers(access, { includeDisabled: true });
+    res.json(await alertGrants.grantableMapFor(users));
   }),
 );
 
 // POST /api/admin/alert-visibility { userId, alerts } → replace a user's alert-channel grants.
+// Grants for a branch the user has no access to are dropped — the returned `alerts` is what was kept.
 // The change is pushed to the user's live app so their Home feed updates immediately.
 adminRouter.post(
   '/alert-visibility',

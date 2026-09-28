@@ -2,12 +2,13 @@ import { config } from '../../config';
 import { callDeviceRepo } from '../calls/call.repository';
 import { crmRepo } from '../crm.repo';
 import { appDb } from '../connection';
-import { ALERT_CHANNELS, USER_ALERTS_CHANNEL_ID, canonicalBranchCode } from './alertChannels';
+import { ALERT_CHANNELS, USER_ALERTS_CHANNEL_ID, canonicalBranchCode, type AlertChannelDef } from './alertChannels';
 
 // Push notifications for system alerts. The socket 'alert:new' only reaches OPEN apps —
 // this is what taps people on the shoulder when the app is closed. Audience per channel
-// event = super-admins + the channel's grant holders + (branch-wide channels) the branch's
-// members — exactly who can see it in the feed — minus the acting user; announcements go to
+// event = super-admins + the channel's grant holders with access to its branch + (branch-wide
+// channels) the branch's members — exactly who can see it in the feed (channelAudience) — minus
+// the acting user; announcements go to
 // their recipient list ('*' = everyone).
 // Mirrors reminder.push.ts: shared push_devices Expo tokens, dry-run unless
 // EXPO_PUSH_ENABLED=true, batches of ≤100, fire-and-forget everywhere.
@@ -94,6 +95,16 @@ export function branchMembers(aud: Audience, branchCode: string): string[] {
   return [...aud.companyWideIds, ...aud.members.filter((m) => m.branchIds.some((b) => ids.has(b))).map((m) => m.id)];
 }
 
+// Who a channel event reaches: supers, plus the branch's members for a branch-wide channel, or for
+// a grant-only one the grant holders WHO HAVE ACCESS TO ITS BRANCH (or hub) — a stored BOM-erp grant
+// on an NBO-only user pushes nothing, exactly as alertGrants.effectiveFor shows nothing.
+export function channelAudience(aud: Audience, channel: AlertChannelDef, holders: string[]): string[] {
+  const inBranch = branchMembers(aud, channel.branchCode);
+  if (channel.branchWide) return [...aud.superIds, ...inBranch];
+  const mayHold = new Set(inBranch);
+  return [...aud.superIds, ...holders.filter((id) => mayHold.has(id))];
+}
+
 async function grantHolders(grant: string): Promise<string[]> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const docs = await (appDb().collection('alert_grants') as any).find({ alerts: grant }).toArray();
@@ -124,8 +135,8 @@ async function sendToUsers(userIds: string[], title: string, text: string, chann
 }
 
 export const alertPush = {
-  // Channel event → everyone who can see the channel (supers, plus the grant holders of a
-  // grant-only channel or the members of a branch-wide one's branch), minus the actor.
+  // Channel event → everyone who can see the channel (supers, plus the in-branch grant holders of
+  // a grant-only channel or the members of a branch-wide one's branch), minus the actor.
   async sendChannelAlert(channelId: string, title: string, body: string, actorUserId?: string | null): Promise<void> {
     try {
       const channel = ALERT_CHANNELS.find((c) => c.id === channelId);
@@ -133,9 +144,7 @@ export const alertPush = {
       // A branch-wide channel reaches its branch only — stored grants for it are ignored, exactly
       // as alertGrants.effectiveFor ignores them for the feed.
       const [aud, holders] = await Promise.all([baseAudience(), channel.branchWide ? [] : grantHolders(channel.grant)]);
-      const { superIds, disabled } = aud;
-      const branch = channel.branchWide ? branchMembers(aud, channel.branchCode) : [];
-      const audience = [...superIds, ...holders, ...branch].filter((id) => !disabled.has(id) && id !== String(actorUserId ?? ''));
+      const audience = channelAudience(aud, channel, holders).filter((id) => !aud.disabled.has(id) && id !== String(actorUserId ?? ''));
       await sendToUsers(audience, channel.name, body ? `${title} — ${body}` : title, channelId);
     } catch (e) {
       // eslint-disable-next-line no-console
