@@ -133,16 +133,28 @@ export function grantsWithinBranches(grants: string[], branchCodes: string[] | n
   });
 }
 
-// The switches Team & Users may turn on for a user: the grant-only channels of their own branches.
-export function grantableGrants(branchCodes: string[] | null): string[] {
-  return grantsWithinBranches(ALERT_CHANNELS.filter((c) => !c.branchWide).map((c) => c.grant), branchCodes);
+// ERP and ERP Reports carry the books. Owner, 2026-09-28: without ERP access those alerts mean
+// nothing to a user, so they never get them, whatever their switch says. ERP access is the ERP's
+// own rule (alertGrants.erpAccessIds).
+const ERP_GRANTS = new Set(ALERT_CHANNELS.filter((c) => c.module === 'erp' || c.module === 'erp-reports').map((c) => c.grant));
+export const needsErpAccess = (grant: string): boolean => ERP_GRANTS.has(grant);
+
+// The grants that can take effect for a user: those of their own branches (grantsWithinBranches),
+// minus ERP / ERP Reports when they have no ERP access.
+export function usableGrants(grants: string[], branchCodes: string[] | null, hasErp: boolean): string[] {
+  return grantsWithinBranches(grants, branchCodes).filter((g) => hasErp || !needsErpAccess(g));
+}
+
+// The switches Team & Users may turn on for a user: the grant-only channels that can take effect.
+export function grantableGrants(branchCodes: string[] | null, hasErp = true): string[] {
+  return usableGrants(ALERT_CHANNELS.filter((c) => !c.branchWide).map((c) => c.grant), branchCodes, hasErp);
 }
 
 // What a user can see: the grants a super-admin stored (branch-wide ones dropped — see
-// isBranchWideGrant — and other branches' dropped — see grantsWithinBranches) plus the branch-wide
-// grants of the branches they belong to.
-export function effectiveGrants(stored: string[], branchCodes: string[] | null): string[] {
-  const held = grantsWithinBranches(stored.filter((g) => !isBranchWideGrant(g)), branchCodes);
+// isBranchWideGrant — and those that cannot take effect dropped — see usableGrants) plus the
+// branch-wide grants of the branches they belong to.
+export function effectiveGrants(stored: string[], branchCodes: string[] | null, hasErp = true): string[] {
+  const held = usableGrants(stored.filter((g) => !isBranchWideGrant(g)), branchCodes, hasErp);
   return [...new Set([...held, ...branchWideGrants(branchCodes)])];
 }
 

@@ -91,6 +91,15 @@ export const crmRepo = {
   async listUsers(filter: Record<string, unknown> = {}): Promise<CrmUser[]> {
     return col('users').find(filter).toArray() as Promise<CrmUser[]>;
   },
+  // The ERP's (KBiz360 Books) own login allow-list — `booksaccesses`, in the same database
+  // (CRM_DB = KingsDB, which the ERP also runs on). Returns the lower-cased emails, out of those
+  // asked about, that hold an ACTIVE row.
+  async activeBooksAccessEmails(emails: string[]): Promise<string[]> {
+    const wanted = [...new Set(emails.map((e) => String(e ?? '').toLowerCase().trim()).filter(Boolean))];
+    if (!wanted.length) return [];
+    const rows = (await col('booksaccesses').find({ email: { $in: wanted }, active: { $ne: false } }).project({ email: 1 }).toArray()) as { email?: string }[];
+    return rows.map((r) => String(r.email ?? '').toLowerCase());
+  },
   async listRoles(): Promise<CrmRole[]> {
     return col('roles').find({}).toArray() as Promise<CrmRole[]>;
   },

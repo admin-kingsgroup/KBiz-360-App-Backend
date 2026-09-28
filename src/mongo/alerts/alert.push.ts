@@ -2,7 +2,8 @@ import { config } from '../../config';
 import { callDeviceRepo } from '../calls/call.repository';
 import { crmRepo } from '../crm.repo';
 import { appDb } from '../connection';
-import { ALERT_CHANNELS, USER_ALERTS_CHANNEL_ID, canonicalBranchCode, type AlertChannelDef } from './alertChannels';
+import { ALERT_CHANNELS, USER_ALERTS_CHANNEL_ID, canonicalBranchCode, needsErpAccess, type AlertChannelDef } from './alertChannels';
+import { erpAccessIds } from './erpAccess';
 
 // Push notifications for system alerts. The socket 'alert:new' only reaches OPEN apps —
 // this is what taps people on the shoulder when the app is closed. Audience per channel
@@ -57,6 +58,7 @@ export interface Audience {
   companyWideIds: string[]; // super_admin + company_manager (level ≤ 2) — every branch is theirs
   members: { id: string; branchIds: string[] }[]; // everyone else, with their CRM branch_ids
   branchIdsByCode: Map<string, string[]>; // 'BOM' → branch _ids carrying that code
+  erpIds: Set<string>; // users with ERP (Books) access — the only non-supers ERP / ERP Reports reach
 }
 let _cache: Audience | null = null;
 
@@ -84,7 +86,8 @@ async function baseAudience(): Promise<Audience> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const disabledDocs = await (appDb().collection('app_access') as any).find({ disabled: true }).toArray();
   const disabled = new Set<string>(disabledDocs.map((d: { userId?: string }) => String(d.userId)));
-  _cache = { at: Date.now(), superIds, disabled, companyWideIds, members, branchIdsByCode };
+  const erpIds = await erpAccessIds(users);
+  _cache = { at: Date.now(), superIds, disabled, companyWideIds, members, branchIdsByCode, erpIds };
   return _cache;
 }
 
@@ -97,12 +100,14 @@ export function branchMembers(aud: Audience, branchCode: string): string[] {
 
 // Who a channel event reaches: supers, plus the branch's members for a branch-wide channel, or for
 // a grant-only one the grant holders WHO HAVE ACCESS TO ITS BRANCH (or hub) — a stored BOM-erp grant
-// on an NBO-only user pushes nothing, exactly as alertGrants.effectiveFor shows nothing.
+// on an NBO-only user pushes nothing, exactly as alertGrants.effectiveFor shows nothing — and for
+// ERP / ERP Reports only those who also have ERP access.
 export function channelAudience(aud: Audience, channel: AlertChannelDef, holders: string[]): string[] {
   const inBranch = branchMembers(aud, channel.branchCode);
   if (channel.branchWide) return [...aud.superIds, ...inBranch];
   const mayHold = new Set(inBranch);
-  return [...aud.superIds, ...holders.filter((id) => mayHold.has(id))];
+  const erpOnly = needsErpAccess(channel.grant);
+  return [...aud.superIds, ...holders.filter((id) => mayHold.has(id) && (!erpOnly || aud.erpIds.has(id)))];
 }
 
 async function grantHolders(grant: string): Promise<string[]> {

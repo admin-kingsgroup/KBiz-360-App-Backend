@@ -10,6 +10,7 @@ import { appAccess } from './appAccess';
 import { userPositions } from './userPositions';
 import { attendanceExempt } from './attendanceExempt';
 import { alertGrants } from './alerts/alertGrants';
+import { alertAudience } from './alerts/alertAudience.service';
 import { ALERT_GRANT_IDS } from './alerts/alertChannels';
 import { mongoAuth } from './auth';
 import { emitToUser } from './chat/chat.events';
@@ -125,6 +126,36 @@ adminRouter.post(
     const unknown = alerts.filter((a) => !ALERT_GRANT_IDS.includes(a));
     if (unknown.length) throw BadRequest(`Unknown alert grant(s): ${unknown.join(', ')}`);
     const saved = await alertGrants.setGrants(userId, alerts, req.auth.userId);
+    emitToUser(userId, 'alert:visibility', { alerts: saved });
+    res.json({ ok: true, alerts: saved });
+  }),
+);
+
+// GET /api/admin/alert-channels/:channelId/audience → who sees ONE alert channel and why
+// (alertAudience.service): { channel, rows: [{ id, name, email, role, why, canToggle }] }.
+adminRouter.get(
+  '/alert-channels/:channelId/audience',
+  requireAuth,
+  requireSuper,
+  asyncHandler(async (req, res) => {
+    if (!req.auth) throw Unauthorized();
+    const access = await accessService.accessForUserId(req.auth.userId);
+    if (!access) throw Unauthorized();
+    res.json(await alertAudience.forChannel(access, String(req.params.channelId)));
+  }),
+);
+
+// POST /api/admin/alert-channels/:channelId/audience { userId, on } → switch that channel on/off for
+// one user (the same stored grant as the Team & Users 🔔). 400 when it cannot take effect for them.
+adminRouter.post(
+  '/alert-channels/:channelId/audience',
+  requireAuth,
+  requireSuper,
+  validate(z.object({ userId: z.string().min(1), on: z.boolean() })),
+  asyncHandler(async (req, res) => {
+    if (!req.auth) throw Unauthorized();
+    const { userId, on } = req.body as { userId: string; on: boolean };
+    const saved = await alertAudience.setForChannel(userId, String(req.params.channelId), on, req.auth.userId);
     emitToUser(userId, 'alert:visibility', { alerts: saved });
     res.json({ ok: true, alerts: saved });
   }),
