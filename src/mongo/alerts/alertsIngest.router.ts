@@ -5,8 +5,9 @@ import { asyncHandler } from '../../common/asyncHandler';
 import { validate } from '../../common/validate';
 import { AppError, BadRequest } from '../../common/errors';
 import { getStorage } from '../../storage';
+import { crmRepo } from '../crm.repo';
 import { requireServiceToken } from './serviceAuth';
-import { channelForModuleBranch } from './alertChannels';
+import { channelForModuleBranch, USER_ALERTS_CHANNEL_ID } from './alertChannels';
 import { attachmentFilename } from './attachmentName';
 import { contactSchema, type AlertContact } from './alertContact';
 import { reportChat } from './reportChat.service';
@@ -138,6 +139,49 @@ alertsIngestRouter.post(
       ...(contact ? { contact: { ...(contact.name ? { name: contact.name } : {}), phone: contact.phone } } : {}),
     }, null, dedupeKey);
     res.json({ ok: true, channelId: channel.id, ...(duplicate ? { duplicate: true } : {}), ...(stored && !duplicate ? { attachmentUrl: stored.url } : {}) });
+  }),
+);
+
+// POST /api/alerts/user — the same service-token pipe, addressed to ONE person instead of a
+// branch: the event lands in their personal "My Alerts" (nobody else sees it) and pushes to their
+// phone alone. Added 2026-09-30 for the CRM's "a lead / query was assigned to you" (owner: "notify
+// that user on CRM and Smart Connect both"). `userId` is the shared `users` _id the CRM already
+// holds. A user who is inactive or barred from the app gets nothing — answered `skipped`, not an
+// error, so the CRM's reassign never trips over it.
+alertsIngestRouter.post(
+  '/user',
+  requireServiceToken,
+  ingestRateLimit,
+  validate(z.object({
+    userId: z.string().trim().regex(/^[a-f0-9]{24}$/i, 'userId must be a user id'),
+    title: z.string().trim().min(1).max(160),
+    body: z.string().trim().max(2000).optional(),
+    source: z.string().trim().min(1).max(80),
+    context: z.string().trim().max(120).optional(),
+    contact: contactSchema.optional(),
+  })),
+  asyncHandler(async (req, res) => {
+    const { userId, title, body, source, context, contact } = req.body as {
+      userId: string; title: string; body?: string; source: string; context?: string; contact?: AlertContact;
+    };
+    const user = await crmRepo.getUserById(userId);
+    if (!user) throw BadRequest(`No user ${userId}`);
+    if (user.status && user.status !== 'active') {
+      res.json({ ok: true, skipped: 'inactive' });
+      return;
+    }
+    if (user.access?.app === false) {
+      res.json({ ok: true, skipped: 'no-app-access' });
+      return;
+    }
+    await alertService.recordUserAlert(userId, {
+      source,
+      title,
+      body: body ?? '',
+      context: context ?? source,
+      ...(contact ? { contact: { ...(contact.name ? { name: contact.name } : {}), phone: contact.phone } } : {}),
+    });
+    res.json({ ok: true, channelId: USER_ALERTS_CHANNEL_ID });
   }),
 );
 
