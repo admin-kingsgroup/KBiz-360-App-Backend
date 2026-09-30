@@ -3,13 +3,15 @@ import { callDeviceRepo } from '../calls/call.repository';
 import { crmRepo } from '../crm.repo';
 import { appDb } from '../connection';
 import { ALERT_CHANNELS, USER_ALERTS_CHANNEL_ID, canonicalBranchCode, type AlertChannelDef } from './alertChannels';
+import { alertMutes } from './alertMutes';
 
 // Push notifications for system alerts. The socket 'alert:new' only reaches OPEN apps —
 // this is what taps people on the shoulder when the app is closed. Audience per channel
 // event = super-admins + the channel's grant holders with access to its branch + (branch-wide
 // channels) the branch's members — exactly who can see it in the feed (channelAudience) — minus
 // the acting user; announcements go to
-// their recipient list ('*' = everyone).
+// their recipient list ('*' = everyone). Whoever has muted the channel is left out (alertMutes) —
+// they still see the event in the Alerts tab.
 // Mirrors reminder.push.ts: shared push_devices Expo tokens, dry-run unless
 // EXPO_PUSH_ENABLED=true, batches of ≤100, fire-and-forget everywhere.
 
@@ -112,7 +114,10 @@ async function grantHolders(grant: string): Promise<string[]> {
 }
 
 async function sendToUsers(userIds: string[], title: string, text: string, channelId: string): Promise<void> {
-  const unique = [...new Set(userIds)];
+  const all = [...new Set(userIds)];
+  // A failed mute lookup must not swallow the alert — push to everyone rather than no one.
+  const muted = await alertMutes.mutedAmong(channelId, all).catch(() => new Set<string>());
+  const unique = all.filter((id) => !muted.has(id));
   if (!unique.length) return;
   const body = text.length > 110 ? `${text.slice(0, 107)}…` : text;
   const tokenLists = await Promise.all(unique.map((id) => callDeviceRepo.tokensForUser(id).catch(() => [] as string[])));

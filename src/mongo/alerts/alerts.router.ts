@@ -5,18 +5,40 @@ import { validate } from '../../common/validate';
 import { Unauthorized, BadRequest } from '../../common/errors';
 import { requireAuth, requireSuper } from '../middleware';
 import { alertService } from './alert.service';
+import { alertMutes, isMutableChannel } from './alertMutes';
 
 // System alerts — the Home "System Alerts" feed. Events are access-filtered server-side:
 // super-admins see every channel; others only channels a super-admin granted them.
 export const alertsRouter: Router = Router();
 
-// GET /api/alerts → { events } visible to the caller (newest first, per-user read flag).
+// GET /api/alerts → { events, mutes } — the events visible to the caller (newest first, per-user
+// read flag) and the channels they have muted (channelId → epoch ms it ends, null = always).
 alertsRouter.get(
   '/',
   requireAuth,
   asyncHandler(async (req, res) => {
     if (!req.auth) throw Unauthorized();
-    res.json(await alertService.listFor(req.auth.userId));
+    const [feed, mutes] = await Promise.all([alertService.listFor(req.auth.userId), alertMutes.activeFor(req.auth.userId)]);
+    res.json({ ...feed, mutes });
+  }),
+);
+
+// POST /api/alerts/mute { channelIds, muted, muteHours? } → { mutes } — the caller mutes (for
+// muteHours, or always when it is absent/null) or unmutes those channels for themselves. A muted
+// channel stops sending them push notifications; its events still show in the Alerts tab.
+alertsRouter.post(
+  '/mute',
+  requireAuth,
+  validate(z.object({
+    channelIds: z.array(z.string().min(1)).min(1).max(100),
+    muted: z.boolean(),
+    muteHours: z.number().positive().max(24 * 366).nullable().optional(),
+  })),
+  asyncHandler(async (req, res) => {
+    if (!req.auth) throw Unauthorized();
+    const { channelIds, muted, muteHours } = req.body as { channelIds: string[]; muted: boolean; muteHours?: number | null };
+    if (!channelIds.every(isMutableChannel)) throw BadRequest('Unknown alert channel');
+    res.json({ mutes: await alertMutes.set(req.auth.userId, channelIds, muted, muteHours) });
   }),
 );
 
