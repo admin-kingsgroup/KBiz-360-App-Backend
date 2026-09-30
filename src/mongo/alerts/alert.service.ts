@@ -98,7 +98,8 @@ export const alertService = {
   },
 
   // Personal "User Alerts" event addressed to a single user, with a push to just them.
-  async recordUserAlert(userId: string, ev: { source: string; title: string; body: string; context: string }): Promise<void> {
+  // `contact` (e.g. the client of a lead the CRM just handed them) is stored and listed, never pushed.
+  async recordUserAlert(userId: string, ev: { source: string; title: string; body: string; context: string; contact?: AlertContact }): Promise<void> {
     const now = new Date();
     await col().insertOne({ channelId: USER_ALERTS_CHANNEL_ID, ...ev, recipients: [userId], time: now, readBy: [], createdAt: now, expiresAt: eventExpiry(now) });
     emitToAll('alert:new', { channelId: USER_ALERTS_CHANNEL_ID });
