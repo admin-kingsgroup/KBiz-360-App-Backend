@@ -20,6 +20,8 @@ export interface ReminderDoc {
   overdue: boolean;
   completedAt: Date | null;
   approvedAt: Date | null;
+  imageUrl: string | null; // a screenshot attached to the reminder (storage url; null = none)
+  source: string | null; // where it was raised: 'erp' = KBiz Books, null = the app
   createdAt: Date;
   updatedAt: Date;
 }
@@ -38,6 +40,8 @@ const ReminderSchema = new Schema<ReminderDoc>(
     overdue: { type: Boolean, default: false },
     completedAt: { type: Date, default: null },
     approvedAt: { type: Date, default: null },
+    imageUrl: { type: String, default: null },
+    source: { type: String, default: null },
   },
   { timestamps: true, collection: 'reminders' },
 );

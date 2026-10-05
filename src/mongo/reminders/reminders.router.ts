@@ -21,6 +21,7 @@ const createSchema = z
     when: z.string().optional(),
     section: z.string().optional(),
     dueAt: z.string().datetime({ offset: true }).optional(), // real due timestamp (ISO)
+    imageUrl: z.string().min(1).max(2000).optional(), // a screenshot already uploaded via POST /api/uploads
   })
   .refine((b) => !!b.forId || !!b.forIds?.length, { message: 'forId or forIds required' });
 const patchSchema = z.object({

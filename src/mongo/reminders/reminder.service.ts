@@ -34,6 +34,8 @@ export interface ReminderRecordDTO {
   state: ReminderDoc['state']; when?: string; overdue?: boolean; date?: string;
   dueAt?: string; // ISO due timestamp (when the reminder fires)
   completedAt?: number; approvedAt?: number;
+  image?: string; // screenshot url (relative /uploads/… on local storage, absolute on S3)
+  source?: string; // 'erp' when raised from KBiz Books
 }
 
 function toRecord(r: ReminderDoc, meta: Map<string, Meta>): ReminderRecordDTO {
@@ -49,6 +51,7 @@ function toRecord(r: ReminderDoc, meta: Map<string, Meta>): ReminderRecordDTO {
     state: r.state, when: r.whenLabel ?? undefined, overdue, date: r.dueDate ?? undefined,
     dueAt: r.dueAt?.toISOString(),
     completedAt: r.completedAt?.getTime(), approvedAt: r.approvedAt?.getTime(),
+    image: r.imageUrl ?? undefined, source: r.source ?? undefined,
   };
 }
 
@@ -162,7 +165,7 @@ export const remindersService = {
   // POST /reminders — creator = current user; assignees must be real users. Multiple assignees
   // fan out to ONE reminder document per person, so each completes / gets reviewed / archives
   // independently through the unchanged single-assignee state machine.
-  async create(userId: string, body: { text: string; forId?: string; forIds?: string[]; when?: string; section?: string; dueAt?: string }): Promise<ReminderRecordDTO[]> {
+  async create(userId: string, body: { text: string; forId?: string; forIds?: string[]; when?: string; section?: string; dueAt?: string; imageUrl?: string; source?: string }): Promise<ReminderRecordDTO[]> {
     const forIds = [...new Set(body.forIds?.length ? body.forIds : body.forId ? [body.forId] : [])];
     if (!forIds.length) throw BadRequest('Assignee required');
     const targets = await Promise.all(forIds.map((id) => crmRepo.getUserById(id)));
@@ -174,6 +177,7 @@ export const remindersService = {
       const doc = await reminderRepo.create({
         text: body.text, section: body.section ?? 'today', forId, byId: userId,
         state: 'pending', whenLabel: body.when ?? null, dueAt,
+        imageUrl: body.imageUrl ?? null, source: body.source ?? null,
       });
       // Notify the assignee (not self): realtime badge + a push "X created a reminder for you".
       if (forId !== userId) {
