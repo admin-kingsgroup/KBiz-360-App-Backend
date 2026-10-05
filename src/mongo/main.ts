@@ -10,6 +10,7 @@ import { registerCallHandlers } from './calls/call.socket';
 import { ensureCallIndexes } from './calls/call.models';
 import { ensureReminderIndexes } from './reminders/reminder.model';
 import { ensureAttendanceIndexes } from './attendance/attendance.model';
+import { ensureLocationIndexes } from './location/location.model';
 import { ensureRegularizationIndexes } from './hr/regularization.model';
 import { ensureApprovalIndexes } from './approvals/approval.model';
 import { migrateLegacyApprovalChains } from './approvals/approval.migrate';
@@ -35,6 +36,7 @@ async function bootstrap(): Promise<void> {
   await ensureCallIndexes(); // call_logs / active_calls (TTL) / push_devices indexes
   await ensureReminderIndexes(); // reminders indexes
   await ensureAttendanceIndexes(); // attendance indexes
+  await ensureLocationIndexes(); // location trail (pings TTL + last-known per user)
   await ensureRegularizationIndexes(); // attendance regularisation requests
   await ensureApprovalIndexes(); // approval requests (chain of levels)
   await migrateLegacyApprovalChains(); // one-time: pre-N-level steps[] → levels[] (no-op afterwards)
