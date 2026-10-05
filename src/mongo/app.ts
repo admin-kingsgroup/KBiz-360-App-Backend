@@ -7,6 +7,7 @@ import { adminRouter } from './admin.router';
 import { chatRouter } from './chat/chat.router';
 import { callsRouter } from './calls/calls.router';
 import { remindersRouter } from './reminders/reminders.router';
+import { remindersServiceRouter } from './reminders/remindersService.router';
 import { attendanceRouter } from './attendance/attendance.router';
 import { locationRouter } from './location/location.router';
 import { hrRouter } from './hr/hr.router';
@@ -34,6 +35,7 @@ export function createMongoApp(): Express {
   app.get('/privacy', (_req, res) => res.type('html').send(PRIVACY_HTML)); // public: linked from the Play Store listing
   app.use('/api/auth', mongoAuthRouter);
   app.use('/api/alerts', alertsIngestRouter); // ERP/CRM service-token ingest — MUST precede chatRouter's /api-wide requireAuth
+  app.use('/api/service/reminders', remindersServiceRouter); // ERP reads/writes the app's reminders as its own user (service token) — also pre-chatRouter
   app.use('/api/client-errors', clientErrorsRouter); // crash reports (public, rate-limited) — also pre-chatRouter
   // Signed email-image proxy — also pre-chatRouter: <img> tags in the mail WebView cannot attach
   // the JWT; the HMAC in the URL (minted server-side in getMessage) is the auth.
@@ -50,7 +52,9 @@ export function createMongoApp(): Express {
   app.use('/api/alerts', alertsRouter); // system alerts (Home feed, access-filtered per user)
   app.use('/api', uploadsRouter); // /uploads (chat media)
   app.use('/api', emailRouter); // /email/* (Microsoft 365 via Graph)
-  app.use('/uploads', express.static(config.storage.localDir)); // serve locally-stored media
+  // Locally-stored media. helmet's default Cross-Origin-Resource-Policy (same-origin) would stop
+  // the ERP web app — a different origin — from showing a reminder's screenshot in an <img>.
+  app.use('/uploads', express.static(config.storage.localDir, { setHeaders: (res) => { res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin'); } }));
 
   app.use((req, _res, next) => next(NotFound(`No route for ${req.method} ${req.path}`)));
   app.use(errorHandler);
