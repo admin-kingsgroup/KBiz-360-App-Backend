@@ -1,7 +1,7 @@
 import { BadRequest, Forbidden } from '../../common/errors';
 import { accessService } from '../access';
 import { attendanceRepo } from '../attendance/attendance.repository';
-import { attendanceService } from '../attendance/attendance.service';
+import { attendanceService, trailExitSince, AUTO_PUNCH_ENABLED } from '../attendance/attendance.service';
 import { dayKeyIn } from '../attendance/attendanceBranch';
 import { officeRepo } from '../attendance/office.repository';
 import { attendanceHidden } from '../attendanceHidden';
@@ -15,6 +15,8 @@ import { LocationLastModel, LocationPingModel, type LocationPingDoc } from './lo
 // stored; once the day is closed (or was never opened) the response says `tracking:false`, which
 // makes the device stop its task (so a day closed by an admin, or the business day rolling over, ends
 // tracking without the app being opened). Hidden (director) and untracked accounts never trail.
+// The same stream also drives the AUTOMATIC CHECK-OUT (owner decision, 2026-10-05): see
+// autoCheckOutFromTrail.
 
 const ATTENDANCE_TZ = process.env.ATTENDANCE_TZ || 'Asia/Kolkata';
 const todayKey = (): string => dayKeyIn(ATTENDANCE_TZ);
@@ -122,7 +124,28 @@ export const locationService = {
       { $set: { tenantId, dateKey: open.dateKey, at: last.at, lat: last.lat, lng: last.lng, accuracy: last.accuracy } },
       { upsert: true },
     ).catch((e: { code?: number }) => { if (e.code !== 11000) throw e; /* row exists and is newer */ });
+    // Automatic check-out from the trail: once the newest fixes show the person provably outside
+    // every office for a few minutes, close the day at the instant they left. This is the accurate
+    // half of automatic attendance — a stream of GPS fixes instead of one OS boundary event.
+    if (tracking && (await this.autoCheckOutFromTrail(userId, open.dateKey))) return { accepted, tracking: false };
     return { accepted, tracking };
+  },
+
+  // Returns true when it closed the day. Never throws: a refused check-out (already closed by the
+  // phone's own exit event, drift guard, account without an office) just means "not this time".
+  async autoCheckOutFromTrail(userId: string, dateKey: string): Promise<boolean> {
+    if (!AUTO_PUNCH_ENABLED) return false;
+    try {
+      const offices = await attendanceService.offices(userId);
+      if (!offices.length) return false;
+      const recent = await LocationPingModel().find({ userId, dateKey }).sort({ at: -1 }).limit(40).lean();
+      const exit = trailExitSince(recent, offices);
+      if (!exit) return false;
+      await attendanceService.checkOut(userId, { method: 'auto', source: 'geofence', coords: exit.last, exitAt: exit.leftAt.toISOString() });
+      return true;
+    } catch {
+      return false;
+    }
   },
 
   // GET /location/live — the viewer's team (same scoping as the attendance team view: company-wide
