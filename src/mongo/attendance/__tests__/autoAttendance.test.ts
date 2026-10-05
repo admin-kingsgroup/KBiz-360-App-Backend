@@ -100,3 +100,41 @@ describe('automatic punches are held to a real office; the manual photo punch is
     await expect(attendanceService.checkIn(FAKE_USER, { method: 'auto', source: 'geofence', coords: { lat: 19.076, lng: 72.8777 } })).rejects.toThrow('You checked out yourself');
   }, 30000);
 });
+
+// ── morning arrival wake ──
+import { inArrivalWindow } from '../attendance.service';
+import { wakeDue } from '../attendance.arrival';
+
+describe('inArrivalWindow — branch-local window on working days', () => {
+  // 2026-10-05 is a Monday.
+  const ist = (hhmm: string, day = '2026-10-05'): Date => new Date(`${day}T${hhmm}:00+05:30`);
+  it('is open from the start minute up to (not including) the end minute', () => {
+    expect(inArrivalWindow(ist('08:29'), 'Asia/Kolkata', '08:30-11:30', '1-6')).toBe(false);
+    expect(inArrivalWindow(ist('08:30'), 'Asia/Kolkata', '08:30-11:30', '1-6')).toBe(true);
+    expect(inArrivalWindow(ist('11:29'), 'Asia/Kolkata', '08:30-11:30', '1-6')).toBe(true);
+    expect(inArrivalWindow(ist('11:30'), 'Asia/Kolkata', '08:30-11:30', '1-6')).toBe(false);
+  });
+  it('uses the BRANCH clock: 10:00 IST is 07:30 in Nairobi (closed) and 11:30 IST is 09:00 there (open)', () => {
+    expect(inArrivalWindow(ist('10:00'), 'Africa/Nairobi', '08:30-11:30', '1-6')).toBe(false);
+    expect(inArrivalWindow(ist('11:30'), 'Africa/Nairobi', '08:30-11:30', '1-6')).toBe(true);
+  });
+  it('skips days outside the working week (Sunday by default)', () => {
+    expect(inArrivalWindow(ist('09:00', '2026-10-04'), 'Asia/Kolkata', '08:30-11:30', '1-6')).toBe(false); // Sunday
+    expect(inArrivalWindow(ist('09:00', '2026-10-10'), 'Asia/Kolkata', '08:30-11:30', '1-6')).toBe(true); // Saturday
+  });
+  it('a malformed window, day range or timezone never opens it', () => {
+    expect(inArrivalWindow(ist('09:00'), 'Asia/Kolkata', '8.30 to 11', '1-6')).toBe(false);
+    expect(inArrivalWindow(ist('09:00'), 'Asia/Kolkata', '08:30-11:30', 'weekdays')).toBe(false);
+    expect(inArrivalWindow(ist('09:00'), 'Not/AZone', '08:30-11:30', '1-6')).toBe(false);
+  });
+});
+
+describe('wakeDue — at most one silent wake per interval', () => {
+  const T = Date.parse('2026-10-05T04:00:00.000Z');
+  it('wakes someone never woken, then waits out the interval', () => {
+    expect(wakeDue(undefined, T, 4)).toBe(true);
+    expect(wakeDue(T, T + 60_000, 4)).toBe(false);
+    expect(wakeDue(T, T + 3 * 60_000, 4)).toBe(false);
+    expect(wakeDue(T, T + 4 * 60_000, 4)).toBe(true);
+  });
+});
