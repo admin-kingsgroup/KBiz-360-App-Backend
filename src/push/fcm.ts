@@ -33,6 +33,26 @@ export const fcm = {
     return getApp() !== null;
   },
 
+  // SILENT wake: a data-only message nobody sees, used to make the app run a background check
+  // (automatic attendance during the morning arrival window). Android: high priority so it wakes
+  // from Doze. iOS: a background push must go at apns-priority 5 — APNs rejects 10 for them.
+  async sendSilent(token: string, data: Record<string, string>): Promise<boolean> {
+    const a = getApp();
+    if (!a) return false;
+    try {
+      await a.messaging().send({
+        token,
+        data,
+        android: { priority: 'high', ttl: 120_000 }, // stale after 2 minutes — the next wake supersedes it
+        apns: { headers: { 'apns-priority': '5', 'apns-push-type': 'background' }, payload: { aps: { contentAvailable: true } } },
+      });
+      return true;
+    } catch (e) {
+      if ((e as { code?: string }).code === 'messaging/registration-token-not-registered') void fcmDeviceRepo.removeByToken(token);
+      return false;
+    }
+  },
+
   // Send a high-priority DATA message to one device's raw FCM token. Returns true if delivered to
   // FCM (not a guarantee of device delivery). Data values must be strings (FCM requirement).
   // apnsAlert: when provided, iOS DISPLAYS a notification (title/body) — needed because iOS does not

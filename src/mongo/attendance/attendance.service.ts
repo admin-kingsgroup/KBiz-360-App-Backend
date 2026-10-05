@@ -210,6 +210,31 @@ export function trailExitSince(
   return { leftAt: oldest.at, last: { lat: newest.lat, lng: newest.lng } };
 }
 
+// ── morning arrival wake (automatic attendance) ──
+// The phone's own boundary detection can lag or be swallowed by a battery saver, and its periodic
+// safety check runs only every ~15 minutes. So during each branch's ARRIVAL WINDOW the server
+// sends a silent push every few minutes to the phones of people who have not checked in yet; the
+// app wakes, takes a fix and punches if it is at the office (attendance.arrival.ts does the timing).
+// Window is BRANCH-LOCAL 'HH:mm-HH:mm' (default 08:30–11:30), days are ISO weekdays (default Mon–Sat).
+export const ARRIVAL_WINDOW = process.env.ATTENDANCE_ARRIVAL_WINDOW || '08:30-11:30';
+export const ARRIVAL_DAYS = process.env.ATTENDANCE_ARRIVAL_DAYS || '1-6';
+
+// Pure: is `at` inside the arrival window on a working day, on the clock of timezone `tz`?
+export function inArrivalWindow(at: Date, tz: string, window: string = ARRIVAL_WINDOW, days: string = ARRIVAL_DAYS): boolean {
+  const m = /^(\d{2}):(\d{2})-(\d{2}):(\d{2})$/.exec(window.trim());
+  const d = /^([1-7])-([1-7])$/.exec(days.trim());
+  if (!m || !d) return false;
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat('en-GB', { timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(at);
+  } catch { return false; }
+  const get = (t: string): string => parts.find((p) => p.type === t)?.value ?? '';
+  const iso = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(get('weekday')) + 1;
+  if (iso < Number(d[1]) || iso > Number(d[2])) return false;
+  const mins = (Number(get('hour')) % 24) * 60 + Number(get('minute'));
+  return mins >= Number(m[1]) * 60 + Number(m[2]) && mins < Number(m[3]) * 60 + Number(m[4]);
+}
+
 // Pure decision: which instant a check-out is stamped with. The punch often lands LONG after the
 // person actually left — the Exit event fired with no usable fix, then Doze deferred the phone's
 // reconcile for 1–2 hours — and stamping arrival time recorded all of that delay as a late
@@ -567,6 +592,39 @@ export const attendanceService = {
     if (ATTENDANCE_ALERTS_ENABLED && !hidden) void alertService.recordAttendancePunch(userId, 'out', outAt, saved?.method ?? null);
     if (PUNCH_CHAT_ENABLED && !hidden) void postPunchToHrChannel(userId, 'out', outAt, saved?.method ?? null);
     return mapMe(saved);
+  },
+
+  // Who the arrival wake should reach RIGHT NOW: active, tracked people (not exempt, not
+  // super-admin; hidden directors included — theirs is automatic too) whose working branch has an
+  // office, whose branch is inside its local arrival window, and who have no check-in yet today.
+  // One pass over the directory per call (tens of users) — the sweep calls it once a minute at most.
+  async arrivalWakeTargets(now: Date = new Date()): Promise<string[]> {
+    if (!AUTO_PUNCH_ENABLED) return [];
+    let users = await crmRepo.listUsers({ status: 'active' });
+    users = users.filter((u) => u.access?.app === true);
+    if (!users.length) return [];
+    const exempt = await attendanceExempt.exemptSet();
+    const supers = superUserIds(users, await crmRepo.listRoles());
+    const hiddenSet = await attendanceHidden.hiddenSet();
+    users = users.filter((u) => { const id = String(u._id); return hiddenSet.has(id) || (!exempt.has(id) && !supers.has(id)); });
+    const ids = users.map((u) => String(u._id));
+    const workBranches = await userWorkBranches.mapFor(ids);
+    const branchOf = (u: CrmUser): string => workBranches[String(u._id)] ?? ((u.branch_ids ?? [])[0] ? String((u.branch_ids ?? [])[0]) : '');
+    const branchIds = [...new Set(users.map(branchOf).filter((id) => Types.ObjectId.isValid(id)))];
+    if (!branchIds.length) return [];
+    const [branches, offices, assigned] = await Promise.all([
+      crmRepo.branchesByIds(branchIds.map((id) => new Types.ObjectId(id))),
+      officeRepo.byBranchIds(branchIds),
+      userOffices.mapFor(ids),
+    ]);
+    const withOffice = new Set(offices.map((o) => o.branchId));
+    const inWindow = new Set(branches.filter((b) => inArrivalWindow(now, branchAutoClose(b).tz)).map((b) => String(b._id)));
+    const due = users.filter((u) => { const b = branchOf(u); return inWindow.has(b) && (withOffice.has(b) || !!assigned[String(u._id)]); });
+    if (!due.length) return [];
+    const dueIds = due.map((u) => String(u._id));
+    const rows = await attendanceRepo.forUsersOnDay(todayKey(), dueIds);
+    const checkedIn = new Set(rows.filter((r) => r.checkInAt).map((r) => r.userId));
+    return dueIds.filter((id) => !checkedIn.has(id));
   },
 
   // GET /attendance/offices — the geofences the caller may punch at (drives the app's office picker
