@@ -8,6 +8,7 @@ import { chatRouter } from './chat/chat.router';
 import { callsRouter } from './calls/calls.router';
 import { remindersRouter } from './reminders/reminders.router';
 import { attendanceRouter } from './attendance/attendance.router';
+import { locationRouter } from './location/location.router';
 import { hrRouter } from './hr/hr.router';
 import { approvalsRouter } from './approvals/approvals.router';
 import { alertsRouter } from './alerts/alerts.router';
@@ -43,6 +44,7 @@ export function createMongoApp(): Express {
   app.use('/api', callsRouter); // /calls/* (audio calling: signaling REST + history + analytics)
   app.use('/api/reminders', remindersRouter); // reminders (CRUD + review/approval, real users)
   app.use('/api/attendance', attendanceRouter); // attendance (punch in/out + today + team)
+  app.use('/api/location', locationRouter); // work-hours location trail (device pings + live roster + day trail)
   app.use('/api/hr', hrRouter); // HR self-service (leave balance/applications + regularisation requests)
   app.use('/api/approvals', approvalsRouter); // approval requests (chain of levels the requester builds; one or more approvers per level)
   app.use('/api/alerts', alertsRouter); // system alerts (Home feed, access-filtered per user)
