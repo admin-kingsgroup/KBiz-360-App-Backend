@@ -4,7 +4,7 @@ import { AttendanceModel } from '../attendance/attendance.model';
 import { dayKeyIn } from '../attendance/attendanceBranch';
 import { hrRepo, type HrLeaveApplicationDoc } from './hr.repo';
 import { leaveBalance, spanDays, spansOverlap, validateApplication, type LeaveBalance, type LeaveDayEntry } from './leaveRules';
-import { hrBranchCodeFor, nameOfUser, postToBranchHrGroup } from './hrNotify';
+import { hrBranchCodeFor, nameOfUser, postToBranchHrAlerts } from './hrNotify';
 import { freshChain } from './timeCorrection.rules';
 
 // Paid-leave SELF-SERVICE for the app: see your balance, apply, withdraw while pending.
@@ -151,8 +151,10 @@ export const leaveService = {
       const branchCode = await hrBranchCodeFor(userId, emp.branch);
       if (!branchCode) return;
       const span = ask.from === ask.to ? ask.from : `${ask.from} → ${ask.to}`;
-      await postToBranchHrGroup({
+      await postToBranchHrAlerts({
         branchCode,
+        actorUserId: userId,
+        source: 'Leave',
         title: `📝 ${doc.name} applied for ${ask.dayType === 'half' ? 'a HALF-DAY of ' : ''}leave · ${span} (${ask.dayType === 'half' ? '0.5' : ask.days.length}d)`,
         body: `Reason: ${ask.reason}\nSigned FM → Director → Owner on the ERP → Approvals ▸ Leave.`,
         dedupeKey: `leave-apply-${String(doc._id)}`,

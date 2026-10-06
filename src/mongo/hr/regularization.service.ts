@@ -6,7 +6,7 @@ import { attendanceService, resolveAdminTimes } from '../attendance/attendance.s
 import { dayKeyIn } from '../attendance/attendanceBranch';
 import { hrRepo, type HrLeaveApplicationDoc } from './hr.repo';
 import { instantAt } from './attendanceMonth';
-import { hrBranchCodeFor, nameOfUser, postToBranchHrGroup } from './hrNotify';
+import { hrBranchCodeFor, nameOfUser, postToBranchHrAlerts } from './hrNotify';
 import { sweepLeaveDecisions } from './leaveDecision.sweep';
 import {
   branchTimezoneOf, chainOf, freshChain, ownerSignatures, toRegularizationDto, wallClockOf, type RegularizationDto,
@@ -139,8 +139,10 @@ export const regularizationService = {
     void (async () => {
       const branchCode = branch || (await hrBranchCodeFor(userId));
       if (!branchCode) return;
-      await postToBranchHrGroup({
+      await postToBranchHrAlerts({
         branchCode,
+        actorUserId: userId,
+        source: 'Attendance',
         title: `🕒 ${doc.name} asked for a time correction · ${plan.date} (in ${fmtWall(checkIn)} · out ${checkOut ? fmtWall(checkOut) : 'open'})`,
         body: `Reason: ${plan.reason}\nSigned FM → Director → Owner on the ERP → Approvals ▸ Leave, or by the Super Admin in the app → Approvals.`,
         dedupeKey: `attendance-regularize-${String(doc._id)}`,
