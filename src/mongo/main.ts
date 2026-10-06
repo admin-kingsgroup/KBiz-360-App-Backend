@@ -12,6 +12,7 @@ import { ensureReminderIndexes } from './reminders/reminder.model';
 import { ensureAttendanceIndexes } from './attendance/attendance.model';
 import { ensureLocationIndexes } from './location/location.model';
 import { ensureRegularizationIndexes } from './hr/regularization.model';
+import { migrateRegularizationsToSharedQueue } from './hr/regularization.migrate';
 import { ensureApprovalIndexes } from './approvals/approval.model';
 import { migrateLegacyApprovalChains } from './approvals/approval.migrate';
 import { ensureOfficeGeofenceIndexes } from './attendance/office.model';
@@ -38,7 +39,8 @@ async function bootstrap(): Promise<void> {
   await ensureReminderIndexes(); // reminders indexes
   await ensureAttendanceIndexes(); // attendance indexes
   await ensureLocationIndexes(); // location trail (pings TTL + last-known per user)
-  await ensureRegularizationIndexes(); // attendance regularisation requests
+  await ensureRegularizationIndexes(); // the retired app-owned regularisation collection (read by the migration only)
+  await migrateRegularizationsToSharedQueue(); // one-time: app-owned time corrections → the shared ERP queue (no-op afterwards)
   await ensureApprovalIndexes(); // approval requests (chain of levels)
   await migrateLegacyApprovalChains(); // one-time: pre-N-level steps[] → levels[] (no-op afterwards)
   await ensureOfficeGeofenceIndexes(); // office geofence (per-branch) indexes
@@ -65,7 +67,7 @@ async function bootstrap(): Promise<void> {
   startPresenceHeartbeat(); // stamps lastSeenAt for online users every 60s (a crash loses ≤60s)
   startAttendanceDayClose(); // 10pm branch-wise attendance day-close summary to each attendance channel
   startAttendanceArrivalWake(); // automatic attendance: silent wake for people not yet checked in, during each branch's arrival window
-  startLeaveDecisionSweep(); // "Leave approved/rejected" push when the ERP decides an application
+  startLeaveDecisionSweep(); // "Leave / time correction approved/rejected" push when the ERP (or the app) decides a row
 
   const shutdown = async (): Promise<void> => {
     stopReminderDueSweep();

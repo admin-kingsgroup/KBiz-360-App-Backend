@@ -8,9 +8,11 @@ import { leaveService } from './leave.service';
 import { regularizationService, asAdminQueueStatus } from './regularization.service';
 import { myMonthService } from './myMonth.service';
 
-// Mounted at /api/hr. Self-service HR for the app: paid-leave balance + applications (shared
-// with the ERP's approval queue) and attendance regularisation requests (approved in-app by a
-// manager). Identity is ALWAYS the verified JWT's — no route takes a userId for the self half.
+// Mounted at /api/hr. Self-service HR for the app: paid-leave balance + applications and
+// attendance regularisation requests (time corrections) — BOTH the ERP's own hr_leave_applications
+// rows, so each is on the ERP's Approvals ▸ Leave tab the moment it is raised (signed FM →
+// Director → Owner there); a time correction may also be decided here by the Super Admin, on the
+// same row. Identity is ALWAYS the verified JWT's — no route takes a userId for the self half.
 export const hrRouter: Router = Router();
 
 // Exported for the router-schema regression test (validate() strips unknown keys).
@@ -69,7 +71,7 @@ hrRouter.get('/holidays', requireAuth, asyncHandler(async (req, res) => {
   res.json(await myMonthService.myHolidays(req.auth.userId, String(req.query.year ?? '').trim()));
 }));
 
-// ── attendance regularisation (requested here, approved here by a manager) ──
+// ── attendance regularisation (requested here; decided here by the Super Admin OR on the ERP) ──
 hrRouter.get('/regularizations', requireAuth, asyncHandler(async (req, res) => {
   if (!req.auth) throw Unauthorized();
   res.json(await regularizationService.myRequests(req.auth.userId));
@@ -87,7 +89,8 @@ hrRouter.put('/regularizations/:id/cancel', requireAuth, asyncHandler(async (req
 
 // Super-admin queue + decision. Approving a request WRITES the day's times, so it carries the
 // same gate as the direct editor (owner rule 2026-09-08: only the super admin changes a recorded
-// time). The service re-checks isSuper and the tenant, like the attendance admin paths.
+// time) — and signs the ERP's chain as its Owner level. The service re-checks isSuper and the
+// tenant, like the attendance admin paths.
 hrRouter.get('/regularizations/pending', requireAuth, requireSuper, asyncHandler(async (req, res) => {
   if (!req.auth) throw Unauthorized();
   // ?status=pending|approved|rejected drives the app's three tabs. Anything else (and no query at
