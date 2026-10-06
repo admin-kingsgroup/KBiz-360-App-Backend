@@ -5,11 +5,14 @@ import { dayKeyIn } from '../attendance/attendanceBranch';
 import { hrRepo, type HrLeaveApplicationDoc } from './hr.repo';
 import { leaveBalance, spanDays, spansOverlap, validateApplication, type LeaveBalance, type LeaveDayEntry } from './leaveRules';
 import { hrBranchCodeFor, nameOfUser, postToBranchHrGroup } from './hrNotify';
+import { freshChain } from './timeCorrection.rules';
 
 // Paid-leave SELF-SERVICE for the app: see your balance, apply, withdraw while pending.
 // The application is ONLY the ask — it lands in the SAME hr_leave_applications collection the
-// ERP's approval queue (/tk/hr-leave) reads, and nothing touches attendance or the balance until
-// HR approves it there. The balance itself is derived on read, the ERP's own rule (leaveRules).
+// ERP's Approvals ▸ Leave tab reads (signed FM → Director → Owner there), and nothing touches
+// attendance or the balance until the Owner approves it. The balance itself is derived on read,
+// the ERP's own rule (leaveRules). The row is written in the ERP model's EXACT shape (chain, kind,
+// source …) so the two queues cannot tell who filed it.
 
 const ATTENDANCE_TZ = process.env.ATTENDANCE_TZ || 'Asia/Kolkata';
 const todayKey = (): string => dayKeyIn(ATTENDANCE_TZ);
@@ -75,6 +78,15 @@ export async function leaveDaysFor(userId: string): Promise<LeaveDayEntry[]> {
   return out.sort((a, b) => a.day.localeCompare(b.day));
 }
 
+/** Pure: the open application a new ask collides with, or null. A PENDING span blocks every day in it;
+ *  an APPROVED one blocks only the days it actually marked — a day since skipped or removed is free to
+ *  ask for again (the ERP's assertNoOverlap, 2026-10-05). Exported for tests. */
+export function leaveClash<T extends { from: string; to: string; status: string; markedDays?: string[] }>(open: T[], ask: { from: string; to: string }): T | null {
+  return open.find((a) => (a.status === 'approved'
+    ? (a.markedDays || []).some((d) => d >= ask.from && d <= ask.to)
+    : spansOverlap(a, ask))) ?? null;
+}
+
 export const leaveService = {
   /** GET /hr/my-leave — balance as at today + the person's application trail. */
   async myLeave(userId: string): Promise<{ today: string; hasRecord: boolean; balance: LeaveBalance | null; applications: LeaveApplicationDto[]; features: { halfDay: boolean } }> {
@@ -101,9 +113,8 @@ export const leaveService = {
     if (!emp) throw new AppError(422, 'No HR record is linked to your login yet — ask HR to add you on the Employee Master first', 'NO_HR_RECORD');
 
     // One ask per day: a span sharing a day with a pending or approved application is a
-    // duplicate, not a new request.
-    const open = await hrRepo.openLeaveApplications(userId);
-    const clash = open.find((a) => spansOverlap(a, ask));
+    // duplicate, not a new request (leaveClash — the ERP's assertNoOverlap rule).
+    const clash = leaveClash(await hrRepo.openLeaveApplications(userId), ask);
     if (clash) throw new AppError(409, `Those dates overlap your ${clash.status} application ${clash.from} → ${clash.to}`, 'LEAVE_OVERLAP');
 
     const user = await crmRepo.getUserById(userId);
@@ -123,8 +134,17 @@ export const leaveService = {
       decisionNote: '',
       markedDays: [],
       skippedDays: [],
+      chain: freshChain(),
+      approvals: [],
+      source: 'self',
+      kind: 'leave',
+      toStatus: '',
+      checkIn: '',
+      checkOut: '',
+      raisedBy: { userId: '', name: '', role: '' },
       createdAt: now,
       updatedAt: now,
+      __v: 0,
     });
 
     void (async () => {
@@ -134,7 +154,7 @@ export const leaveService = {
       await postToBranchHrGroup({
         branchCode,
         title: `📝 ${doc.name} applied for ${ask.dayType === 'half' ? 'a HALF-DAY of ' : ''}leave · ${span} (${ask.dayType === 'half' ? '0.5' : ask.days.length}d)`,
-        body: `Reason: ${ask.reason}\nApprove or reject on the ERP → Leave Applications.`,
+        body: `Reason: ${ask.reason}\nSigned FM → Director → Owner on the ERP → Approvals ▸ Leave.`,
         dedupeKey: `leave-apply-${String(doc._id)}`,
       });
     })();
