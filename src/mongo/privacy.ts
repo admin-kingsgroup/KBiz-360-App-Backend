@@ -20,26 +20,26 @@ export const PRIVACY_HTML = `<!DOCTYPE html>
 <body>
 <main>
 <h1>Privacy Policy</h1>
-<div class="meta">KBiz 360 – Smart Connect · Kings Group Companies (Travkings) · Effective 10 July 2026</div>
+<div class="meta">KBiz 360 – Smart Connect · Kings Group Companies (Travkings) · Effective 6 October 2026</div>
 
-<p><strong>KBiz 360 – Smart Connect</strong> ("the app") is an internal workplace app operated by Kings Group Companies / Travkings Tours and Travels ("we", "us") for our employees. It provides team chat and calls, workplace attendance, reminders and access to your company Microsoft 365 email. Only people with a company-issued account can sign in.</p>
+<p><strong>KBiz 360 – Smart Connect</strong> ("the app") is a workforce app for businesses, operated by Kings Group Companies / Travkings Tours and Travels ("we", "us"). Organizations subscribe to KBiz 360 and their administrators create accounts for their staff; there is no public sign-up. The app provides team chat, workplace attendance, HR self-service, reminders and access to your organization's Microsoft 365 email. Only people with an account issued by their organization can sign in.</p>
 
 <h2>Information we collect</h2>
 <ul>
-<li><strong>Account &amp; profile:</strong> your name, work email address, role and branch, as maintained in our company systems.</li>
+<li><strong>Account &amp; profile:</strong> your name, work email address, role and branch, as maintained by your organization's administrators.</li>
 <li><strong>Attendance:</strong> daily check-in/check-out times, the method used (Wi-Fi, geofence or face punch), your distance from the office at the time of the punch, and the name of the office Wi-Fi network your device was connected to (only when it matches an office network we configured).</li>
 <li><strong>Location:</strong> used to detect when you arrive at or leave your office. This includes <strong>background location</strong>, so automatic check-in/out works while the app is closed. Location is checked against your office's registered coordinates; we store punch events (with the distance and the coordinates of the punch), not a continuous movement history.</li>
-<li><strong>Messages &amp; calls:</strong> chats, group messages, voice notes and shared files you send through the app; call history (who called whom, when, duration). Call audio/video is transmitted for the call and not recorded.</li>
-<li><strong>Email:</strong> the app connects to your company Microsoft 365 mailbox via Microsoft's APIs. Mail is fetched from Microsoft and displayed in the app; sign-in tokens are stored securely to keep you connected.</li>
+<li><strong>Messages:</strong> chats, group messages, voice notes and shared files you send through the app.</li>
+<li><strong>Email:</strong> the app connects to your organization's Microsoft 365 mailbox via Microsoft's APIs. Mail is fetched from Microsoft and displayed in the app; sign-in tokens are stored securely to keep you connected.</li>
 <li><strong>Device &amp; notifications:</strong> a push notification token (Firebase Cloud Messaging / Apple push) so we can deliver messages, reminders and alerts.</li>
 <li><strong>Biometrics:</strong> the face/fingerprint attendance punch uses your device's built-in screen-lock verification (Android BiometricPrompt / Apple Face ID). Biometric data never leaves your device and is never seen, stored or transmitted by us.</li>
 </ul>
 
 <h2>How we use it</h2>
 <ul>
-<li>Operating workplace chat, calls, email and reminders.</li>
+<li>Operating workplace chat, email, HR self-service and reminders.</li>
 <li>Recording workplace attendance and making it visible to you and to authorised managers.</li>
-<li>Feeding attendance summaries into company HR/payroll processes.</li>
+<li>Feeding attendance summaries into your organization's HR/payroll processes.</li>
 <li>Securing the service and enforcing role-based access.</li>
 </ul>
 <p>We do <strong>not</strong> sell your data, use it for advertising, or share it with third parties for marketing.</p>
@@ -48,10 +48,10 @@ export const PRIVACY_HTML = `<!DOCTYPE html>
 <p>Before location-based attendance is enabled, the app shows a consent screen explaining what is collected. You can decline or withdraw consent in the app at any time; you can also revoke the location permission in your device settings. Without it, automatic check-in is disabled and manual punch options remain.</p>
 
 <h2>Where your data lives</h2>
-<p>Data is stored on company-controlled infrastructure: our API server (hosted on Amazon Web Services, Mumbai region) and our MongoDB Atlas database. Email content remains in Microsoft 365. Push notifications are delivered through Google Firebase and Apple's push service. All traffic between the app and our servers is encrypted (HTTPS/TLS).</p>
+<p>Data is stored on infrastructure operated by Kings Group: our API server (hosted on Amazon Web Services, Mumbai region) and our MongoDB Atlas database. Email content remains in Microsoft 365. Push notifications are delivered through Google Firebase and Apple's push service. All traffic between the app and our servers is encrypted (HTTPS/TLS).</p>
 
 <h2>Retention</h2>
-<p>Attendance records, messages and account data are retained for the duration of your employment and thereafter as required by company policy and applicable law, then deleted or anonymised.</p>
+<p>Attendance records, messages and account data are retained for the duration of your employment and thereafter as required by your organization's policy and applicable law, then deleted or anonymised.</p>
 
 <h2>Your rights</h2>
 <p>You may request access to, correction of, or deletion of your personal data, subject to employment-record obligations. Contact your administrator or write to us at the address below.</p>
