@@ -15,6 +15,7 @@ import { approvalsRouter } from './approvals/approvals.router';
 import { erpRouter } from './erp/erp.router';
 import { alertsRouter } from './alerts/alerts.router';
 import { alertsIngestRouter } from './alerts/alertsIngest.router';
+import { alertAccessServiceRouter } from './alerts/alertAccessService.router';
 import { clientErrorsRouter } from './clientErrors.router';
 import { uploadsRouter } from './uploads.router';
 import { emailRouter } from '../email/email.router';
@@ -37,6 +38,7 @@ export function createMongoApp(): Express {
   app.use('/api/auth', mongoAuthRouter);
   app.use('/api/alerts', alertsIngestRouter); // ERP/CRM service-token ingest — MUST precede chatRouter's /api-wide requireAuth
   app.use('/api/service/reminders', remindersServiceRouter); // ERP reads/writes the app's reminders as its own user (service token) — also pre-chatRouter
+  app.use('/api/service/alert-access', alertAccessServiceRouter); // ERP manages who sees which alert channel (service token) — also pre-chatRouter
   app.use('/api/client-errors', clientErrorsRouter); // crash reports (public, rate-limited) — also pre-chatRouter
   // Signed email-image proxy — also pre-chatRouter: <img> tags in the mail WebView cannot attach
   // the JWT; the HMAC in the URL (minted server-side in getMessage) is the auth.

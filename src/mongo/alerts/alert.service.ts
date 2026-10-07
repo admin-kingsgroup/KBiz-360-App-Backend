@@ -25,6 +25,7 @@ export interface AlertEventDto {
   read: boolean;
   attachment?: { name: string; url: string }; // e.g. the ERP's invoice PDF (served from /uploads or S3)
   contact?: AlertContact; // e.g. a converted lead's client → WhatsApp / Call buttons in the app
+  link?: string; // https URL of the thing the alert is about (e.g. the KGD ticket) → an "Open" button
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -52,6 +53,10 @@ export async function ensureAlertIndexes(): Promise<void> {
   );
 }
 
+// An event's "Open" link is only ever an https URL (the ingest refuses anything else); re-checked
+// on the way out so a hand-edited row can never hand the app a javascript: or http: link.
+export const isHttpsLink = (v: unknown): v is string => typeof v === 'string' && v.startsWith('https://') && v.length <= 500;
+
 // Wall-clock time in the business timezone (same convention as attendance.service).
 const ATTENDANCE_TZ = process.env.ATTENDANCE_TZ || 'Asia/Kolkata';
 function fmtWallTime(d: Date): string {
@@ -67,7 +72,8 @@ export const alertService = {
     channelId: string,
     // attachment.key = storage key, persisted for future file cleanup; DTO exposes only {name,url}.
     // contact = someone to reach from the card; stored and listed, never pushed (see alertContact).
-    ev: { source: string; title: string; body: string; context: string; attachment?: { name: string; url: string; key?: string }; contact?: AlertContact },
+    // link = an https URL the card opens (ingest-validated, 2026-10-07); stored and listed, never pushed.
+    ev: { source: string; title: string; body: string; context: string; attachment?: { name: string; url: string; key?: string }; contact?: AlertContact; link?: string },
     // The user who caused the event (e.g. the puncher) — excluded from the push fan-out.
     actorUserId?: string | null,
     // Idempotency key, unique per channel: a re-fired cron slot or a retried POST carrying the
@@ -174,7 +180,7 @@ export const alertService = {
       { $limit: MAX_EVENTS },
     ]).toArray();
     return {
-      events: docs.map((d: { _id: unknown; channelId: string; source: string; title: string; body: string; context: string; time: Date; readBy?: string[]; attachment?: { name: string; url: string }; contact?: AlertContact }) => ({
+      events: docs.map((d: { _id: unknown; channelId: string; source: string; title: string; body: string; context: string; time: Date; readBy?: string[]; attachment?: { name: string; url: string }; contact?: AlertContact; link?: string }) => ({
         id: String(d._id),
         channelId: d.channelId,
         source: d.source,
@@ -185,6 +191,7 @@ export const alertService = {
         read: (d.readBy ?? []).includes(userId),
         ...(d.attachment ? { attachment: { name: d.attachment.name, url: d.attachment.url } } : {}),
         ...(d.contact?.phone ? { contact: { ...(d.contact.name ? { name: d.contact.name } : {}), phone: d.contact.phone } } : {}),
+        ...(isHttpsLink(d.link) ? { link: d.link } : {}),
       })),
     };
   },

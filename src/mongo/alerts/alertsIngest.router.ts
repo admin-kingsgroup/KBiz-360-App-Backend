@@ -7,7 +7,7 @@ import { AppError, BadRequest } from '../../common/errors';
 import { getStorage } from '../../storage';
 import { crmRepo } from '../crm.repo';
 import { requireServiceToken } from './serviceAuth';
-import { channelForModuleBranch, USER_ALERTS_CHANNEL_ID } from './alertChannels';
+import { ALERT_GROUP_BY_MODULE, channelForKgd, channelForModuleBranch, USER_ALERTS_CHANNEL_ID } from './alertChannels';
 import { attachmentFilename } from './attachmentName';
 import { contactSchema, type AlertContact } from './alertContact';
 import { reportChat } from './reportChat.service';
@@ -19,7 +19,8 @@ import { alertService } from './alert.service';
 // app.ts: chatRouter applies user-JWT requireAuth to every /api/* request that reaches it, and a
 // service call carries no user JWT. The channel is addressed by (module, branch); unknown pairs
 // 400 so an emitter misconfigured with e.g. an African branch fails loudly instead of writing to
-// nowhere.
+// nowhere. KGD Alerts (module 'kgd-tickets', 2026-10-07) are addressed by (module, system) instead —
+// a ticket belongs to the CRM or the ERP, not to a branch.
 export const alertsIngestRouter: Router = Router();
 
 // In-process token bucket: bursts up to 120 (a bulk approve-many fires one invoice alert per
@@ -60,6 +61,12 @@ const MAX_ATTACHMENT_B64 = 2_000_000; // ≈ 1.5 MB decoded
 // share the exact same rule without importing this router (a cycle).
 export { attachmentFilename } from './attachmentName';
 
+// The card's "Open" button (added 2026-10-07 — first for KGD tickets, accepted from every module):
+// an absolute https URL only, so the app never opens a javascript:, data: or plain-http link.
+export const linkSchema = z.string().trim().max(500)
+  .url('link must be a URL')
+  .refine((v) => v.startsWith('https://'), { message: 'link must start with https://' });
+
 alertsIngestRouter.post(
   '/ingest',
   requireServiceToken,
@@ -69,9 +76,14 @@ alertsIngestRouter.post(
     // reports go to the branch group chats via /chat below, and an emitter still aiming here must
     // fail loudly rather than write into a feed nobody reads. Added 2026-09-27: 'leads' (CRM),
     // 'erp' (ERP), 'erp-reports' (ERP Reports), 'crm-reports' (CRM Reports). HR (attendance) is
-    // written by this backend itself, so it is not ingestable.
-    module: z.enum(['finance', 'accounts', 'crm', 'leads', 'erp', 'erp-reports', 'crm-reports']),
-    branchCode: z.string().trim().min(2).max(10),
+    // written by this backend itself, so it is not ingestable. Added 2026-10-07: 'kgd-tickets'
+    // (KGD Alerts) — addressed by `system`, not by branch.
+    module: z.enum(['finance', 'accounts', 'crm', 'leads', 'erp', 'erp-reports', 'crm-reports', 'kgd-tickets']),
+    // Required (2–10 chars) for every branch module — refine below; ignored for kgd-tickets, which
+    // has no branch (so whatever the emitter sends there, null included, never fails the post).
+    branchCode: z.string().trim().max(40).nullish(),
+    // kgd-tickets only, and required there: which system the ticket was raised in.
+    system: z.enum(['crm', 'erp']).optional(),
     title: z.string().trim().min(1).max(160),
     body: z.string().trim().max(2000).optional(),
     source: z.string().trim().min(1).max(80),
@@ -87,13 +99,17 @@ alertsIngestRouter.post(
     // Someone to reach from the card — the CRM sends the converted lead's client. Stored with the
     // event and shown as WhatsApp + Call buttons; never part of the push text.
     contact: contactSchema.optional(),
-  })),
+    // What the card opens (e.g. the ticket in the CRM / ERP). Stored with the event; never pushed.
+    link: linkSchema.optional(),
+  })
+    .refine((v) => v.module !== 'kgd-tickets' || !!v.system, { message: 'system (crm | erp) is required for kgd-tickets', path: ['system'] })
+    .refine((v) => v.module === 'kgd-tickets' || (!!v.branchCode && v.branchCode.length >= 2 && v.branchCode.length <= 10), { message: 'branchCode is required', path: ['branchCode'] })),
   asyncHandler(async (req, res) => {
-    const { module, branchCode, title, body, source, context, attachment, dedupeKey, contact } = req.body as {
-      module: string; branchCode: string; title: string; body?: string; source: string; context?: string;
-      attachment?: { name: string; mime?: string; data: string }; dedupeKey?: string; contact?: AlertContact;
+    const { module, branchCode, system, title, body, source, context, attachment, dedupeKey, contact, link } = req.body as {
+      module: string; branchCode?: string | null; system?: 'crm' | 'erp'; title: string; body?: string; source: string; context?: string;
+      attachment?: { name: string; mime?: string; data: string }; dedupeKey?: string; contact?: AlertContact; link?: string;
     };
-    const channel = channelForModuleBranch(module, branchCode);
+    const channel = module === 'kgd-tickets' ? channelForKgd(system as 'crm' | 'erp') : channelForModuleBranch(module, branchCode ?? '');
     if (!channel) throw BadRequest(`No alert channel for module "${module}" / branch "${branchCode}"`);
     // Cheap early answer for a repeat, before any PDF is uploaded (record() still guards the race).
     if (dedupeKey && await alertService.hasEvent(channel.id, dedupeKey)) {
@@ -126,17 +142,19 @@ alertsIngestRouter.post(
     }
 
     // Default context embeds the branch code — the app buckets events into branch sections by it.
-    const MODULE_LABEL: Record<string, string> = {
-      accounts: 'Finance', crm: 'CRM Payments', leads: 'CRM', erp: 'ERP', 'erp-reports': 'ERP Reports', 'crm-reports': 'CRM Reports',
-    };
-    const label = MODULE_LABEL[channel.module] ?? channel.module.toUpperCase();
+    // KGD Alerts have no branch: their sections are the two systems ("KGD · CRM tickets").
+    const label = ALERT_GROUP_BY_MODULE[channel.module] ?? channel.module.toUpperCase();
+    const defaultContext = channel.companyWide
+      ? `KGD · ${system === 'erp' ? 'ERP' : 'CRM'} tickets`
+      : `TK ${channel.branchCode} · ${label}`;
     const { duplicate } = await alertService.record(channel.id, {
       source,
       title,
       body: body ?? '',
-      context: context ?? `TK ${channel.branchCode} · ${label}`,
+      context: context ?? defaultContext,
       ...(stored ? { attachment: stored } : {}),
       ...(contact ? { contact: { ...(contact.name ? { name: contact.name } : {}), phone: contact.phone } } : {}),
+      ...(link ? { link } : {}),
     }, null, dedupeKey);
     res.json({ ok: true, channelId: channel.id, ...(duplicate ? { duplicate: true } : {}), ...(stored && !duplicate ? { attachmentUrl: stored.url } : {}) });
   }),
