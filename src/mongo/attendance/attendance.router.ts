@@ -5,6 +5,7 @@ import { validate } from '../../common/validate';
 import { Unauthorized } from '../../common/errors';
 import { requireAuth, requireManage, requireSuper } from '../middleware';
 import { attendanceService, type PunchBody } from './attendance.service';
+import { withHrDayStates } from '../hr/historyStates';
 
 // Mounted at /api/attendance. The device posts punches (it owns geofence/Wi-Fi/Face detection);
 // the backend persists them and serves today's status + a role-scoped team view.
@@ -51,10 +52,13 @@ attendanceRouter.get('/team', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // The caller's recent attendance (personal history list). ?days=30 (default), clamped 1..180.
+// Each day carries its HR state (holiday / week off / leave / absent …) — the same reading as
+// My Attendance — so a holiday without a punch is not listed as an absence.
 attendanceRouter.get('/history', requireAuth, asyncHandler(async (req, res) => {
   if (!req.auth) throw Unauthorized();
   const days = req.query.days ? Number(req.query.days) : undefined;
-  res.json(await attendanceService.history(req.auth.userId, Number.isFinite(days) ? (days as number) : undefined));
+  const entries = await attendanceService.history(req.auth.userId, Number.isFinite(days) ? (days as number) : undefined);
+  res.json(await withHrDayStates(req.auth.userId, entries));
 }));
 
 // A teammate's recent attendance (per-user history for the admin team view). Manager-only;
@@ -62,7 +66,8 @@ attendanceRouter.get('/history', requireAuth, asyncHandler(async (req, res) => {
 attendanceRouter.get('/history/user/:userId', requireAuth, requireManage, asyncHandler(async (req, res) => {
   if (!req.auth) throw Unauthorized();
   const days = req.query.days ? Number(req.query.days) : undefined;
-  res.json(await attendanceService.historyForUserAsAdmin(req.auth.userId, req.params.userId, Number.isFinite(days) ? (days as number) : undefined));
+  const entries = await attendanceService.historyForUserAsAdmin(req.auth.userId, req.params.userId, Number.isFinite(days) ? (days as number) : undefined);
+  res.json(await withHrDayStates(req.params.userId, entries));
 }));
 
 // Admin correction — mark a user present/absent for one day (SUPER-ADMIN only; audit-stamped).
