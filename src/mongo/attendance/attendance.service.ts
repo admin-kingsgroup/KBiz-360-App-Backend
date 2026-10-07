@@ -15,6 +15,8 @@ import { punchChatLine, punchDedupeKey } from './punchMessage';
 import { userPositions } from '../userPositions';
 import type { OfficeGeofenceDoc } from './office.model';
 import type { AttendanceDoc } from './attendance.model';
+import { hrRepo } from '../hr/hr.repo';
+import { isWeekOffDay } from '../hr/attendanceMonth';
 
 export interface PunchBody {
   wifiOn?: boolean; // legacy client flag — ignored (never verifiable)
@@ -799,6 +801,10 @@ export const attendanceService = {
     const rows = await attendanceRepo.historyForUser(userId, limit);
     const first = await attendanceRepo.firstForUser(userId);
     if (!first && !fillFullWindow) return [];
+    // Weekly off under the person's HR policy (Employee Master `weekOff`; group default = Sunday),
+    // the same classifier the month view uses — so a Sunday without a punch reads "Week off",
+    // not "Absent", and the app hides the correction ASK on it.
+    const weekOffPolicy = (await hrRepo.employeeByUserId(userId).catch(() => null))?.weekOff ?? null;
     const floor = fillFullWindow ? addDays(todayKey(), -(limit - 1)) : (first as NonNullable<typeof first>).dateKey;
     const byKey = new Map(rows.map((r) => [r.dateKey, r]));
     const out = [];
@@ -814,6 +820,7 @@ export const attendanceService = {
         inPhoto: r?.checkInPhotoUrl ?? null, // face photos — shown in the admin team view
         outPhoto: r?.checkOutPhotoUrl ?? null,
         adjusted: !!r?.adjustedBy, // an admin set or moved this day's times (adminSetDay / adminSetTimes)
+        weekOff: isWeekOffDay(key, weekOffPolicy),
       });
     }
     return out;
