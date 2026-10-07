@@ -4,11 +4,13 @@ import { crmRepo } from '../crm.repo';
 import { appDb } from '../connection';
 import { ALERT_CHANNELS, USER_ALERTS_CHANNEL_ID, canonicalBranchCode, type AlertChannelDef } from './alertChannels';
 import { alertMutes } from './alertMutes';
+import { appAccess } from '../appAccess';
 
 // Push notifications for system alerts. The socket 'alert:new' only reaches OPEN apps —
 // this is what taps people on the shoulder when the app is closed. Audience per channel
-// event = super-admins + the channel's grant holders with access to its branch + (branch-wide
-// channels) the branch's members — exactly who can see it in the feed (channelAudience) — minus
+// event = super-admins + the channel's grant holders with access to its branch (any active holder
+// for a company-wide channel) + (branch-wide channels) the branch's members — exactly who can see
+// it in the feed (channelAudience) — minus
 // the acting user; announcements go to
 // their recipient list ('*' = everyone). Whoever has muted the channel is left out (alertMutes) —
 // they still see the event in the Alerts tab.
@@ -83,9 +85,10 @@ async function baseAudience(): Promise<Audience> {
     const code = canonicalBranchCode(b.code); // HNBO row → the NBO channels
     if (code) branchIdsByCode.set(code, [...(branchIdsByCode.get(code) ?? []), String(b._id)]);
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const disabledDocs = await (appDb().collection('app_access') as any).find({ disabled: true }).toArray();
-  const disabled = new Set<string>(disabledDocs.map((d: { userId?: string }) => String(d.userId)));
+  // Users switched off in the app's Team & Users get no alert pushes. app_access stores them as
+  // `enabled: false` (appAccess.setEnabled); this used to look for `disabled: true`, which no row has,
+  // so switched-off users kept receiving every channel's pushes (fixed 2026-10-07).
+  const disabled = await appAccess.disabledSet();
   _cache = { at: Date.now(), superIds, disabled, companyWideIds, members, branchIdsByCode };
   return _cache;
 }
@@ -100,7 +103,13 @@ export function branchMembers(aud: Audience, branchCode: string): string[] {
 // Who a channel event reaches: supers, plus the branch's members for a branch-wide channel, or for
 // a grant-only one the grant holders WHO HAVE ACCESS TO ITS BRANCH (or hub) — a stored BOM-erp grant
 // on an NBO-only user pushes nothing, exactly as alertGrants.effectiveFor shows nothing.
+// A company-wide channel (KGD Alerts, 2026-10-07) has no branch: supers plus every grant holder
+// who is an active app user (the pool baseAudience read), whatever their branches.
 export function channelAudience(aud: Audience, channel: AlertChannelDef, holders: string[]): string[] {
+  if (channel.companyWide) {
+    const active = new Set([...aud.companyWideIds, ...aud.members.map((m) => m.id)]);
+    return [...aud.superIds, ...holders.filter((id) => active.has(id))];
+  }
   const inBranch = branchMembers(aud, channel.branchCode);
   if (channel.branchWide) return [...aud.superIds, ...inBranch];
   const mayHold = new Set(inBranch);

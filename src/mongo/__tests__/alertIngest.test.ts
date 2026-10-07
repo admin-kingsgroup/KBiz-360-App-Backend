@@ -3,11 +3,14 @@ import {
   ALERT_GRANT_IDS,
   branchWideGrants,
   canonicalBranchCode,
+  channelForKgd,
   channelForModuleBranch,
+  channelGroup,
   effectiveGrants,
   grantableGrants,
   grantsWithinBranches,
   isBranchWideGrant,
+  isCompanyWideGrant,
   visibleChannelIds,
   type AlertChannelDef,
 } from '../alerts/alertChannels';
@@ -18,7 +21,7 @@ import { attendanceBranchCode } from '../attendance/attendanceBranch';
 // Pure unit tests — no DB. The live ingest path is exercised by the smoke/e2e flow.
 
 describe('alert channel registry', () => {
-  it('registers the legacy pair and the five Alerts groups (HR · CRM · ERP · CRM Reports · ERP Reports)', () => {
+  it('registers the legacy pair, the five branch Alerts groups (HR · CRM · ERP · CRM Reports · ERP Reports) and KGD Alerts', () => {
     const six = ['bom', 'amd', 'nbo', 'dar', 'fbm', 'mhub'];
     const five = ['bom', 'amd', 'nbo', 'dar', 'fbm'];
     expect(ALERT_CHANNELS.map((c) => c.id)).toEqual([
@@ -28,6 +31,7 @@ describe('alert channel registry', () => {
       ...six.map((b) => `tk_erp_${b}`),
       ...five.map((b) => `tk_crmrep_${b}`),
       ...six.map((b) => `tk_erprep_${b}`),
+      'tk_kgd_crm', 'tk_kgd_erp',
     ]);
     expect(ALERT_CHANNELS.find((c) => c.id === 'tk_hr_mhub')).toMatchObject({ name: 'HR - MHUB', grant: 'MHUB-attendance' });
     expect(ALERT_CHANNELS.find((c) => c.id === 'tk_lead_bom')).toMatchObject({ name: 'CRM - BOM', grant: 'BOM-leads' });
@@ -269,11 +273,12 @@ describe('grant-only alerts need access to their branch or hub (owner, 2026-09-2
     expect(grantsWithinBranches(['BOM-erp', 'bogus'], null)).toEqual(['BOM-erp', 'bogus']);
   });
 
-  it('Team & Users offers only the grant-only switches of the user’s own branches', () => {
-    expect(grantableGrants(['BOM'])).toEqual(['BOM-accounts', 'BOM-crm', 'BOM-attendance', 'BOM-erp', 'BOM-erp-reports']);
-    expect(grantableGrants(['MHUB'])).toEqual(['MHUB-attendance', 'MHUB-erp', 'MHUB-erp-reports']);
-    expect(grantableGrants(['HFBM'])).toEqual(['FBM-attendance', 'FBM-erp', 'FBM-erp-reports']);
-    expect(grantableGrants([])).toEqual([]);
+  it('Team & Users offers only the grant-only switches of the user’s own branches (+ the company-wide KGD pair)', () => {
+    const kgd = ['KGD-crm-tickets', 'KGD-erp-tickets'];
+    expect(grantableGrants(['BOM'])).toEqual(['BOM-accounts', 'BOM-crm', 'BOM-attendance', 'BOM-erp', 'BOM-erp-reports', ...kgd]);
+    expect(grantableGrants(['MHUB'])).toEqual(['MHUB-attendance', 'MHUB-erp', 'MHUB-erp-reports', ...kgd]);
+    expect(grantableGrants(['HFBM'])).toEqual(['FBM-attendance', 'FBM-erp', 'FBM-erp-reports', ...kgd]);
+    expect(grantableGrants([])).toEqual(kgd);
     expect(grantableGrants(null)).toEqual(ALERT_CHANNELS.filter((c) => !c.branchWide).map((c) => c.grant));
   });
 
@@ -292,6 +297,69 @@ describe('grant-only alerts need access to their branch or hub (owner, 2026-09-2
     expect(channelAudience(aud, ch('tk_erp_mhub'), ['bom1', 'hub1'])).toEqual(['sup', 'hub1']);
     // Branch-wide channels are unchanged: every branch member, no grant needed.
     expect(channelAudience(aud, ch('tk_lead_bom'), [])).toEqual(['sup', 'sup', 'cm', 'bom1']);
+  });
+});
+
+describe('KGD Alerts — CRM and ERP tickets, company-wide (owner, 2026-10-07)', () => {
+  const ch = (id: string) => ALERT_CHANNELS.find((c) => c.id === id) as AlertChannelDef;
+
+  it('two grant-only, company-wide channels — one per system', () => {
+    expect(ch('tk_kgd_crm')).toEqual({ id: 'tk_kgd_crm', branchCode: 'KGD', module: 'kgd-tickets', grant: 'KGD-crm-tickets', name: 'KGD Alerts - CRM', companyWide: true });
+    expect(ch('tk_kgd_erp')).toEqual({ id: 'tk_kgd_erp', branchCode: 'KGD', module: 'kgd-tickets', grant: 'KGD-erp-tickets', name: 'KGD Alerts - ERP', companyWide: true });
+    expect(ALERT_CHANNELS.filter((c) => c.companyWide).map((c) => c.id)).toEqual(['tk_kgd_crm', 'tk_kgd_erp']);
+    expect(isBranchWideGrant('KGD-crm-tickets')).toBe(false);
+    expect(isCompanyWideGrant('KGD-erp-tickets')).toBe(true);
+    expect(isCompanyWideGrant('BOM-erp')).toBe(false);
+  });
+
+  it('addressed by system only — never by a branch code, not even the CRM’s real KGD branch', () => {
+    expect(channelForKgd('crm').id).toBe('tk_kgd_crm');
+    expect(channelForKgd('erp').id).toBe('tk_kgd_erp');
+    expect(channelForModuleBranch('kgd-tickets', 'KGD')).toBeNull();
+    expect(channelForModuleBranch('erp', 'KGD')).toBeNull();
+    expect(branchWideGrants(['KGD'])).toEqual([]);
+  });
+
+  it('a company-wide grant survives the branch rule — for a user with no KGD branch, or no branch at all', () => {
+    expect(grantsWithinBranches(['KGD-crm-tickets', 'BOM-erp'], ['NBO'])).toEqual(['KGD-crm-tickets']);
+    expect(grantsWithinBranches(['KGD-erp-tickets'], [])).toEqual(['KGD-erp-tickets']);
+    const nbo = effectiveGrants(['KGD-crm-tickets', 'BOM-erp'], ['NBO']);
+    expect(nbo.sort()).toEqual(['KGD-crm-tickets', 'NBO-crm-reports', 'NBO-leads']);
+    expect(visibleChannelIds(false, nbo)).toContain('tk_kgd_crm');
+    expect(visibleChannelIds(false, nbo)).not.toContain('tk_kgd_erp');
+    expect(effectiveGrants(['KGD-erp-tickets'], [])).toEqual(['KGD-erp-tickets']);
+    // Being in the CRM's KGD branch opens neither — and gives no other branch's switches.
+    expect(grantsWithinBranches(['BOM-erp', 'KGD-crm-tickets'], ['KGD'])).toEqual(['KGD-crm-tickets']);
+    expect(grantableGrants(['KGD'])).toEqual(['KGD-crm-tickets', 'KGD-erp-tickets']);
+    expect(visibleChannelIds(false, effectiveGrants([], ['KGD']))).toEqual([]);
+    // Supers see both without a grant.
+    expect(visibleChannelIds(true, [])).toEqual(expect.arrayContaining(['tk_kgd_crm', 'tk_kgd_erp']));
+  });
+
+  it('each channel names its Alerts group for the ERP’s access screen', () => {
+    expect(channelGroup(ch('tk_kgd_crm'))).toBe('KGD Alerts');
+    expect(channelGroup(ch('tk_hr_bom'))).toBe('HR');
+    expect(channelGroup(ch('tk_lead_bom'))).toBe('CRM');
+    expect(channelGroup(ch('tk_erp_mhub'))).toBe('ERP');
+    expect(channelGroup(ch('tk_crmrep_nbo'))).toBe('CRM Reports');
+    expect(channelGroup(ch('tk_erprep_dar'))).toBe('ERP Reports');
+    expect(channelGroup(ch('tk_crm_bom'))).toBe('CRM Payments');
+    expect(channelGroup(ch('tk_fin_amd'))).toBe('Finance');
+  });
+
+  it('push reaches supers + every active holder, whatever their branch; non-app holders are dropped', () => {
+    const aud: Audience = {
+      at: 0,
+      superIds: ['sup'],
+      disabled: new Set(),
+      companyWideIds: ['sup', 'cm'],
+      members: [{ id: 'bom1', branchIds: ['b-bom'] }, { id: 'nobranch', branchIds: [] }, { id: 'kgd1', branchIds: ['b-kgd'] }],
+      branchIdsByCode: new Map([['BOM', ['b-bom']], ['KGD', ['b-kgd']]]),
+    };
+    // 'gone' holds the grant but is not in the active app-user pool (inactive / app access off).
+    expect(channelAudience(aud, ch('tk_kgd_crm'), ['bom1', 'nobranch', 'cm', 'gone'])).toEqual(['sup', 'bom1', 'nobranch', 'cm']);
+    // Membership of the CRM's KGD branch alone reaches nobody but the supers.
+    expect(channelAudience(aud, ch('tk_kgd_erp'), [])).toEqual(['sup']);
   });
 });
 

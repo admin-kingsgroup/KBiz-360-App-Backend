@@ -1,15 +1,18 @@
 // No DB. The mute rules themselves, and that a muted user is left out of the push fan-out while
 // everyone else in the channel's audience still gets it.
 const mutedDocs: { userId: string; channelId: string; until: Date | null }[] = [];
+const grantDocs: { userId: string; alerts: string[] }[] = [];
 const askedTokensFor: string[] = [];
 
 jest.mock('../../connection', () => ({
   appDb: () => ({
     collection: (name: string) => ({
-      find: (filter: { channelId?: string; userId?: { $in: string[] } }) => ({
-        toArray: async () => (name === 'alert_mutes'
-          ? mutedDocs.filter((d) => d.channelId === filter.channelId && (filter.userId?.$in ?? []).includes(d.userId))
-          : []), // app_access: nobody disabled
+      find: (filter: { channelId?: string; userId?: { $in: string[] }; alerts?: string }) => ({
+        toArray: async () => {
+          if (name === 'alert_mutes') return mutedDocs.filter((d) => d.channelId === filter.channelId && (filter.userId?.$in ?? []).includes(d.userId));
+          if (name === 'alert_grants') return grantDocs.filter((d) => d.alerts.includes(String(filter.alerts)));
+          return []; // app_access: nobody disabled
+        },
       }),
     }),
   }),
@@ -21,10 +24,12 @@ jest.mock('../../crm.repo', () => ({
       { _id: 'super', role_id: 'r-super', branch_ids: [] },
       { _id: 'bom-a', role_id: 'r-staff', branch_ids: ['b-bom'] },
       { _id: 'bom-b', role_id: 'r-staff', branch_ids: ['b-bom'] },
+      { _id: 'nbo-a', role_id: 'r-staff', branch_ids: ['b-nbo'] },
     ],
     listBranches: async () => [{ _id: 'b-bom', code: 'BOM' }],
   },
 }));
+jest.mock('../../appAccess', () => ({ appAccess: { disabledSet: async () => new Set<string>() } })); // nobody switched off
 jest.mock('../../calls/call.repository', () => ({
   callDeviceRepo: { tokensForUser: async (id: string) => { askedTokensFor.push(id); return []; } },
 }));
@@ -57,13 +62,21 @@ describe('alert mute rules', () => {
   });
 
   it('every alert channel, My Alerts and Announcements can be muted; nothing else', () => {
-    for (const id of ['tk_erp_bom', 'tk_lead_nbo', 'tk_erprep_mhub', 'tk_hr_dar', 'user_alerts', 'announcements']) expect(isMutableChannel(id)).toBe(true);
+    for (const id of ['tk_erp_bom', 'tk_lead_nbo', 'tk_erprep_mhub', 'tk_hr_dar', 'tk_kgd_crm', 'tk_kgd_erp', 'user_alerts', 'announcements']) expect(isMutableChannel(id)).toBe(true);
     for (const id of ['tk_ghost', 'grp_erp', '']) expect(isMutableChannel(id)).toBe(false);
   });
 });
 
 describe('alert push skips users who muted the channel', () => {
-  beforeEach(() => { mutedDocs.length = 0; askedTokensFor.length = 0; });
+  beforeEach(() => { mutedDocs.length = 0; grantDocs.length = 0; askedTokensFor.length = 0; });
+
+  it('a KGD ticket reaches supers + every active holder in any branch, minus whoever muted it', async () => {
+    // nbo-a holds it with no KGD branch; 'gone' holds it but is not an active app user.
+    for (const userId of ['nbo-a', 'bom-a', 'gone']) grantDocs.push({ userId, alerts: ['KGD-crm-tickets'] });
+    mutedDocs.push({ userId: 'bom-a', channelId: 'tk_kgd_crm', until: null });
+    await alertPush.sendChannelAlert('tk_kgd_crm', 'Ticket raised', 'TKT-0042');
+    expect(askedTokensFor.sort()).toEqual(['nbo-a', 'super']);
+  });
 
   it('a branch-wide CRM alert reaches the branch minus whoever muted it', async () => {
     mutedDocs.push({ userId: 'bom-a', channelId: 'tk_lead_bom', until: null });

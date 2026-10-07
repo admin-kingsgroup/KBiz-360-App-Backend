@@ -3,7 +3,7 @@
 // the app's existing access-grant format `${branchCode}-${module}` (see Frontend
 // makeAccessFilters.alertOK). `module` uses the frontend ModuleKey vocabulary
 // ('accounts' = legacy Finance, 'crm' = legacy CRM Payments, 'attendance' = HR, 'leads' = CRM,
-// 'erp' = ERP, 'crm-reports' = CRM Reports, 'erp-reports' = ERP Reports).
+// 'erp' = ERP, 'crm-reports' = CRM Reports, 'erp-reports' = ERP Reports, 'kgd-tickets' = KGD Alerts).
 //
 // REMOVED 2026-08-19 — 'receivables' (Clients Receivables), 'payables' (Supplier Payables),
 // 'bankcash', 'hr' (Attendance), 'acct' (the per-voucher money feed), 'sales' (approved invoice
@@ -23,12 +23,16 @@
 export interface AlertChannelDef {
   id: string;
   branchCode: string; // ERP/CRM branch code the channel covers (BOM/AMD/NBO/DAR/FBM/MHUB)
-  module: 'accounts' | 'crm' | 'leads' | 'attendance' | 'erp' | 'erp-reports' | 'crm-reports';
+  module: 'accounts' | 'crm' | 'leads' | 'attendance' | 'erp' | 'erp-reports' | 'crm-reports' | 'kgd-tickets';
   grant: string; // per-user grant string a super-admin assigns
   name: string;
   // Seen by EVERY user who belongs to the branch (CRM user.branch_ids) with no grant needed;
   // company-wide roles (super_admin / company_manager) see every branch. Absent = grant-only.
   branchWide?: boolean;
+  // Belongs to the whole company, not to a branch (added 2026-10-07 for KGD Alerts): still
+  // grant-only, but its grant is exempt from the branch rule — any active app user may hold it,
+  // whatever their branches (see grantsWithinBranches). `branchCode` is then a label only.
+  companyWide?: true;
 }
 
 // The Alerts section's groups, in the order the app shows them (owner, 2026-09-27):
@@ -68,7 +72,30 @@ export const ALERT_CHANNELS: AlertChannelDef[] = [
   // PDFs plus the weekly 61+ overdue nudge (module 'erp-reports'); they used to post into
   // "HQ - <BR> Finance".
   ...family('tk_erprep', 'erp-reports', 'ERP Reports', HR_ERP_BRANCHES),
+  // KGD Alerts (owner, 2026-10-07: "tickets raised in the CRM and in the ERP must alert the app")
+  // — one channel per SYSTEM, not per branch: a support ticket is about the software, so it goes
+  // to the people who look after it, wherever they sit. Grant-only and company-wide; which app
+  // user holds them is managed from the ERP (/api/service/alert-access). 'KGD' is also a real CRM
+  // branch code — irrelevant here: these are addressed by system (channelForKgd), never by branch,
+  // and their grants never consult a user's branches.
+  { id: 'tk_kgd_crm', branchCode: 'KGD', module: 'kgd-tickets', grant: 'KGD-crm-tickets', name: 'KGD Alerts - CRM', companyWide: true },
+  { id: 'tk_kgd_erp', branchCode: 'KGD', module: 'kgd-tickets', grant: 'KGD-erp-tickets', name: 'KGD Alerts - ERP', companyWide: true },
 ];
+
+// The app's Alerts group each channel sits in, by module — the display name the ERP's access
+// screen groups its switches under (and the ingest's default-context label). Legacy families keep
+// their old names.
+export const ALERT_GROUP_BY_MODULE: Record<AlertChannelDef['module'], string> = {
+  attendance: 'HR',
+  leads: 'CRM',
+  erp: 'ERP',
+  'crm-reports': 'CRM Reports',
+  'erp-reports': 'ERP Reports',
+  'kgd-tickets': 'KGD Alerts',
+  crm: 'CRM Payments',
+  accounts: 'Finance',
+};
+export const channelGroup = (c: AlertChannelDef): string => ALERT_GROUP_BY_MODULE[c.module];
 
 export const ALERT_GRANT_IDS: string[] = ALERT_CHANNELS.map((c) => c.grant);
 
@@ -78,6 +105,10 @@ export const ALERT_GRANT_IDS: string[] = ALERT_CHANNELS.map((c) => c.grant);
 // so these are neither storable nor honoured from storage.
 const BRANCH_WIDE_GRANTS = new Set(ALERT_CHANNELS.filter((c) => c.branchWide).map((c) => c.grant));
 export const isBranchWideGrant = (grant: string): boolean => BRANCH_WIDE_GRANTS.has(grant);
+
+// Company-wide grants (KGD Alerts) — the branch rule does not apply to them.
+const COMPANY_WIDE_GRANTS = new Set(ALERT_CHANNELS.filter((c) => c.companyWide).map((c) => c.grant));
+export const isCompanyWideGrant = (grant: string): boolean => COMPANY_WIDE_GRANTS.has(grant);
 
 // The ERP renamed the Africa branch CODES in the shared branches collection on 2026-09-16
 // (wave 29: NBO→HNBO, DAR→HDAR, FBM→HFBM). The app keeps the short codes for its channels and
@@ -91,14 +122,21 @@ export const canonicalBranchCode = (code: string | null | undefined): string => 
 
 // Ingest-facing lookup: external systems address a channel by (module, branchCode). The ingest
 // route also accepts 'finance' as an alias for 'accounts' and 'sales-invoice' for 'sales'
-// (the ERP's own vocabulary).
+// (the ERP's own vocabulary). Company-wide channels have no branch to address them by — they
+// resolve through channelForKgd only, so a 'KGD' branch code can never reach them from here.
 export function channelForModuleBranch(module: string, branchCode: string): AlertChannelDef | null {
   const mod = module === 'finance' ? 'accounts' : module === 'sales-invoice' ? 'sales' : module;
   return (
     ALERT_CHANNELS.find(
-      (c) => c.module === mod && c.branchCode === canonicalBranchCode(branchCode),
+      (c) => !c.companyWide && c.module === mod && c.branchCode === canonicalBranchCode(branchCode),
     ) ?? null
   );
+}
+
+// KGD Alerts are addressed by the system the ticket was raised in (owner, 2026-10-07).
+export function channelForKgd(system: 'crm' | 'erp'): AlertChannelDef {
+  const id = system === 'erp' ? 'tk_kgd_erp' : 'tk_kgd_crm';
+  return ALERT_CHANNELS.find((c) => c.id === id) as AlertChannelDef;
 }
 
 // Admin-composed announcements. Not grant-based: each EVENT carries its own recipient userId list
@@ -123,17 +161,21 @@ export function branchWideGrants(branchCodes: string[] | null): string[] {
 // branch access (CRM branch_ids; `branchCodes` null = company-wide role → every branch and the hub)
 // includes that channel's branch. A BOM-erp grant held by an NBO-only user (the 09-27 seed gave one
 // to everyone in the shared "INB/Hub … BOM/NBO" rooms) opens nothing.
-const GRANT_BRANCH = new Map(ALERT_CHANNELS.map((c) => [c.grant, c.branchCode]));
+// Company-wide grants (KGD Alerts, 2026-10-07) name no branch and pass for every user — including
+// one whose branches include the CRM's real 'KGD' branch, and one with no branch at all.
+const GRANT_BRANCH = new Map(ALERT_CHANNELS.filter((c) => !c.companyWide).map((c) => [c.grant, c.branchCode]));
 export function grantsWithinBranches(grants: string[], branchCodes: string[] | null): string[] {
   if (branchCodes === null) return grants;
   const mine = new Set(branchCodes.map(canonicalBranchCode));
   return grants.filter((g) => {
+    if (isCompanyWideGrant(g)) return true;
     const branch = GRANT_BRANCH.get(g);
     return !!branch && mine.has(branch);
   });
 }
 
-// The switches Team & Users may turn on for a user: the grant-only channels of their own branches.
+// The switches Team & Users (and the ERP's alert-access screen) may turn on for a user: the
+// grant-only channels of their own branches, plus the company-wide ones for everybody.
 export function grantableGrants(branchCodes: string[] | null): string[] {
   return grantsWithinBranches(ALERT_CHANNELS.filter((c) => !c.branchWide).map((c) => c.grant), branchCodes);
 }
