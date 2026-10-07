@@ -8,7 +8,7 @@ import { leaveDaysFor } from './leave.service';
 import { leaveBalance, type LeaveBalance } from './leaveRules';
 import {
   applyNoData, buildMonth, isMonthKey, monthDayKeys, monthOf, summarizeMonth,
-  WEEK_OFF_DAYS, type ClassifiedDay, type DayOverride, type DayRecord, type HolidayInfo, type MonthSummary,
+  WEEK_OFF_DAYS, type ClassifiedDay, type DayOverride, type DayRecord, type DayState, type HolidayInfo, type MonthSummary,
 } from './attendanceMonth';
 import { daysOf, earnedOf, grossOf, ptExplain, ptForMonth, ptSchedule, recoveryFor, rupee, type LoanRecoveryLine, type PayDays } from './payRules';
 
@@ -93,6 +93,37 @@ const dayOut = (d: ClassifiedDay) => ({
   checkInAt: d.checkInAt ? new Date(d.checkInAt).toISOString() : null,
   checkOutAt: d.checkOutAt ? new Date(d.checkOutAt).toISOString() : null,
 });
+
+/** One day's HR reading, as My Attendance shows it. */
+export interface HrDayState {
+  state: DayState;
+  holiday: string | null; // the holiday's name on a holiday ('' for an availed optional one)
+  halfLeave: boolean;
+}
+
+const nextMonthKey = (m: string): string => {
+  const [y, mo] = m.split('-').map(Number);
+  const d = new Date(Date.UTC(y, mo, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+};
+
+/** Each day's HR state over [from..to] ('YYYY-MM-DD', inclusive) — built month by month with the
+ *  SAME assembleMonth My Attendance uses, so any other list (the Attendance history) labels a
+ *  holiday, week off or leave day exactly the way the calendar and the ERP report do. */
+export async function dayStatesFor(userId: string, from: string, to: string): Promise<Map<string, HrDayState>> {
+  const out = new Map<string, HrDayState>();
+  if (!isMonthKey(monthOf(from)) || !isMonthKey(monthOf(to)) || from > to) return out;
+  const months: string[] = [];
+  for (let m = monthOf(from); m <= monthOf(to) && months.length < 12; m = nextMonthKey(m)) months.push(m);
+  const built = await Promise.all(months.map((m) => assembleMonth(userId, m)));
+  for (const a of built) {
+    for (const d of a.days) {
+      if (d.day < from || d.day > to) continue;
+      out.set(d.day, { state: d.state, holiday: d.holiday ? d.holiday.name : null, halfLeave: !!d.halfLeave });
+    }
+  }
+  return out;
+}
 
 export const myMonthService = {
   /** GET /hr/my-attendance?month= — the caller's own muster (never anyone else's). */
