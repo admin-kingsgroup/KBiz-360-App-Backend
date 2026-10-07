@@ -1,5 +1,5 @@
 import { connectMongo, disconnectMongo, appDb } from '../../connection';
-import { attendanceService, geofenceExitStillInside, resolveCheckOutAt, resolveAdminTimes, resolveAutoCloseAt, branchAutoClose, autoCloseDue, teamScope, superUserIds, GEOFENCE_EXIT_BUFFER_M } from '../attendance.service';
+import { attendanceService, geofenceExitStillInside, resolveCheckOutAt, resolveAdminTimes, resolveAutoCloseAt, branchAutoClose, autoCloseDue, teamScope, GEOFENCE_EXIT_BUFFER_M } from '../attendance.service';
 import { punchSchema, adminTimesSchema } from '../attendance.router';
 
 // Regression: validate() replaces req.body with the parsed schema, dropping unknown keys. If
@@ -156,31 +156,6 @@ describe('teamScope (team-view branch scoping, pure)', () => {
   });
 });
 
-// Super-admins are never attendance-tracked: no punches, hidden from team view and day-close.
-describe('superUserIds (supers are untracked, pure)', () => {
-  /* eslint-disable @typescript-eslint/no-explicit-any */
-  const roles = [
-    { _id: 'r-super', level: 1, permissions: [] },
-    { _id: 'r-star', level: 4, permissions: ['*'] }, // '*' permission = super regardless of level
-    { _id: 'r-mgr', level: 2, permissions: [] },
-    { _id: 'r-emp', level: 5 },
-  ];
-  const users = [
-    { _id: 'dev', role_id: 'r-super' },
-    { _id: 'wild', role_id: 'r-star' },
-    { _id: 'mgr', role_id: 'r-mgr' },
-    { _id: 'emp', role_id: 'r-emp' },
-    { _id: 'norole', role_id: null },
-  ] as any[];
-
-  it('flags level-1 and "*"-permission roles, nobody else', () => {
-    expect([...superUserIds(users, roles as any)].sort()).toEqual(['dev', 'wild']);
-  });
-  it('a user with no role is tracked (defaults to employee)', () => {
-    expect(superUserIds(users, roles as any).has('norole')).toBe(false);
-  });
-  /* eslint-enable @typescript-eslint/no-explicit-any */
-});
 
 describe('resolveAutoCloseAt (forgotten-checkout stamp, pure)', () => {
   const day = '2026-07-31';

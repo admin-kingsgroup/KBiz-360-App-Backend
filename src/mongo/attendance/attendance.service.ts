@@ -303,27 +303,13 @@ export function teamScope(
 }
 
 // ── who is tracked at all ──
-// Super-admins are NEVER tracked (the developer/owner accounts shouldn't produce punches or
-// pollute the team view), on top of the explicit per-user attendance_exempt list.
-// Pure so it's testable: mirrors deriveAccess's isSuper rule (level 1 or the '*' permission).
-export function superUserIds(
-  users: Pick<CrmUser, '_id' | 'role_id'>[],
-  roles: { _id: unknown; level?: number; permissions?: string[] }[],
-): Set<string> {
-  const superRoles = new Set(
-    roles.filter((r) => (r.level ?? 5) === 1 || (r.permissions ?? []).includes('*')).map((r) => String(r._id)),
-  );
-  return new Set(users.filter((u) => u.role_id && superRoles.has(String(u.role_id))).map((u) => String(u._id)));
-}
-
-// Single-user form, for the punch/me paths.
-// HIDDEN (director) users are ALWAYS tracked — even when their role is super-admin or they sit on
-// the exempt list — their attendance just records silently (see attendanceHidden).
-async function isUntracked(userId: string): Promise<boolean> {
+// Owner 2026-10-07: "every user marks attendance except Afshin". Being a super-admin no longer
+// excuses anyone; the ONLY opt-out is the per-user attendance_exempt list (Team & Users switch,
+// stored in kb360_app), which holds just the owner. HIDDEN (director) users are ALWAYS tracked —
+// even on the exempt list — their attendance just records silently (see attendanceHidden).
+export async function isUntracked(userId: string): Promise<boolean> {
   if (await attendanceHidden.isHidden(userId)) return false;
-  if (await attendanceExempt.isExempt(userId)) return true;
-  const access = await accessService.accessForUserId(userId);
-  return !!access?.isSuper;
+  return attendanceExempt.isExempt(userId);
 }
 
 function viaFor(body: PunchBody, wifiVerified: boolean): string {
@@ -606,9 +592,8 @@ export const attendanceService = {
     users = users.filter((u) => u.access?.app === true);
     if (!users.length) return [];
     const exempt = await attendanceExempt.exemptSet();
-    const supers = superUserIds(users, await crmRepo.listRoles());
     const hiddenSet = await attendanceHidden.hiddenSet();
-    users = users.filter((u) => { const id = String(u._id); return hiddenSet.has(id) || (!exempt.has(id) && !supers.has(id)); });
+    users = users.filter((u) => { const id = String(u._id); return hiddenSet.has(id) || !exempt.has(id); });
     const ids = users.map((u) => String(u._id));
     const workBranches = await userWorkBranches.mapFor(ids);
     const branchOf = (u: CrmUser): string => workBranches[String(u._id)] ?? ((u.branch_ids ?? [])[0] ? String((u.branch_ids ?? [])[0]) : '');
@@ -951,16 +936,16 @@ export const attendanceService = {
       users = self ? [self] : [];
     }
 
-    // Drop untracked people from the team list: explicit exemptions + every super-admin.
+    // Drop untracked people from the team list: the explicit exemptions (2026-10-07: super-admins
+    // are tracked like everyone else).
     // HIDDEN (director) attendance is visible ONLY to super-admin viewers — everyone else's team
     // list behaves as if the directors were not tracked at all.
     const exempt = await attendanceExempt.exemptSet();
-    const supers = superUserIds(users, await crmRepo.listRoles());
     const hiddenSet = await attendanceHidden.hiddenSet();
     users = users.filter((u) => {
       const id = String(u._id);
       if (hiddenSet.has(id)) return !!viewer.isSuper;
-      return !exempt.has(id) && !supers.has(id);
+      return !exempt.has(id);
     });
 
     // Each user's WORKING branch: explicit assignment → first CRM access branch. Resolved BEFORE
@@ -1111,9 +1096,8 @@ export const attendanceService = {
     const users = (await crmRepo.listUsers({ status: 'active' })) as CrmUser[];
     const hiddenSet = await attendanceHidden.hiddenSet();
     const exempt = await attendanceExempt.exemptSet();
-    const supers = superUserIds(users, await crmRepo.listRoles());
     // Hidden users are in no report at all: their attendance is private (owner call, 07-31).
-    const tracked = users.filter((u) => !exempt.has(String(u._id)) && !supers.has(String(u._id)) && !hiddenSet.has(String(u._id)));
+    const tracked = users.filter((u) => !exempt.has(String(u._id)) && !hiddenSet.has(String(u._id)));
 
     // Working branch per user: explicit assignment → first CRM branch (same rule as the team view).
     const workBranches = await userWorkBranches.mapFor(tracked.map((u) => String(u._id)));
