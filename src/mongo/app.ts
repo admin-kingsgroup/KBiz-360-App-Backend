@@ -12,6 +12,7 @@ import { attendanceRouter } from './attendance/attendance.router';
 import { locationRouter } from './location/location.router';
 import { hrRouter } from './hr/hr.router';
 import { approvalsRouter } from './approvals/approvals.router';
+import { erpRouter } from './erp/erp.router';
 import { alertsRouter } from './alerts/alerts.router';
 import { alertsIngestRouter } from './alerts/alertsIngest.router';
 import { clientErrorsRouter } from './clientErrors.router';
@@ -49,6 +50,7 @@ export function createMongoApp(): Express {
   app.use('/api/location', locationRouter); // work-hours location trail (device pings + live roster + day trail)
   app.use('/api/hr', hrRouter); // HR self-service (leave balance/applications + regularisation requests)
   app.use('/api/approvals', approvalsRouter); // approval requests (chain of levels the requester builds; one or more approvers per level)
+  app.use('/api/erp', erpRouter); // ERP approvals for ERP approvers, forwarded to the ERP's app door as the signed-in user
   app.use('/api/alerts', alertsRouter); // system alerts (Home feed, access-filtered per user)
   app.use('/api', uploadsRouter); // /uploads (chat media)
   app.use('/api', emailRouter); // /email/* (Microsoft 365 via Graph)
