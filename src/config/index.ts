@@ -20,6 +20,9 @@ export interface AppConfig {
   msEmail: { clientId: string; tenantId: string; tokenKey: string };
   // Shared secret the ERP/CRM backends present to POST /api/alerts/ingest. Unset = ingest disabled.
   alerts: { ingestToken?: string };
+  // ERP approvals in the app (owner, 2026-10-07): the ERP API base (e.g. https://kbizbooks-kings.duckdns.org)
+  // and the shared secret its app door expects (the ERP's APP_SERVICE_TOKEN). Either unset = off (503).
+  erp: { apiUrl?: string; appServiceToken?: string };
   // uri = the app connection (readWrite kb360_app, read-only CRM under least-privilege). crmWriteUri
   // (optional) = a separately-credentialed connection used ONLY for sanctioned CRM provisioning writes;
   // unset falls back to `uri`. See DB_LEAST_PRIVILEGE.md.
@@ -86,6 +89,10 @@ export const config: AppConfig = {
     clientId: process.env.MS_CLIENT_ID || '',
     tenantId: process.env.MS_TENANT_ID || 'common',
     tokenKey: process.env.EMAIL_TOKEN_KEY || process.env.JWT_ACCESS_SECRET || '',
+  },
+  erp: {
+    apiUrl: (process.env.ERP_API_URL || '').trim().replace(/\/+$/, '') || undefined,
+    appServiceToken: (process.env.ERP_APP_SERVICE_TOKEN || '').trim() || undefined,
   },
   alerts: {
     // Trimmed to mirror the ERP/CRM emitters (which trim theirs) — a padded paste in .env must
