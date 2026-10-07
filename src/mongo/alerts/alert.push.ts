@@ -4,6 +4,7 @@ import { crmRepo } from '../crm.repo';
 import { appDb } from '../connection';
 import { ALERT_CHANNELS, USER_ALERTS_CHANNEL_ID, canonicalBranchCode, type AlertChannelDef } from './alertChannels';
 import { alertMutes } from './alertMutes';
+import { appAccess } from '../appAccess';
 
 // Push notifications for system alerts. The socket 'alert:new' only reaches OPEN apps —
 // this is what taps people on the shoulder when the app is closed. Audience per channel
@@ -84,9 +85,10 @@ async function baseAudience(): Promise<Audience> {
     const code = canonicalBranchCode(b.code); // HNBO row → the NBO channels
     if (code) branchIdsByCode.set(code, [...(branchIdsByCode.get(code) ?? []), String(b._id)]);
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const disabledDocs = await (appDb().collection('app_access') as any).find({ disabled: true }).toArray();
-  const disabled = new Set<string>(disabledDocs.map((d: { userId?: string }) => String(d.userId)));
+  // Users switched off in the app's Team & Users get no alert pushes. app_access stores them as
+  // `enabled: false` (appAccess.setEnabled); this used to look for `disabled: true`, which no row has,
+  // so switched-off users kept receiving every channel's pushes (fixed 2026-10-07).
+  const disabled = await appAccess.disabledSet();
   _cache = { at: Date.now(), superIds, disabled, companyWideIds, members, branchIdsByCode };
   return _cache;
 }

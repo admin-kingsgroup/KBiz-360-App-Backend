@@ -29,6 +29,7 @@ jest.mock('../../crm.repo', () => ({
     listBranches: async () => [{ _id: 'b-bom', code: 'BOM' }],
   },
 }));
+jest.mock('../../appAccess', () => ({ appAccess: { disabledSet: async () => new Set<string>() } })); // nobody switched off
 jest.mock('../../calls/call.repository', () => ({
   callDeviceRepo: { tokensForUser: async (id: string) => { askedTokensFor.push(id); return []; } },
 }));
