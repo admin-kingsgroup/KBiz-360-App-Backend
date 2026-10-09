@@ -19,6 +19,10 @@ export const ERP_ALLOW: ReadonlyArray<readonly [string, RegExp]> = [
   ['POST', re(`/api/booking-orders/${ID}/(review|approve|reject)`)],
   ['GET', re('/api/tk/change-requests')],
   ['POST', re(`/api/tk/change-requests/${ID}/act`)],
+  // Approvals ▸ Payables (owner, 2026-10-09): re-run / close an approved payment request that did not apply (the ERP lets
+  // only the Owner / Super Admin) and the recently approved list beside it.
+  ['POST', re(`/api/tk/change-requests/${ID}/(retry|close)`)],
+  ['GET', re('/api/payment-requests')],
   ['GET', re('/api/tk/inbox')],
   ['GET', re('/api/credit-facilities/requests')],
   ['GET', re('/api/hr/employees/leave-applications')],
