@@ -1,5 +1,5 @@
 import { connectMongo, disconnectMongo, appDb } from '../../connection';
-import { attendanceService, autoMayOpenDay, trailExitSince, AUTO_OUT_DWELL_MS, AUTO_OUT_MAX_ACCURACY_M } from '../attendance.service';
+import { attendanceService, autoMayOpenDay, trailExitSince, AUTO_OUT_DWELL_MS, AUTO_OUT_MAX_ACCURACY_M, AUTO_PUNCH_ENABLED } from '../attendance.service';
 
 // Fully automatic attendance (owner decision, 2026-10-05): the phone checks people in on arrival
 // and out on departure with no photo; the manual face punch stays as the fallback.
@@ -83,21 +83,25 @@ afterAll(async () => {
   await disconnectMongo();
 }, 20000);
 
-describe('automatic punches are held to a real office; the manual photo punch is unchanged', () => {
-  it('refuses an automatic check-in for an account with no office, and still demands a photo for a manual one', async () => {
+describe('automatic attendance is removed (2026-10-10); the manual photo punch is unchanged', () => {
+  it('is switched off in code', () => {
+    expect(AUTO_PUNCH_ENABLED).toBe(false);
+  });
+
+  it('refuses an automatic check-in, and still demands a photo for a manual one', async () => {
     if (!ready) return;
-    await expect(attendanceService.checkIn(FAKE_USER, { method: 'auto', source: 'geofence', coords: { lat: 19.076, lng: 72.8777 } })).rejects.toThrow('No office location');
+    await expect(attendanceService.checkIn(FAKE_USER, { method: 'auto', source: 'geofence', coords: { lat: 19.076, lng: 72.8777 } })).rejects.toThrow('Automatic attendance is turned off');
     await expect(attendanceService.checkIn(FAKE_USER, { method: 'face', coords: null })).rejects.toThrow('A face photo is required');
   }, 30000);
 
-  it('a manual check-in works as before; an automatic check-out without an office is refused; a manual check-out closes it; automatic check-in will not re-open it', async () => {
+  it('a manual check-in works as before; an automatic check-out is refused; a manual check-out closes it; automatic check-in will not re-open it', async () => {
     if (!ready) return;
     const opened = await attendanceService.checkIn(FAKE_USER, { method: 'face', coords: null, facePhotoUrl: 'test://face.jpg' });
     expect(opened.inTime).toBeTruthy();
-    await expect(attendanceService.checkOut(FAKE_USER, { method: 'auto', source: 'geofence', coords: { lat: 20, lng: 73 } })).rejects.toThrow('No office location');
+    await expect(attendanceService.checkOut(FAKE_USER, { method: 'auto', source: 'geofence', coords: { lat: 20, lng: 73 } })).rejects.toThrow('Automatic attendance is turned off');
     const closed = await attendanceService.checkOut(FAKE_USER, { method: 'face', coords: null, facePhotoUrl: 'test://face.jpg' });
     expect(closed.outTime).toBeTruthy();
-    await expect(attendanceService.checkIn(FAKE_USER, { method: 'auto', source: 'geofence', coords: { lat: 19.076, lng: 72.8777 } })).rejects.toThrow('You checked out yourself');
+    await expect(attendanceService.checkIn(FAKE_USER, { method: 'auto', source: 'geofence', coords: { lat: 19.076, lng: 72.8777 } })).rejects.toThrow('Automatic attendance is turned off');
   }, 30000);
 });
 
