@@ -159,12 +159,13 @@ export function geofenceExitStillInside(
   return best.ssid ? wifiVerified : true; // inside the fence: Wi-Fi leg must hold too when required
 }
 
-// ── fully automatic attendance (owner decision, 2026-10-05) ──
-// Every tracked user is checked in when their phone enters the office and checked out when it
-// leaves — no tap, no face photo (nobody is holding the phone). The manual face-photo punch stays
-// as the fallback. `method:'auto'` marks such a punch; ATTENDANCE_AUTO_PUNCH=off turns the whole
-// thing off again (auto punches are then refused exactly as before this change).
-export const AUTO_PUNCH_ENABLED = process.env.ATTENDANCE_AUTO_PUNCH !== 'off';
+// ── automatic attendance: REMOVED (2026-10-10) ──
+// The 2026-10-05 rollout checked every tracked user in and out from the phone's location with no
+// face photo. It is withdrawn: employees punch by hand again (face photo, inside the office area).
+// Kept as a constant so every automatic path stays shut in one place — `method:'auto'` check-ins
+// and check-outs are refused, the morning arrival wake targets nobody, and the location trail
+// never closes a day. Hidden (director) punches are a separate rule and are not affected.
+export const AUTO_PUNCH_ENABLED = false;
 
 // Methods recorded for a punch a PERSON made on purpose (face photo) or an admin set by hand.
 const DELIBERATE_METHODS = new Set(['Face', 'Manual']);
