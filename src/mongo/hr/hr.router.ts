@@ -25,8 +25,9 @@ export const leaveApplySchema = z.object({
   dayType: z.enum(['full', 'half']).optional(),
 });
 
-// checkOutAt:null (an explicit "leave today open") must survive parsing — same trap as the
-// admin times schema: omitting `.nullable()` would silently drop the field.
+// checkOutAt is compulsory (owner, 2026-10-09) but stays loose HERE on purpose: a null or missing
+// one (an older app build's "still in") must reach planRegularization, which refuses it with the
+// reason said — a schema refusal would only reach the phone as "Validation failed".
 export const regularizationSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   checkInAt: z.string().datetime(),

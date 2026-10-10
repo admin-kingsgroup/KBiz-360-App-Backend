@@ -19,7 +19,7 @@ describe('planRegularization', () => {
     const plan = planRegularization({ ...body, reason: `  ${body.reason}  ` }, NOW);
     expect(plan.date).toBe('2026-09-05');
     expect(plan.checkInAt.toISOString()).toBe('2026-09-05T04:10:00.000Z');
-    expect(plan.checkOutAt?.toISOString()).toBe('2026-09-05T13:00:00.000Z');
+    expect(plan.checkOutAt.toISOString()).toBe('2026-09-05T13:00:00.000Z');
     expect(plan.reason).toBe(body.reason);
   });
 
@@ -32,15 +32,16 @@ describe('planRegularization', () => {
   it('rides resolveAdminTimes: out after in, on the day, past days never open', () => {
     expect(() => planRegularization({ ...body, checkOutAt: '2026-09-05T04:00:00.000Z' }, NOW)).toThrow(/after check-in/);
     expect(() => planRegularization({ ...body, checkInAt: '2026-09-04T04:10:00.000Z' }, NOW)).toThrow(/must fall on 2026-09-05/);
-    expect(() => planRegularization({ ...body, checkOutAt: null }, NOW)).toThrow(/only today can be left open/);
+    expect(() => planRegularization({ ...body, checkOutAt: null }, NOW)).toThrow(/Check-out time is required/);
   });
 
-  it('today may be left open', () => {
-    const plan = planRegularization(
-      { date: '2026-09-08', checkInAt: '2026-09-08T04:10:00.000Z', checkOutAt: null, reason: 'forgot to punch in' },
-      NOW,
-    );
-    expect(plan.checkOutAt).toBeNull();
+  it('both times are compulsory, today included (owner 2026-10-09) — an open one could never be signed once its day passed', () => {
+    const today = { date: '2026-09-08', checkInAt: '2026-09-08T04:10:00.000Z', reason: 'forgot to punch in' };
+    expect(() => planRegularization({ ...today, checkOutAt: null }, NOW)).toThrow(/Check-out time is required/);
+    expect(() => planRegularization({ ...today }, NOW)).toThrow(/Check-out time is required/);
+    expect(() => planRegularization({ ...today, checkOutAt: '' }, NOW)).toThrow(/Check-out time is required/);
+    const plan = planRegularization({ ...today, checkOutAt: '2026-09-08T09:30:00.000Z' }, NOW); // 15:00 IST, before NOW
+    expect(plan.checkOutAt.toISOString()).toBe('2026-09-08T09:30:00.000Z');
   });
 });
 
@@ -52,7 +53,7 @@ describe('router schemas', () => {
     expect(() => leaveApplySchema.parse({ from: '10-09-2026', to: '2026-09-11', reason: 'x' })).toThrow();
   });
 
-  it('regularization keeps checkOutAt:null (an explicit "leave today open")', () => {
+  it('regularization lets checkOutAt:null through, so the service can say why it is refused', () => {
     const parsed = regularizationSchema.parse({
       date: '2026-09-08',
       checkInAt: '2026-09-08T04:10:00.000Z',

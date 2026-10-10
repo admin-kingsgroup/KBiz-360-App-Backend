@@ -57,7 +57,7 @@ export type { RegularizationDto };
 /** Pure planner (exported for tests): bounds a request before anything is stored. Times go
  *  through the SAME resolveAdminTimes bounds the admin editor gets — on the day, not in the
  *  future, out after in, only today may be left open. */
-export function planRegularization(body: RegularizationBody, now: Date): { date: string; checkInAt: Date; checkOutAt: Date | null; reason: string } {
+export function planRegularization(body: RegularizationBody, now: Date): { date: string; checkInAt: Date; checkOutAt: Date; reason: string } {
   const date = String(body.date || '').trim();
   const today = todayKeyOf(now);
   if (!DAY_KEY_RE.test(date)) throw BadRequest('Invalid date — expected YYYY-MM-DD');
@@ -65,7 +65,12 @@ export function planRegularization(body: RegularizationBody, now: Date): { date:
   if (date < addDays(today, -REGULARIZE_BACK_DAYS)) throw BadRequest('That is too far back — ask HR to correct it on the attendance report');
   const reason = String(body.reason || '').trim().slice(0, 300);
   if (!reason) throw BadRequest('Say why — the reason goes to your manager with the request');
-  const { checkInAt, checkOutAt } = resolveAdminTimes({ date, checkInAt: body.checkInAt, checkOutAt: body.checkOutAt ?? null }, now);
+  // Both times are compulsory, today included (owner, 2026-10-09): one filed with only a check-in
+  // could never be signed once its day had passed (a past day may not stay open), so it sat in the
+  // ERP queue unapprovable. Today's is raised once the person has left.
+  if (!body.checkOutAt) throw BadRequest('Check-out time is required — put both the check-in and the check-out');
+  const { checkInAt, checkOutAt } = resolveAdminTimes({ date, checkInAt: body.checkInAt, checkOutAt: body.checkOutAt }, now);
+  if (!checkOutAt) throw BadRequest('Check-out time is required — put both the check-in and the check-out');
   return { date, checkInAt, checkOutAt, reason };
 }
 
