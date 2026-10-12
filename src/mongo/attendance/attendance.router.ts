@@ -51,7 +51,7 @@ attendanceRouter.get('/team', requireAuth, asyncHandler(async (req, res) => {
   res.json(await attendanceService.team(req.auth.userId, date));
 }));
 
-// The caller's recent attendance (personal history list). ?days=30 (default), clamped 1..180.
+// The caller's recent attendance (personal history list). ?days=30 (default), clamped 1..3660.
 // Each day carries its HR state (holiday / week off / leave / absent …) — the same reading as
 // My Attendance — so a holiday without a punch is not listed as an absence.
 attendanceRouter.get('/history', requireAuth, asyncHandler(async (req, res) => {

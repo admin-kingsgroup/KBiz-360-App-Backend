@@ -23,10 +23,14 @@ describe('planRegularization', () => {
     expect(plan.reason).toBe(body.reason);
   });
 
-  it('refuses future days, the deep past, and a missing reason', () => {
+  it('refuses future days and a missing reason', () => {
     expect(() => planRegularization({ ...body, date: '2026-09-09' }, NOW)).toThrow(/has not happened yet/);
-    expect(() => planRegularization({ ...body, date: '2026-07-01', checkInAt: '2026-07-01T04:10:00.000Z', checkOutAt: '2026-07-01T13:00:00.000Z' }, NOW)).toThrow(/too far back/);
     expect(() => planRegularization({ ...body, reason: '   ' }, NOW)).toThrow(/Say why/);
+  });
+
+  it('has no look-back limit — any past day may be asked for (owner 2026-10-12)', () => {
+    const plan = planRegularization({ ...body, date: '2025-01-15', checkInAt: '2025-01-15T04:10:00.000Z', checkOutAt: '2025-01-15T13:00:00.000Z' }, NOW);
+    expect(plan.date).toBe('2025-01-15');
   });
 
   it('rides resolveAdminTimes: out after in, on the day, past days never open', () => {

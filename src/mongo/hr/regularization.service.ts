@@ -25,14 +25,6 @@ import {
 const ATTENDANCE_TZ = process.env.ATTENDANCE_TZ || 'Asia/Kolkata';
 const todayKeyOf = (now: Date): string => dayKeyIn(ATTENDANCE_TZ, now);
 const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
-const addDays = (key: string, n: number): string => {
-  const d = new Date(`${key}T00:00:00.000Z`);
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-};
-
-// Same look-back the leave ask gets — anything older is HR's to fix on the ERP report.
-export const REGULARIZE_BACK_DAYS = 62;
 
 // The three states the admin queue can be read in (the app's Pending / Approved / Rejected tabs).
 // 'cancelled' is deliberately absent: a withdrawn request was never decided, so it belongs to the
@@ -62,7 +54,8 @@ export function planRegularization(body: RegularizationBody, now: Date): { date:
   const today = todayKeyOf(now);
   if (!DAY_KEY_RE.test(date)) throw BadRequest('Invalid date — expected YYYY-MM-DD');
   if (date > today) throw BadRequest('That day has not happened yet — regularisation is for past days');
-  if (date < addDays(today, -REGULARIZE_BACK_DAYS)) throw BadRequest('That is too far back — ask HR to correct it on the attendance report');
+  // No look-back limit (owner 2026-10-12): any past day may be asked for. A day in a month whose
+  // salary is already raised is still refused when it is signed on the ERP (PAYR-GATE-01).
   const reason = String(body.reason || '').trim().slice(0, 300);
   if (!reason) throw BadRequest('Say why — the reason goes to your manager with the request');
   const { checkInAt, checkOutAt } = resolveAdminTimes({ date, checkInAt: body.checkInAt, checkOutAt: body.checkOutAt ?? null }, now);
