@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import type { RequestHandler } from 'express';
+import multer from 'multer';
 import { z } from 'zod';
 import { asyncHandler } from '../../common/asyncHandler';
 import { validate } from '../../common/validate';
@@ -11,6 +12,8 @@ import { ALERT_GROUP_BY_MODULE, channelForKgd, channelForModuleBranch, USER_ALER
 import { attachmentFilename } from './attachmentName';
 import { contactSchema, type AlertContact } from './alertContact';
 import { reportChat } from './reportChat.service';
+import { CHAT_MEDIA_MAX_BYTES, type ChatMediaKind } from './chatMedia';
+import type { ReportGroupKind } from './reportGroupName';
 import { alertService } from './alert.service';
 
 // POST /api/alerts/ingest — external systems (KBiz Books ERP, CRM) push events into the
@@ -203,14 +206,20 @@ alertsIngestRouter.post(
   }),
 );
 
+const CHAT_GROUP_KINDS = ['finance', 'accounts', 'ticketing', 'holidays', 'inb-ticketing', 'inb-holidays', 'tickets'] as const;
+// A company-wide kind is its own address; every other post names a branch or a conversation.
+const hasTarget = (v: { branchCode?: string; conversationId?: string; group?: string }): boolean =>
+  !!(v.branchCode || v.conversationId || v.group === 'tickets');
+
 // POST /api/alerts/chat — the same service-token pipe, but the event lands in a branch's GROUP
 // CHAT instead of an alert channel. Since 2026-08-19 this is where every report the app used to
 // carry as one-way alerts goes: 'finance' → "HQ - <BR> Finance" (daily ageing PDFs, Bank & Cash,
 // the day-close attendance summary), 'accounts' → "<BR> - Branch Accounts" (the per-voucher money
 // feed), 'ticketing'/'holidays' → "<BR> - Ticketing" / "<BR> - Holidays" (approved invoices and
 // SO/PO/GP deals, split by module), 'inb-ticketing'/'inb-holidays' → the "INB <desk> A/B" room the
-// two branches of a deal share. Addressed by branch (resolved to the group by name) or,
-// for a one-off post, by an explicit conversationId. `dedupeKey` makes a re-fired cron slot or a
+// two branches of a deal share, 'tickets' → the one company-wide "Ticket Support" room (every ERP
+// and CRM support ticket — no branch needed). Addressed by branch (resolved to the group by name)
+// or, for a one-off post, by an explicit conversationId. `dedupeKey` makes a re-fired cron slot or a
 // retry idempotent; `dryRun` reports where a post WOULD land without writing anything.
 alertsIngestRouter.post(
   '/chat',
@@ -219,7 +228,7 @@ alertsIngestRouter.post(
   validate(z.object({
     // A single code, or "SELLER/BUYER" for the INB kinds (the pair groups two branches share).
     branchCode: z.string().trim().min(2).max(16).optional(),
-    group: z.enum(['finance', 'accounts', 'ticketing', 'holidays', 'inb-ticketing', 'inb-holidays']).optional(),
+    group: z.enum(CHAT_GROUP_KINDS).optional(),
     conversationId: z.string().trim().regex(/^[a-f0-9]{24}$/i).optional(),
     dryRun: z.boolean().optional(),
     title: z.string().trim().min(1).max(300),
@@ -231,14 +240,90 @@ alertsIngestRouter.post(
       mime: z.literal('application/pdf').optional(),
       data: z.string().min(1).max(MAX_ATTACHMENT_B64),
     }).optional(),
-  }).refine((v) => !!(v.branchCode || v.conversationId), { message: 'branchCode or conversationId is required' })),
+  }).refine(hasTarget, { message: 'branchCode or conversationId is required' })),
   asyncHandler(async (req, res) => {
     const { branchCode, group, conversationId, dryRun, title, body, dedupeKey, attachment } = req.body as {
-      branchCode?: string; group?: 'finance' | 'accounts' | 'ticketing' | 'holidays' | 'inb-ticketing' | 'inb-holidays';
+      branchCode?: string; group?: ReportGroupKind;
       conversationId?: string; dryRun?: boolean;
       title: string; body?: string; dedupeKey?: string; attachment?: { name: string; mime?: string; data: string };
     };
     const out = await reportChat.post({ branchCode, group, conversationId, dryRun, title, body, dedupeKey, attachment });
+    res.json({ ok: true, ...out });
+  }),
+);
+
+// POST /api/alerts/chat/media — one screenshot, voice note, screen recording or PDF into a group as
+// its own chat message (owner, 2026-10-12: a raised ticket reaches "Ticket Support" with ALL its
+// attachments). Multipart, not base64 JSON: a 25 MB recording would be ~34 MB of JSON, past the
+// app-wide 20 MB body limit, and the file arrives here only once. Same service token and same
+// addressing as /chat; `kind` says how the phone shows it, and the file must match it (allowlist +
+// magic bytes — see chatMedia.ts).
+//
+// Bytes are budgeted on their own: the event bucket's per-48 KB charge was sized for small PDFs and
+// would refuse any recording outright. The burst is 150 MB (a ticket with eight screenshots and a
+// recording is ~35 MB), refilled at ~10 MB a minute — a looping emitter still cannot fill the
+// bucket's storage faster than that.
+const MEDIA_BUCKET_BYTES = 150 * 1024 * 1024;
+const MEDIA_REFILL_PER_MS = (10 * 1024 * 1024) / 60_000;
+let mediaBytes = MEDIA_BUCKET_BYTES;
+let mediaRefilledAt = Date.now();
+export const mediaRateLimit: RequestHandler = (req, _res, next) => {
+  const now = Date.now();
+  mediaBytes = Math.min(MEDIA_BUCKET_BYTES, mediaBytes + (now - mediaRefilledAt) * MEDIA_REFILL_PER_MS);
+  mediaRefilledAt = now;
+  const size = req.file?.size ?? 0;
+  if (mediaBytes < size) {
+    next(new AppError(429, 'Media post rate limit exceeded — retry later', 'RATE_LIMITED'));
+    return;
+  }
+  mediaBytes -= size;
+  next();
+};
+
+const mediaUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: CHAT_MEDIA_MAX_BYTES, files: 1, fields: 20 } });
+// multer's own errors (too large, a second file) are the sender's mistake — 413 / 400, not a 500.
+const receiveMedia: RequestHandler = (req, res, next) => {
+  mediaUpload.single('file')(req, res, (err: unknown) => {
+    if (!err) { next(); return; }
+    if (err instanceof multer.MulterError) {
+      next(err.code === 'LIMIT_FILE_SIZE'
+        ? new AppError(413, `File is over ${Math.round(CHAT_MEDIA_MAX_BYTES / 1024 / 1024)} MB`, 'FILE_TOO_LARGE')
+        : BadRequest(`Upload refused: ${err.message}`));
+      return;
+    }
+    next(err);
+  });
+};
+
+// Multipart fields arrive as strings: the booleans and numbers are read from their text.
+const flag = z.preprocess((v) => (v === 'true' || v === true ? true : v === 'false' || v === false ? false : v), z.boolean());
+
+alertsIngestRouter.post(
+  '/chat/media',
+  requireServiceToken,
+  ingestRateLimit, // one event token, like any post (no `attachment` field → no byte charge here)
+  receiveMedia,
+  validate(z.object({
+    branchCode: z.string().trim().min(2).max(16).optional(),
+    group: z.enum(CHAT_GROUP_KINDS).optional(),
+    conversationId: z.string().trim().regex(/^[a-f0-9]{24}$/i).optional(),
+    kind: z.enum(['image', 'voice', 'video', 'document']),
+    caption: z.string().trim().max(1000).optional(),
+    durationMs: z.coerce.number().int().min(0).max(60 * 60 * 1000).optional(),
+    dedupeKey: z.string().trim().max(120).optional(),
+    dryRun: flag.optional(),
+  }).refine(hasTarget, { message: 'branchCode or conversationId is required' })),
+  mediaRateLimit, // after validation: a malformed post must not spend the byte budget
+  asyncHandler(async (req, res) => {
+    if (!req.file) throw BadRequest('No file uploaded (multipart field "file")');
+    const { branchCode, group, conversationId, kind, caption, durationMs, dedupeKey, dryRun } = req.body as {
+      branchCode?: string; group?: ReportGroupKind; conversationId?: string; kind: ChatMediaKind;
+      caption?: string; durationMs?: number; dedupeKey?: string; dryRun?: boolean;
+    };
+    const out = await reportChat.postMedia({
+      branchCode, group, conversationId, kind, caption, durationMs, dedupeKey, dryRun,
+      file: { buffer: req.file.buffer, name: req.file.originalname, mime: req.file.mimetype },
+    });
     res.json({ ok: true, ...out });
   }),
 );
