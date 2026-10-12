@@ -12,8 +12,8 @@ import {
 } from './attendanceMonth';
 import { daysOf, earnedOf, grossOf, ptExplain, ptForMonth, ptSchedule, recoveryFor, rupee, type LoanRecoveryLine, type PayDays } from './payRules';
 
-// Self-service month views: My Attendance (the muster), My Payslip (the same month priced the
-// way the ERP salary register prices it), and the branch holiday list. All identity comes from
+// Self-service month views: My Attendance (the muster) and the branch holiday list (My Payslip
+// now comes from the ERP — payslip.erp). All identity comes from
 // the JWT; everything is READ — the ERP owns the HR semantics, the app owns the punches.
 
 const ATTENDANCE_TZ = process.env.ATTENDANCE_TZ || 'Asia/Kolkata';
@@ -159,8 +159,9 @@ export const myMonthService = {
     };
   },
 
-  /** GET /hr/my-payslip?month= — the caller's OWN month, priced the salary-register way.
-   *  Indicative until HR pays it — nothing here posts, and the register remains the truth. */
+  /** The caller's OWN month, priced the salary-register way (indicative — the register is the truth).
+   *  NO LONGER SERVED (owner, 2026-10-12): GET /hr/my-payslip answers 410 and the app shows the ERP's
+   *  own payslip for released months only (payslip.erp). Kept for reference; do not re-expose. */
   async myPayslip(userId: string, asked: string) {
     const a = await assembleMonth(userId, asked);
     const emp = a.emp;

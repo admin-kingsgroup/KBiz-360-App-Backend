@@ -2,13 +2,14 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../../common/asyncHandler';
 import { validate } from '../../common/validate';
-import { Unauthorized } from '../../common/errors';
+import { AppError, Unauthorized } from '../../common/errors';
 import { requireAuth, requireSuper } from '../middleware';
 import { leaveService } from './leave.service';
 import { regularizationService, asAdminQueueStatus } from './regularization.service';
 import { myMonthService } from './myMonth.service';
 import { wfhService } from './wfh.service';
 import { swapService } from './swap.service';
+import { payslipErp, PAYSLIP_MONTH_RE } from './payslip.erp';
 
 // Mounted at /api/hr. Self-service HR for the app: paid-leave balance + applications and
 // attendance regularisation requests (time corrections) — BOTH the ERP's own hr_leave_applications
@@ -47,6 +48,9 @@ export const wfhApplySchema = z.object({ from: dayKey, to: dayKey, reason: z.str
 export const swapRequestSchema = z.object({ workDay: dayKey, offDay: dayKey, partnerUserId: z.string().min(1).max(64), reason: z.string().min(1).max(500) });
 export const swapRespondSchema = z.object({ accept: z.boolean(), note: z.string().max(300).optional() });
 
+// The payslip link's month (owner, 2026-10-12 — the ERP's own payslip, released months only).
+export const payslipMonthParamsSchema = z.object({ month: z.string().regex(PAYSLIP_MONTH_RE) });
+
 // ── paid leave (balance + applications; HR approves on the ERP) ──
 hrRouter.get('/my-leave', requireAuth, asyncHandler(async (req, res) => {
   if (!req.auth) throw Unauthorized();
@@ -69,9 +73,23 @@ hrRouter.get('/my-attendance', requireAuth, asyncHandler(async (req, res) => {
   res.json(await myMonthService.myAttendance(req.auth.userId, String(req.query.month ?? '').trim()));
 }));
 
-hrRouter.get('/my-payslip', requireAuth, asyncHandler(async (req, res) => {
+// ── payslips (owner, 2026-10-12): the ERP's OWN payslip, and only for a month whose salary is paid in
+// full. The ERP lists the released months and signs a 15-minute link to Books' payslip page; this
+// backend only forwards, as the signed-in person (payslip.erp).
+hrRouter.get('/payslips', requireAuth, asyncHandler(async (req, res) => {
   if (!req.auth) throw Unauthorized();
-  res.json(await myMonthService.myPayslip(req.auth.userId, String(req.query.month ?? '').trim()));
+  res.json(await payslipErp.months(req.auth.userId));
+}));
+
+hrRouter.get('/payslips/:month/link', requireAuth, validate(payslipMonthParamsSchema, 'params'), asyncHandler(async (req, res) => {
+  if (!req.auth) throw Unauthorized();
+  res.json(await payslipErp.link(req.auth.userId, String(req.params.month)));
+}));
+
+// The old app-priced "indicative" payslip is retired: an older build must never show a month that
+// is not paid yet. 410 tells it to update; myMonthService.myPayslip is no longer served.
+hrRouter.get('/my-payslip', requireAuth, asyncHandler(async () => {
+  throw new AppError(410, 'Payslips now come from HR once your salary is paid — update the app.', 'PAYSLIP_MOVED');
 }));
 
 hrRouter.get('/holidays', requireAuth, asyncHandler(async (req, res) => {
