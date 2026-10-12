@@ -35,7 +35,7 @@ export interface HrEmployeeDoc {
 export interface HrOverrideDoc {
   userId: string;
   day: string; // 'YYYY-MM-DD'
-  state: string; // 'weekOff' | 'optionalHoliday' | 'leave'
+  state: string; // 'weekOff' | 'optionalHoliday' | 'leave' | 'halfLeave' | 'wfh' | 'swapWork' | 'swapOff'
   note?: string;
 }
 
@@ -103,14 +103,34 @@ export interface HrLeaveApplicationDoc {
   checkIn?: string;
   checkOut?: string;
   raisedBy?: { userId: string; name: string; role: string };
+  decidedRole?: string; // the chain level that rejected it — 'Partner' when a swap's partner declined
+  // kind 'swap' (owner, 2026-10-12 — the ERP's leaveApplication.model): workDay = the applicant's own week-off
+  // Saturday they work (the partner is off), offDay = the applicant's working Saturday they take off (the partner
+  // works). The partner accepts in the app first, then FM → Director → Owner sign on the ERP.
+  swap?: HrSwapSide;
   __v?: number; // the ERP model uses optimistic concurrency — a row without it still saves, but 0 is what it writes
   createdAt?: Date;
   updatedAt?: Date;
 }
 
-export type LeaveApplicationKind = 'leave' | 'time' | 'cancel';
-/** Leave only — a time correction or a leave removal is not a day off (the ERP's own filter). */
-const LEAVE_KINDS_ONLY = { kind: { $nin: ['time', 'cancel'] } };
+export interface HrSwapSide {
+  workDay: string;
+  offDay: string;
+  partnerUserId: string;
+  partnerName: string;
+  partnerBranch: string;
+  partnerStatus: 'pending' | 'accepted' | 'declined';
+  partnerAt: Date | null;
+  partnerNote: string;
+}
+
+export type LeaveApplicationKind = 'leave' | 'time' | 'cancel' | 'wfh' | 'swap';
+/** Leave only — a time correction, a leave removal, work from home or a Saturday swap is not paid leave (the
+ *  ERP's NOT_LEAVE_KINDS). */
+const LEAVE_KINDS_ONLY = { kind: { $nin: ['time', 'cancel', 'wfh', 'swap'] } };
+/** The asks that take a working day: paid leave and work from home clash with each other (one ask per day —
+ *  the ERP's NO_DAY_CLASH_KINDS). */
+const DAY_ASK_KINDS = { kind: { $nin: ['time', 'cancel', 'swap'] } };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const col = (name: string) => guardReadOnly(crmDb().collection(name)) as any;
@@ -181,12 +201,71 @@ export const hrRepo = {
       .toArray() as Promise<HrLeaveApplicationDoc[]>;
   },
 
-  /** Spans that already claim days (one ask per day — pending AND approved both block; an approved
-   *  one only on the days it actually marked, like the ERP's assertNoOverlap). */
-  async openLeaveApplications(userId: string): Promise<Pick<HrLeaveApplicationDoc, 'from' | 'to' | 'status' | 'markedDays'>[]> {
+  /** Spans that already claim days — paid leave and work from home (one ask per day — pending AND approved
+   *  both block; an approved one only on the days it actually marked, like the ERP's assertNoOverlap). */
+  async openLeaveApplications(userId: string): Promise<Pick<HrLeaveApplicationDoc, 'from' | 'to' | 'status' | 'markedDays' | 'kind'>[]> {
     return col('hr_leave_applications')
-      .find({ userId: String(userId), status: { $in: ['pending', 'approved'] }, ...LEAVE_KINDS_ONLY }, { projection: { from: 1, to: 1, status: 1, markedDays: 1 } })
-      .toArray() as Promise<Pick<HrLeaveApplicationDoc, 'from' | 'to' | 'status' | 'markedDays'>[]>;
+      .find({ userId: String(userId), status: { $in: ['pending', 'approved'] }, ...DAY_ASK_KINDS }, { projection: { from: 1, to: 1, status: 1, markedDays: 1, kind: 1 } })
+      .toArray() as Promise<Pick<HrLeaveApplicationDoc, 'from' | 'to' | 'status' | 'markedDays' | 'kind'>[]>;
+  },
+
+  // ── work from home + Saturday swaps (owner, 2026-10-12) ──
+
+  /** The person's own work-from-home trail, newest first. */
+  async listWfh(userId: string, limit = 50): Promise<HrLeaveApplicationDoc[]> {
+    return col('hr_leave_applications').find({ userId: String(userId), kind: 'wfh' }).sort({ appliedAt: -1 }).limit(limit).toArray() as Promise<HrLeaveApplicationDoc[]>;
+  },
+
+  /** Swaps the person asked for (applicant) and swaps asked OF them (partner), newest first. */
+  async listSwaps(userId: string, limit = 50): Promise<{ mine: HrLeaveApplicationDoc[]; incoming: HrLeaveApplicationDoc[] }> {
+    const [mine, incoming] = await Promise.all([
+      col('hr_leave_applications').find({ userId: String(userId), kind: 'swap' }).sort({ appliedAt: -1 }).limit(limit).toArray(),
+      col('hr_leave_applications').find({ kind: 'swap', 'swap.partnerUserId': String(userId) }).sort({ appliedAt: -1 }).limit(limit).toArray(),
+    ]);
+    return { mine: mine as HrLeaveApplicationDoc[], incoming: incoming as HrLeaveApplicationDoc[] };
+  },
+
+  /** Swaps still open (pending / approved) that involve any of these people on any of these days — a Saturday is
+   *  in one swap at a time. */
+  async openSwapsTouching(userIds: string[], days: string[]): Promise<HrLeaveApplicationDoc[]> {
+    const ids = [...new Set(userIds.map(String).filter(Boolean))];
+    if (!ids.length || !days.length) return [];
+    return col('hr_leave_applications').find({
+      kind: 'swap',
+      status: { $in: ['pending', 'approved'] },
+      $and: [
+        { $or: [{ userId: { $in: ids } }, { 'swap.partnerUserId': { $in: ids } }] },
+        { $or: [{ 'swap.workDay': { $in: days } }, { 'swap.offDay': { $in: days } }] },
+      ],
+    }).toArray() as Promise<HrLeaveApplicationDoc[]>;
+  },
+
+  /** The HR decisions on these days for these people (the swap check reads both sides at once). */
+  async overridesOn(userIds: string[], days: string[]): Promise<HrOverrideDoc[]> {
+    const ids = [...new Set(userIds.map(String).filter(Boolean))];
+    if (!ids.length || !days.length) return [];
+    return col('hr_attendance_overrides')
+      .find({ userId: { $in: ids }, day: { $in: days } }, { projection: { userId: 1, day: 1, state: 1, note: 1 } })
+      .toArray() as Promise<HrOverrideDoc[]>;
+  },
+
+  /** The branch's HR records linked to a login, not marked inactive — the people a swap may be asked of. */
+  async employeesOfBranch(branch: string): Promise<HrEmployeeDoc[]> {
+    const code = String(branch || '').trim().toUpperCase();
+    if (!code) return [];
+    return col('hr_employees')
+      .find({ branch: code, userId: { $nin: [null, ''] }, status: { $ne: 'inactive' } }, { projection: { userId: 1, name: 1, designation: 1, branch: 1, weekOff: 1, dateOfJoining: 1, dateOfLeaving: 1, status: 1 } })
+      .toArray() as Promise<HrEmployeeDoc[]>;
+  },
+
+  /** The partner answers a swap — only while it waits on them (atomic: a withdrawal or a second tap loses). */
+  async answerSwap(id: string, partnerUserId: string, set: Record<string, unknown>): Promise<boolean> {
+    if (!Types.ObjectId.isValid(id)) return false;
+    const res = await writeCol('hr_leave_applications').updateOne(
+      { _id: new Types.ObjectId(id), kind: 'swap', status: 'pending', 'swap.partnerUserId': String(partnerUserId), 'swap.partnerStatus': 'pending' },
+      { $set: { ...set, updatedAt: new Date() }, $inc: { __v: 1 } },
+    );
+    return res.modifiedCount === 1;
   },
 
   // ── time corrections (kind 'time' — the row the ERP's Approvals ▸ Leave decides too) ──

@@ -1137,6 +1137,10 @@ export const attendanceService = {
 
       const records = await attendanceRepo.forUsersOnDay(day, chUsers.map((u) => String(u._id)));
       const byUser = new Map(records.map((r) => [r.userId, r]));
+      // An approved WORK-FROM-HOME day (owner, 2026-10-12) is present without a punch — never listed absent.
+      const wfhIds = new Set((await hrRepo.overridesOn(chUsers.map((u) => String(u._id)), [day]).catch(() => []))
+        .filter((o) => o.state === 'wfh').map((o) => String(o.userId)));
+      const wfhNames: string[] = [];
       // Per-user detail: name · check-in → check-out (or "still in") · via method — in the
       // BRANCH's wall clock, so Nairobi reads Nairobi times rather than IST.
       const presentRows: { name: string; line: string }[] = [];
@@ -1149,17 +1153,21 @@ export const attendanceService = {
           const outT = rec.checkOutAt ? `out ${fmtTime(rec.checkOutAt, tz)}` : 'still in';
           const via = rec.method ? ` · ${rec.method}` : '';
           presentRows.push({ name, line: `• ${name} — in ${inT} → ${outT}${via}` });
+        } else if (wfhIds.has(String(u._id))) {
+          wfhNames.push(name);
         } else {
           absentNames.push(name);
         }
       }
       presentRows.sort((a, b) => a.name.localeCompare(b.name));
       absentNames.sort();
+      wfhNames.sort();
       const total = chUsers.length;
-      const presentCount = presentRows.length;
+      const presentCount = presentRows.length + wfhNames.length;
 
-      const bodyLines: string[] = [`✅ Present ${presentCount}/${total}    ❌ Absent ${absentNames.length}`];
+      const bodyLines: string[] = [`✅ Present ${presentCount}/${total}${wfhNames.length ? ` (🏠 ${wfhNames.length} WFH)` : ''}    ❌ Absent ${absentNames.length}`];
       if (presentRows.length) bodyLines.push('', 'PRESENT', ...presentRows.map((r) => r.line));
+      if (wfhNames.length) bodyLines.push('', 'WORK FROM HOME', ...wfhNames.map((n) => `• ${n}`));
       if (absentNames.length) bodyLines.push('', 'ABSENT', ...absentNames.map((n) => `• ${n}`));
 
       try {
