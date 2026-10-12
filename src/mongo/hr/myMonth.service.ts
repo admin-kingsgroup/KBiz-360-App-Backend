@@ -99,11 +99,17 @@ export interface HrDayState {
   state: DayState;
   holiday: string | null; // the holiday's name on a holiday ('' for an availed optional one)
   halfLeave: boolean;
+  weekOff: boolean; // a week off as it stands — the person's rule, as an approved Saturday swap moved it
+  wfh: boolean; // an approved work-from-home day (present, no punch)
+  swap: '' | 'work' | 'off';
 }
 
-const nextMonthKey = (m: string): string => {
+// The history list pages back without limit; its HR labels cover the newest this many months of a range
+// (older days fall back to the punch-only reading, as when the HR read fails).
+const STATE_MONTHS_MAX = 24;
+const prevMonthKey = (m: string): string => {
   const [y, mo] = m.split('-').map(Number);
-  const d = new Date(Date.UTC(y, mo, 1));
+  const d = new Date(Date.UTC(y, mo - 2, 1));
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
 };
 
@@ -114,12 +120,12 @@ export async function dayStatesFor(userId: string, from: string, to: string): Pr
   const out = new Map<string, HrDayState>();
   if (!isMonthKey(monthOf(from)) || !isMonthKey(monthOf(to)) || from > to) return out;
   const months: string[] = [];
-  for (let m = monthOf(from); m <= monthOf(to) && months.length < 12; m = nextMonthKey(m)) months.push(m);
+  for (let m = monthOf(to); m >= monthOf(from) && months.length < STATE_MONTHS_MAX; m = prevMonthKey(m)) months.push(m);
   const built = await Promise.all(months.map((m) => assembleMonth(userId, m)));
   for (const a of built) {
     for (const d of a.days) {
       if (d.day < from || d.day > to) continue;
-      out.set(d.day, { state: d.state, holiday: d.holiday ? d.holiday.name : null, halfLeave: !!d.halfLeave });
+      out.set(d.day, { state: d.state, holiday: d.holiday ? d.holiday.name : null, halfLeave: !!d.halfLeave, weekOff: !!d.weekOff, wfh: !!d.wfh, swap: d.swap || '' });
     }
   }
   return out;

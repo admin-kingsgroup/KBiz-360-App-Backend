@@ -124,6 +124,8 @@ export interface ClassifiedDay {
   granted: boolean;
   onLeave: boolean;
   halfLeave: boolean; // half-day paid leave — rides a present day (the other half is worked)
+  wfh: boolean; // an approved work-from-home day counted present without a punch (owner, 2026-10-12)
+  swap: '' | 'work' | 'off'; // a Saturday an approved swap moved: their own week off worked / a working Saturday off
   open: boolean;
   autoClosed: boolean;
   adjusted: boolean;
@@ -137,8 +139,13 @@ export function classifyDay(dayKey: string, { record, holiday, today, employment
   record?: DayRecord | null; holiday?: HolidayInfo | null; today?: string; employment?: Employment;
   policy?: WeekOffPolicy | null; override?: DayOverride | null; shift?: ShiftPolicy | null; tz?: string;
 } = {}): ClassifiedDay {
-  const weekOffToday = isWeekOffDay(dayKey, policy ?? undefined);
-  const grantedOff = !!override && override.state === 'weekOff';
+  const st = override ? String(override.state || '') : '';
+  // An approved Saturday swap moves the week off (ERP LEAVE-GATE-07): 'swapWork' = their own week off is
+  // worked, 'swapOff' = a working Saturday is their week off.
+  const swapWork = st === 'swapWork';
+  const swapOff = st === 'swapOff';
+  const weekOffToday = isWeekOffDay(dayKey, policy ?? undefined) && !swapWork;
+  const grantedOff = st === 'weekOff';
   const grantedHoliday = !!override && override.state === 'optionalHoliday';
   const grantedLeave = !!override && override.state === 'leave';
   const grantedHalf = !!override && override.state === 'halfLeave';
@@ -152,10 +159,12 @@ export function classifyDay(dayKey: string, { record, holiday, today, employment
     holiday: holiday
       ? { name: holiday.name || '', kind: holiday.kind || 'closed' }
       : (grantedHoliday ? { name: '', kind: 'optional' } : null),
-    weekOff: weekOffToday || grantedOff,
+    weekOff: weekOffToday || grantedOff || swapOff,
     granted: grantedOff || grantedHoliday || grantedLeave || grantedHalf,
     onLeave: grantedLeave,
     halfLeave: grantedHalf,
+    wfh: false,
+    swap: swapWork ? 'work' : swapOff ? 'off' : '',
     open: false, autoClosed: false, adjusted: false, markedAbsent: false,
     late: false, lateMinutes: null,
   };
@@ -178,11 +187,13 @@ export function classifyDay(dayKey: string, { record, holiday, today, employment
   if (record && String(record.method || '') === 'Manual' && record.present === false) {
     return { ...base, state: 'absent', markedAbsent: true, adjusted: true };
   }
-  if (grantedOff) return { ...base, state: 'weekOff' };
+  if (grantedOff || swapOff) return { ...base, state: 'weekOff' };
   if (grantedHoliday) return { ...base, state: 'holiday' };
   if (grantedLeave) return { ...base, state: 'leave' };
   // A half-day leave whose worked half never got a punch — the whole day ended up taken (paid).
   if (grantedHalf) return { ...base, state: 'leave' };
+  // Work from home, approved — a decision like leave: present, shown WFH, never late (no check-in).
+  if (st === 'wfh') return { ...base, state: 'present', wfh: true };
   if (today && dayKey > today) return { ...base, state: 'future' };
   if (closedHoliday) return { ...base, state: 'holiday' };
   if (base.weekOff) return { ...base, state: 'weekOff' };
@@ -215,6 +226,7 @@ export interface MonthSummary {
   holidays: number; weekOffs: number; future: number; notEmployed: number; noData: number; halfLeaves: number;
   hoursTotal: number; avgHours: number; autoClosed: number; adjusted: number; stillOpen: number;
   lateMarks: number; workedOnHoliday: number; workedOnWeekOff: number; granted: number;
+  wfh: number; swapped: number;
 }
 
 /** Pure: muster-roll totals for the month (the ERP's summarizeMonth + a noData count). */
@@ -246,5 +258,7 @@ export function summarizeMonth(days: ClassifiedDay[]): MonthSummary {
     workedOnWeekOff: present.filter((d) => d.weekOff && !d.holiday).length,
     granted: days.filter((d) => d.granted).length,
     halfLeaves: days.filter((d) => d.halfLeave).length,
+    wfh: present.filter((d) => d.wfh).length, // present days worked from home (inside `present`)
+    swapped: days.filter((d) => d.swap).length, // Saturdays an approved swap moved
   };
 }

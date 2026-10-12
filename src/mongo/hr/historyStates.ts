@@ -9,9 +9,11 @@ import type { DayState } from './attendanceMonth';
 // Lives here, applied at the route, rather than inside attendance.service: myMonth.service already
 // reaches attendance.service through hrNotify, so importing it there would close a module cycle.
 
-export type HistoryWithState<T> = T & { state?: DayState; holidayName?: string | null; halfLeave?: boolean };
+export type HistoryWithState<T> = T & { state?: DayState; holidayName?: string | null; halfLeave?: boolean; weekOff?: boolean; wfh?: boolean; swap?: '' | 'work' | 'off' };
 
-/** Adds `state` (+ `holidayName`, `halfLeave`) to each { date } entry. Never throws: if the HR read
+/** Adds `state` (+ `holidayName`, `halfLeave`, `wfh`, `swap`) to each { date } entry, and sets its `weekOff` to
+ *  the day as it stands — an approved Saturday swap moves the week off, which the punch list's policy-only flag
+ *  cannot see. Never throws: if the HR read
  *  fails the entries come back unchanged and the app falls back to its punch-only reading. */
 export async function withHrDayStates<T extends { date: string }>(
   userId: string,
@@ -24,7 +26,7 @@ export async function withHrDayStates<T extends { date: string }>(
     const byDay = await states(userId, keys[0], keys[keys.length - 1]);
     return entries.map((e) => {
       const s = byDay.get(e.date);
-      return s ? { ...e, state: s.state, holidayName: s.holiday, halfLeave: s.halfLeave } : e;
+      return s ? { ...e, state: s.state, holidayName: s.holiday, halfLeave: s.halfLeave, weekOff: s.weekOff, wfh: s.wfh, swap: s.swap } : e;
     });
   } catch {
     return entries;

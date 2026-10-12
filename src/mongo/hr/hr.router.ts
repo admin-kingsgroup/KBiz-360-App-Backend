@@ -7,6 +7,8 @@ import { requireAuth, requireSuper } from '../middleware';
 import { leaveService } from './leave.service';
 import { regularizationService, asAdminQueueStatus } from './regularization.service';
 import { myMonthService } from './myMonth.service';
+import { wfhService } from './wfh.service';
+import { swapService } from './swap.service';
 
 // Mounted at /api/hr. Self-service HR for the app: paid-leave balance + applications and
 // attendance regularisation requests (time corrections) — BOTH the ERP's own hr_leave_applications
@@ -38,6 +40,12 @@ export const regularizationDecisionSchema = z.object({
   action: z.enum(['approve', 'reject']),
   note: z.string().max(300).optional(),
 });
+
+// Work from home + the Saturday swap (owner, 2026-10-12) — both signed FM → Director → Owner on the ERP.
+const dayKey = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+export const wfhApplySchema = z.object({ from: dayKey, to: dayKey, reason: z.string().min(1).max(500) });
+export const swapRequestSchema = z.object({ workDay: dayKey, offDay: dayKey, partnerUserId: z.string().min(1).max(64), reason: z.string().min(1).max(500) });
+export const swapRespondSchema = z.object({ accept: z.boolean(), note: z.string().max(300).optional() });
 
 // ── paid leave (balance + applications; HR approves on the ERP) ──
 hrRouter.get('/my-leave', requireAuth, asyncHandler(async (req, res) => {
@@ -101,4 +109,51 @@ hrRouter.get('/regularizations/pending', requireAuth, requireSuper, asyncHandler
 hrRouter.put('/regularizations/:id/decision', requireAuth, requireSuper, validate(regularizationDecisionSchema), asyncHandler(async (req, res) => {
   if (!req.auth) throw Unauthorized();
   res.json(await regularizationService.decide(req.auth.userId, req.params.id, req.body));
+}));
+
+// ── work from home (asked here; signed FM → Director → Owner on the ERP — approved days count as present) ──
+hrRouter.get('/wfh', requireAuth, asyncHandler(async (req, res) => {
+  if (!req.auth) throw Unauthorized();
+  res.json(await wfhService.myWfh(req.auth.userId));
+}));
+
+hrRouter.post('/wfh', requireAuth, validate(wfhApplySchema), asyncHandler(async (req, res) => {
+  if (!req.auth) throw Unauthorized();
+  res.status(201).json(await wfhService.apply(req.auth.userId, req.body));
+}));
+
+hrRouter.put('/wfh/:id/cancel', requireAuth, asyncHandler(async (req, res) => {
+  if (!req.auth) throw Unauthorized();
+  res.json(await wfhService.cancel(req.auth.userId, req.params.id));
+}));
+
+// ── Saturday swap (asked here, accepted here by the partner, then signed on the ERP — LEAVE-GATE-07) ──
+hrRouter.get('/swaps', requireAuth, asyncHandler(async (req, res) => {
+  if (!req.auth) throw Unauthorized();
+  res.json(await swapService.list(req.auth.userId));
+}));
+
+hrRouter.get('/swaps/options', requireAuth, asyncHandler(async (req, res) => {
+  if (!req.auth) throw Unauthorized();
+  res.json(await swapService.options(req.auth.userId));
+}));
+
+hrRouter.get('/swaps/partners', requireAuth, asyncHandler(async (req, res) => {
+  if (!req.auth) throw Unauthorized();
+  res.json(await swapService.partners(req.auth.userId, String(req.query.workDay ?? '').trim(), String(req.query.offDay ?? '').trim()));
+}));
+
+hrRouter.post('/swaps', requireAuth, validate(swapRequestSchema), asyncHandler(async (req, res) => {
+  if (!req.auth) throw Unauthorized();
+  res.status(201).json(await swapService.request(req.auth.userId, req.body));
+}));
+
+hrRouter.put('/swaps/:id/respond', requireAuth, validate(swapRespondSchema), asyncHandler(async (req, res) => {
+  if (!req.auth) throw Unauthorized();
+  res.json(await swapService.respond(req.auth.userId, req.params.id, req.body));
+}));
+
+hrRouter.put('/swaps/:id/cancel', requireAuth, asyncHandler(async (req, res) => {
+  if (!req.auth) throw Unauthorized();
+  res.json(await swapService.cancel(req.auth.userId, req.params.id));
 }));
