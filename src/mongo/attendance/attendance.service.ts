@@ -782,7 +782,9 @@ export const attendanceService = {
   // visible; the walk never goes past the user's first-ever record (no fake absences before
   // they started punching).
   async history(userId: string, days = 30, fillFullWindow = false) {
-    const limit = Math.min(Math.max(days, 1), 180);
+    // The app pages back through this list to ask for corrections, which have no look-back limit
+    // (owner 2026-10-12) — so the ceiling only guards the walk (~10 years).
+    const limit = Math.min(Math.max(days, 1), 3660);
     const rows = await attendanceRepo.historyForUser(userId, limit);
     const first = await attendanceRepo.firstForUser(userId);
     if (!first && !fillFullWindow) return [];
