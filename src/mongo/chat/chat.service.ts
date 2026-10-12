@@ -498,7 +498,9 @@ export const chatService = {
     return existing ? String(existing._id) : null;
   },
 
-  async postServiceMessage(conversationId: string, senderId: string, input: { text: string; attachments?: Attachment[]; mediaType?: 'image' | 'video' | 'voice' | 'document'; clientId?: string; senderName?: string }) {
+  // `preview` replaces the chat-list / notification line a media message would otherwise get from
+  // its type ("📄 Document") — a ticket bundle reads better as its own title.
+  async postServiceMessage(conversationId: string, senderId: string, input: { text: string; attachments?: Attachment[]; mediaType?: 'image' | 'video' | 'voice' | 'document'; clientId?: string; senderName?: string; preview?: string }) {
     const conv = await conversationRepo.findById(conversationId);
     if (!conv) throw NotFound('Conversation not found');
     if (input.clientId) {
@@ -526,7 +528,8 @@ export const chatService = {
       readBy: [],
     })) as unknown as MessageDoc;
 
-    const preview = type === 'text' ? created.text.slice(0, 140) : (SERVICE_MEDIA_LABEL[type] ?? '📄 Document');
+    const preview = input.preview?.trim() ? input.preview.trim().slice(0, 140)
+      : type === 'text' ? created.text.slice(0, 140) : (SERVICE_MEDIA_LABEL[type] ?? '📄 Document');
     const pushPreview = type === 'text' ? stripFormatting(created.text).slice(0, 140) : preview; // the notification line shows words, not *markers*
     await conversationRepo.touchLastMessage(conversationId, { messageId: created._id, text: preview, type, senderId, at: now }, senderId);
     emitToUsers(conv.participantIds, CHAT_EVENTS.RECEIVE, toMessageBase(created));

@@ -71,6 +71,48 @@ it('a retry of a post that already landed stores nothing and answers duplicate',
   expect(chatService.postServiceMessage).not.toHaveBeenCalled();
 });
 
+describe('postBundle — a ticket as ONE message', () => {
+  const files = () => [
+    { kind: 'voice' as const, buffer: WEBM, name: 'voice-note-1.webm', mime: 'video/webm', durationMs: 4_000 },
+    { kind: 'image' as const, buffer: PNG, name: 'Screenshot 1.png', mime: 'image/png' },
+    { kind: 'video' as const, buffer: WEBM, name: 'screen-recording-1.webm', mime: 'video/webm' },
+  ];
+
+  it('one message: the text, then every file with its own kind; titled in the chat list', async () => {
+    const out = await reportChat.postBundle({ group: 'tickets', title: '*New ERP ticket — test*', body: 'TKT-00009 · Medium · Bug', dedupeKey: 'erp-ticket-TKT-00009', files: files() });
+    expect(out).toMatchObject({ conversationId: 'c-tickets', group: 'Ticket Support', messageId: 'm1', duplicate: false });
+    expect(save).toHaveBeenCalledTimes(3);
+    expect(chatService.postServiceMessage).toHaveBeenCalledTimes(1);
+    expect(chatService.postServiceMessage).toHaveBeenCalledWith('c-tickets', 'u-books', {
+      text: '*New ERP ticket — test*\nTKT-00009 · Medium · Bug',
+      attachments: [
+        { url: 'https://cdn/uploads/x-voice-note-1.webm', name: 'voice-note-1.webm', size: WEBM.length, mime: 'audio/webm', kind: 'voice', durationMs: 4_000 },
+        { url: 'https://cdn/uploads/x-Screenshot_1.png', name: 'Screenshot_1.png', size: PNG.length, mime: 'image/png', kind: 'image', width: 1080, height: 2400 },
+        { url: 'https://cdn/uploads/x-screen-recording-1.webm', name: 'screen-recording-1.webm', size: WEBM.length, mime: 'video/webm', kind: 'video' },
+      ],
+      // An older phone build ignores `kind` and draws every file as a document tile — still openable.
+      mediaType: 'document',
+      clientId: 'report:erp-ticket-TKT-00009',
+      senderName: 'KBiz Books',
+      preview: '📎 New ERP ticket — test',
+    });
+  });
+
+  it('one bad file refuses the whole bundle before anything is stored or posted', async () => {
+    const bad = [...files(), { kind: 'image' as const, buffer: Buffer.from('<html>'), name: 'x.png', mime: 'image/png' }];
+    await expect(reportChat.postBundle({ group: 'tickets', title: 't', files: bad })).rejects.toThrow('File 4 (x.png): The file is not a valid image/png');
+    expect(save).not.toHaveBeenCalled();
+    expect(chatService.postServiceMessage).not.toHaveBeenCalled();
+  });
+
+  it('a retry of a bundle that already landed stores nothing and answers duplicate', async () => {
+    chatService.findServiceMessageId.mockResolvedValue('m-earlier');
+    const out = await reportChat.postBundle({ group: 'tickets', title: 't', dedupeKey: 'erp-ticket-TKT-00009', files: files() });
+    expect(out).toEqual({ conversationId: 'c-tickets', group: 'Ticket Support', messageId: 'm-earlier', duplicate: true });
+    expect(save).not.toHaveBeenCalled();
+  });
+});
+
 it('dryRun resolves the room and the sender and writes nothing', async () => {
   const out = await reportChat.postMedia({ group: 'tickets', kind: 'image', dryRun: true, file: { buffer: PNG, name: 'a.png', mime: 'image/png' } });
   expect(out).toMatchObject({ conversationId: 'c-tickets', group: 'Ticket Support', dryRun: true, sender: 'KBiz Books' });
