@@ -15,6 +15,10 @@
 //   'inb-ticketing' → "INB Ticketing AMD/BOM" … an inter-branch flight deal, in the room the two
 //   'inb-holidays'    branches share. Addressed with a PAIR ("BOM/AMD") and matched in EITHER
 //                     order, because the group was named in whichever order its creator typed.
+//   'tickets'       → "Ticket Support" … every support ticket raised in the ERP or the CRM, with
+//                     its screenshots, voice notes and screen recordings (owner, 2026-10-12: "after
+//                     raising a bug or error send it in this group so the development team work on
+//                     it"). ONE room for the whole company — the branch code is ignored.
 //
 // Matching is done on the SQUASHED name — lower-cased, every non-alphanumeric removed — so the
 // exact spacing and dashes someone typed when creating the group never decide whether a branch
@@ -23,13 +27,17 @@
 //
 // Deliberately its own module with no imports: the resolver it serves reaches into the chat
 // service and the storage layer, and this rule is worth testing without any of that.
-export type ReportGroupKind = 'finance' | 'hr' | 'accounts' | 'ticketing' | 'holidays' | 'inb-ticketing' | 'inb-holidays';
+export type ReportGroupKind = 'finance' | 'hr' | 'accounts' | 'ticketing' | 'holidays' | 'inb-ticketing' | 'inb-holidays' | 'tickets';
+
+/** The kinds that address one company-wide room instead of a branch's. */
+export const isCompanyWideKind = (kind: ReportGroupKind): boolean => kind === 'tickets';
 
 export const squashName = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 
 /** The squashed names a branch's group may carry for this kind of report, most specific first.
  *  `branchCode` is one code — except for the INB kinds, which take the pair "SELLER/BUYER". */
 export const reportGroupKeys = (kind: ReportGroupKind, branchCode: string): string[] => {
+  if (kind === 'tickets') return ['ticketsupport', 'ticketssupport'];
   if (kind === 'inb-ticketing' || kind === 'inb-holidays') {
     const [a, b] = String(branchCode).split('/').map(squashName);
     if (!a || !b || a === b) return [];
@@ -65,6 +73,7 @@ export const reportGroupNameHint = (kind: ReportGroupKind): string => {
     case 'ticketing': case 'inb-ticketing': return 'ticketing';
     case 'holidays': case 'inb-holidays': return 'holidays';
     case 'hr': return 'hr';
+    case 'tickets': return 'support';
     default: return 'finance';
   }
 };
@@ -79,6 +88,7 @@ export const reportGroupExpected = (kind: ReportGroupKind, branchCode: string): 
     case 'inb-ticketing': return `"INB Ticketing ${a}/${b}" (either order)`;
     case 'inb-holidays': return `"INB Holidays ${a}/${b}" (either order)`;
     case 'hr': return `"HQ - ${branchCode} HR" or "${branchCode} - HR Team"`;
+    case 'tickets': return '"Ticket Support"';
     default: return `"HQ - ${branchCode} Finance" or "${branchCode} - Finance Team"`;
   }
 };

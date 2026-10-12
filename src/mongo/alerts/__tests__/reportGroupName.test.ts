@@ -145,3 +145,21 @@ describe('INB pair group routing', () => {
     expect(reportGroupExpected('ticketing', 'DAR')).toBe('"DAR - Ticketing"');
   });
 });
+
+describe('tickets — the one company-wide "Ticket Support" room (owner, 2026-10-12)', () => {
+  it('matches the group however it is punctuated, whatever branch code is sent', () => {
+    for (const name of ['Ticket Support', 'ticket-support', 'TICKET  SUPPORT', 'Tickets Support']) {
+      expect(isReportGroupFor(name, 'tickets', '')).toBe(true);
+      expect(isReportGroupFor(name, 'tickets', 'BOM')).toBe(true);
+    }
+  });
+  it('never matches another room', () => {
+    expect(isReportGroupFor('BOM - Ticketing', 'tickets', 'BOM')).toBe(false);
+    expect(isReportGroupFor('Ticket Support Old', 'tickets', '')).toBe(false);
+    expect(isReportGroupFor('Support', 'tickets', '')).toBe(false);
+  });
+  it('names the group it expected when there is none', () => {
+    expect(reportGroupExpected('tickets', '')).toBe('"Ticket Support"');
+    expect(reportGroupKey('tickets', 'AMD')).toBe('ticketsupport');
+  });
+});

@@ -198,6 +198,8 @@ async function postSystemMessage(conv: ConversationDoc, actorId: string, text: s
   emitToUsers([...new Set(audience)], CHAT_EVENTS.RECEIVE, toMessageBase(created));
 }
 
+const SERVICE_MEDIA_LABEL: Record<string, string> = { image: '📷 Photo', video: '🎥 Video', document: '📄 Document', voice: '🎤 Voice message' };
+
 export const chatService = {
   // ── conversations ──
   async getOrCreateDirect(userId: string, otherUserId: string) {
@@ -484,14 +486,26 @@ export const chatService = {
   // `clientId` is the idempotency key, exactly as a phone's optimistic id is: the scheduler
   // passes "<kind>-<branch>-<date>", so a cron catch-up, a retry after a timeout, or a second
   // process firing the same slot re-posts nothing (it returns the existing message).
-  async postServiceMessage(conversationId: string, senderId: string, input: { text: string; attachments?: Attachment[]; clientId?: string; senderName?: string }) {
+  //
+  // `mediaType` (2026-10-12, the "Ticket Support" group): a post carrying a screenshot, a voice note
+  // or a screen recording is stored as that kind of message, so the phone shows a photo, a player
+  // or a video tile instead of a file card. Without it an attachment is a document, as before.
+  /** The id of the service post already stored under this idempotency key, or null. Lets a media
+   *  post skip storing the file again on a retry, before postServiceMessage's own check would. */
+  async findServiceMessageId(conversationId: string, clientId: string): Promise<string | null> {
+    if (!Types.ObjectId.isValid(conversationId)) return null;
+    const existing = await messageRepo.findByClientId(new Types.ObjectId(conversationId), clientId);
+    return existing ? String(existing._id) : null;
+  },
+
+  async postServiceMessage(conversationId: string, senderId: string, input: { text: string; attachments?: Attachment[]; mediaType?: 'image' | 'video' | 'voice' | 'document'; clientId?: string; senderName?: string }) {
     const conv = await conversationRepo.findById(conversationId);
     if (!conv) throw NotFound('Conversation not found');
     if (input.clientId) {
       const existing = await messageRepo.findByClientId(conv._id, input.clientId);
       if (existing) return { ...toMessageBase(existing), duplicate: true };
     }
-    const type: MessageDoc['type'] = input.attachments?.length ? 'document' : 'text';
+    const type: MessageDoc['type'] = input.attachments?.length ? (input.mediaType ?? 'document') : 'text';
     if (type === 'text' && !input.text.trim()) throw BadRequest('Empty message');
 
     const now = new Date();
@@ -512,7 +526,7 @@ export const chatService = {
       readBy: [],
     })) as unknown as MessageDoc;
 
-    const preview = type === 'text' ? created.text.slice(0, 140) : '📄 Document';
+    const preview = type === 'text' ? created.text.slice(0, 140) : (SERVICE_MEDIA_LABEL[type] ?? '📄 Document');
     const pushPreview = type === 'text' ? stripFormatting(created.text).slice(0, 140) : preview; // the notification line shows words, not *markers*
     await conversationRepo.touchLastMessage(conversationId, { messageId: created._id, text: preview, type, senderId, at: now }, senderId);
     emitToUsers(conv.participantIds, CHAT_EVENTS.RECEIVE, toMessageBase(created));
