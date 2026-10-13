@@ -92,6 +92,10 @@ export interface Attachment {
   durationMs?: number;
   thumbnailUrl?: string;
   waveform?: number[];
+  // How the phone shows THIS file, when one message carries files of different kinds (a support
+  // ticket's voice note + screenshot + recording in one bubble, 2026-10-12). Absent on every
+  // ordinary message — the message's own `type` decides there.
+  kind?: 'image' | 'voice' | 'video' | 'document';
 }
 export interface Reaction {
   userId: string;

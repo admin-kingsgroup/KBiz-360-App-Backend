@@ -271,7 +271,9 @@ export const mediaRateLimit: RequestHandler = (req, _res, next) => {
   const now = Date.now();
   mediaBytes = Math.min(MEDIA_BUCKET_BYTES, mediaBytes + (now - mediaRefilledAt) * MEDIA_REFILL_PER_MS);
   mediaRefilledAt = now;
-  const size = req.file?.size ?? 0;
+  // One file (/chat/media) or every file of a bundle (/chat/bundle).
+  const many = Array.isArray(req.files) ? req.files : [];
+  const size = req.file?.size ?? many.reduce((s, f) => s + f.size, 0);
   if (mediaBytes < size) {
     next(new AppError(429, 'Media post rate limit exceeded — retry later', 'RATE_LIMITED'));
     return;
@@ -323,6 +325,75 @@ alertsIngestRouter.post(
     const out = await reportChat.postMedia({
       branchCode, group, conversationId, kind, caption, durationMs, dedupeKey, dryRun,
       file: { buffer: req.file.buffer, name: req.file.originalname, mime: req.file.mimetype },
+    });
+    res.json({ ok: true, ...out });
+  }),
+);
+
+// POST /api/alerts/chat/bundle — a support ticket as ONE message (owner, 2026-10-12): the ticket's
+// text and all its files in a single bubble, instead of a text post followed by one /chat/media post
+// per file. Multipart: `files` (up to 10) with `kinds` naming each in order ("voice,image,video"),
+// optional `durations` (ms, same order). The whole bundle is held to the single-file ceiling — the
+// same request size nginx already admits for one recording; an emitter with more sends the rest
+// through /chat/media.
+export const CHAT_BUNDLE_MAX_FILES = 10;
+const bundleUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: CHAT_MEDIA_MAX_BYTES, files: CHAT_BUNDLE_MAX_FILES, fields: 20 } });
+const receiveBundle: RequestHandler = (req, res, next) => {
+  bundleUpload.array('files', CHAT_BUNDLE_MAX_FILES)(req, res, (err: unknown) => {
+    if (!err) {
+      const files = Array.isArray(req.files) ? req.files : [];
+      if (files.reduce((s, f) => s + f.size, 0) > CHAT_MEDIA_MAX_BYTES) {
+        next(new AppError(413, `A bundle is over ${Math.round(CHAT_MEDIA_MAX_BYTES / 1024 / 1024)} MB — send the larger files on their own`, 'FILE_TOO_LARGE'));
+        return;
+      }
+      next();
+      return;
+    }
+    if (err instanceof multer.MulterError) {
+      next(err.code === 'LIMIT_FILE_SIZE'
+        ? new AppError(413, `File is over ${Math.round(CHAT_MEDIA_MAX_BYTES / 1024 / 1024)} MB`, 'FILE_TOO_LARGE')
+        : BadRequest(`Upload refused: ${err.message}`));
+      return;
+    }
+    next(err);
+  });
+};
+// "voice,image" → ['voice', 'image']; "1200,0" → [1200, 0].
+const csv = (v: unknown): unknown => (typeof v === 'string' ? v.split(',').map((s) => s.trim()).filter(Boolean) : v);
+// A multipart text field arrives with its line breaks as CRLF (the form encoding rewrites every
+// newline) — the chat stores LF, like every message typed on a phone.
+const lf = (v: unknown): unknown => (typeof v === 'string' ? v.replace(/\r\n?/g, '\n') : v);
+
+alertsIngestRouter.post(
+  '/chat/bundle',
+  requireServiceToken,
+  ingestRateLimit,
+  receiveBundle,
+  validate(z.object({
+    branchCode: z.string().trim().min(2).max(16).optional(),
+    group: z.enum(CHAT_GROUP_KINDS).optional(),
+    conversationId: z.string().trim().regex(/^[a-f0-9]{24}$/i).optional(),
+    title: z.preprocess(lf, z.string().trim().min(1).max(300)),
+    body: z.preprocess(lf, z.string().trim().max(4000)).optional(),
+    kinds: z.preprocess(csv, z.array(z.enum(['image', 'voice', 'video', 'document'])).min(1).max(CHAT_BUNDLE_MAX_FILES)),
+    durations: z.preprocess(csv, z.array(z.coerce.number().int().min(0).max(60 * 60 * 1000)).max(CHAT_BUNDLE_MAX_FILES)).optional(),
+    dedupeKey: z.string().trim().max(120).optional(),
+    dryRun: flag.optional(),
+    // The ticket raiser's login email — the bundle is sent as their message (group 'tickets' only).
+    raisedBy: z.string().trim().toLowerCase().email().max(200).optional(),
+  }).refine(hasTarget, { message: 'branchCode or conversationId is required' })),
+  mediaRateLimit,
+  asyncHandler(async (req, res) => {
+    const files = Array.isArray(req.files) ? req.files : [];
+    const { branchCode, group, conversationId, title, body, kinds, durations, dedupeKey, dryRun, raisedBy } = req.body as {
+      branchCode?: string; group?: ReportGroupKind; conversationId?: string; title: string; body?: string;
+      kinds: ChatMediaKind[]; durations?: number[]; dedupeKey?: string; dryRun?: boolean; raisedBy?: string;
+    };
+    if (!files.length) throw BadRequest('No files uploaded (multipart field "files")');
+    if (kinds.length !== files.length) throw BadRequest(`${files.length} files but ${kinds.length} kinds — name one kind per file, in order`);
+    const out = await reportChat.postBundle({
+      branchCode, group, conversationId, title, body, dedupeKey, dryRun, raisedBy,
+      files: files.map((f, i) => ({ kind: kinds[i], buffer: f.buffer, name: f.originalname, mime: f.mimetype, durationMs: durations?.[i] })),
     });
     res.json({ ok: true, ...out });
   }),

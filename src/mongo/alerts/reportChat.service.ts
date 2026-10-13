@@ -7,6 +7,7 @@ import { chatService } from '../chat/chat.service';
 import { attachmentFilename } from './attachmentName';
 import { isCompanyWideKind, isReportGroupFor, reportGroupExpected, reportGroupNameHint, type ReportGroupKind } from './reportGroupName';
 import { checkChatMedia, imageSize, mediaFilename, type ChatMediaKind } from './chatMedia';
+import { stripFormatting } from '../chat/formatting';
 
 // ─── Scheduled reports → the branch GROUP CHATS ───────────────────────────────────────────
 // Reports that used to be one-way "System Alerts" channel events now go where the people who act
@@ -103,6 +104,22 @@ export async function resolveReportSender(): Promise<{ id: string; name: string 
   return { id: senderCache.id, name };
 }
 
+// The person who raised a support ticket, as the account the ticket's bundle is sent from (owner,
+// 2026-10-13: the bubble shows who raised it, not "KBiz Books"). Looked up by email — the ERP and
+// CRM tickets carry the raiser's login email. null for an unknown email or an account that may not
+// use the app (inactive, or app access switched off): the directory hides those, so every phone
+// would label the bubble "Member" — the post goes out as KBiz Books instead.
+export async function resolveTicketRaiser(email: string | undefined): Promise<{ id: string; name: string } | null> {
+  const e = String(email ?? '').trim().toLowerCase();
+  if (!e) return null;
+  const user = await crmRepo.findUserByEmail(e);
+  if (!user) return null;
+  if (user.status && user.status !== 'active') return null;
+  if (user.access?.app === false) return null;
+  const name = `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim() || user.email;
+  return { id: String(user._id), name };
+}
+
 export interface ReportChatInput {
   branchCode?: string;
   group?: ReportGroupKind; // which family of group the branch code resolves to (default 'finance')
@@ -139,6 +156,32 @@ export interface ReportChatMediaInput {
   dryRun?: boolean;
   file: { buffer: Buffer; name: string; mime: string };
 }
+
+export interface ReportChatBundleFile {
+  kind: ChatMediaKind;
+  buffer: Buffer;
+  name: string;
+  mime: string;
+  durationMs?: number;
+}
+
+export interface ReportChatBundleInput {
+  branchCode?: string;
+  group?: ReportGroupKind;
+  conversationId?: string;
+  title: string;
+  body?: string;
+  dedupeKey?: string;
+  dryRun?: boolean;
+  files: ReportChatBundleFile[];
+  // The ticket raiser's login email: the bundle is sent as their own message. Honoured for the
+  // company-wide 'tickets' room only — every other room is a report feed and stays KBiz Books.
+  raisedBy?: string;
+}
+
+// The chat-list / notification line for a bundle: its title, without the *bold* markers.
+const bundlePreview = (title: string, count: number): string =>
+  `📎 ${stripFormatting(title).trim() || `${count} file${count === 1 ? '' : 's'}`}`;
 
 export const reportChat = {
   async post(input: ReportChatInput): Promise<{ conversationId: string; group: string; messageId: string; duplicate: boolean; dryRun?: boolean; sender?: string; attachmentUrl?: string }> {
@@ -208,5 +251,52 @@ export const reportChat = {
       senderName: sender.name,
     });
     return { conversationId: target.id, group: target.name, messageId: sent.id, duplicate: !!sent.duplicate, attachmentUrl: saved.url };
+  },
+  // A support ticket as ONE chat message (owner, 2026-10-12: "4 chat msgs for one ticket — that
+  // should look as one msg"): the ticket's text with every file inside the same bubble. Each file is
+  // judged exactly as postMedia judges one — all of them BEFORE anything is resolved or stored, so a
+  // bad file refuses the whole post rather than leaving half a ticket in the room.
+  //
+  // Each attachment carries its own `kind`; the message's type stays 'document'. A phone on a build
+  // from before kinds existed draws every file as a document tile — still openable — instead of
+  // playing a screenshot as a voice note.
+  async postBundle(input: ReportChatBundleInput): Promise<{ conversationId: string; group: string; messageId: string; duplicate: boolean; dryRun?: boolean; sender?: string; attachmentUrls?: string[] }> {
+    if (!input.files.length) throw BadRequest('A bundle needs at least one file');
+    const checked = input.files.map((f, i) => {
+      const check = checkChatMedia(f.kind, f.mime, f.buffer);
+      if (!check.ok) throw BadRequest(`File ${i + 1} (${f.name || 'unnamed'}): ${check.error}`);
+      return { file: f, check };
+    });
+    const target = await resolveTarget(input);
+    // The raiser when the ticket names one the app knows; KBiz Books otherwise.
+    const raiser = input.group === 'tickets' ? await resolveTicketRaiser(input.raisedBy) : null;
+    const sender = raiser ?? await resolveReportSender();
+    if (input.dryRun) {
+      return { conversationId: target.id, group: target.name, messageId: '', duplicate: false, dryRun: true, sender: sender.name };
+    }
+    const clientId = input.dedupeKey ? `report:${input.dedupeKey}` : undefined;
+    // A retry of a bundle that landed must not store its files a second time.
+    const existingId = clientId ? await chatService.findServiceMessageId(target.id, clientId) : null;
+    if (existingId) return { conversationId: target.id, group: target.name, messageId: existingId, duplicate: true };
+
+    const attachments: Attachment[] = [];
+    for (const { file, check } of checked) {
+      const filename = mediaFilename(file.name, check.ext);
+      const saved = await getStorage().save({ buffer: file.buffer, filename, mimeType: check.mime });
+      const attachment: Attachment = { url: saved.url, name: filename, size: file.buffer.length, mime: check.mime, kind: check.kind };
+      if (check.kind === 'image') Object.assign(attachment, imageSize(file.buffer) ?? {});
+      if (file.durationMs && file.durationMs > 0) attachment.durationMs = Math.round(file.durationMs);
+      attachments.push(attachment);
+    }
+
+    const sent = await chatService.postServiceMessage(target.id, sender.id, {
+      text: [input.title, (input.body || '').trim()].filter(Boolean).join('\n'),
+      attachments,
+      mediaType: 'document',
+      clientId,
+      senderName: sender.name,
+      preview: bundlePreview(input.title, attachments.length),
+    });
+    return { conversationId: target.id, group: target.name, messageId: sent.id, duplicate: !!sent.duplicate, sender: sender.name, attachmentUrls: attachments.map((a) => a.url) };
   },
 };
