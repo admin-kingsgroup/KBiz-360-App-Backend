@@ -159,83 +159,9 @@ export function geofenceExitStillInside(
   return best.ssid ? wifiVerified : true; // inside the fence: Wi-Fi leg must hold too when required
 }
 
-// ── fully automatic attendance (owner decision, 2026-10-05) ──
-// Every tracked user is checked in when their phone enters the office and checked out when it
-// leaves — no tap, no face photo (nobody is holding the phone). The manual face-photo punch stays
-// as the fallback. `method:'auto'` marks such a punch; ATTENDANCE_AUTO_PUNCH=off turns the whole
-// thing off again (auto punches are then refused exactly as before this change).
-export const AUTO_PUNCH_ENABLED = process.env.ATTENDANCE_AUTO_PUNCH !== 'off';
-
-// Methods recorded for a punch a PERSON made on purpose (face photo) or an admin set by hand.
-const DELIBERATE_METHODS = new Set(['Face', 'Manual']);
-
-// Pure decision: may an AUTOMATIC check-in open (or re-open) this day?
-//   - no check-in yet today → yes, that is the normal arrival;
-//   - day already open → no (nothing to do);
-//   - day closed by an AUTOMATIC check-out → yes: the person stepped out and came back (lunch),
-//     or the exit was GPS drift — "first-in stays, last-out wins" heals it;
-//   - day closed DELIBERATELY (manual face check-out, or an admin's correction) → no. Someone who
-//     checks out by hand and is still sitting at their desk must not be checked back in by the
-//     phone a minute later.
-export function autoMayOpenDay(today: { checkInAt: Date | null; checkOutAt: Date | null; method: string | null } | null | undefined): boolean {
-  if (!today?.checkInAt) return true;
-  if (!today.checkOutAt) return false;
-  return !DELIBERATE_METHODS.has(today.method ?? '');
-}
-
-// Pure decision for the trail-driven automatic check-out: given a user's most recent trail fixes
-// (any order) and their offices, has the person provably LEFT? Yes when the newest fixes form an
-// unbroken run that is each confidently outside every office (clears the fence by the fix's own
-// error radius, and the fix is accurate enough to trust), the run has at least AUTO_OUT_MIN_FIXES
-// fixes and spans at least AUTO_OUT_DWELL_MS. Returns the instant the run began — when they
-// actually left, which is what the check-out is stamped with — or null.
-export const AUTO_OUT_MAX_ACCURACY_M = 60;
-export const AUTO_OUT_MIN_FIXES = 3;
-export const AUTO_OUT_DWELL_MS = 4 * 60_000;
-export function trailExitSince(
-  fixes: { at: Date; lat: number; lng: number; accuracy: number | null }[],
-  offices: { lat: number; lng: number; radius: number }[],
-): { leftAt: Date; last: { lat: number; lng: number } } | null {
-  if (!offices.length || !fixes.length) return null;
-  const newestFirst = [...fixes].sort((a, b) => b.at.getTime() - a.at.getTime());
-  const outside = (f: (typeof fixes)[number]): boolean => {
-    const acc = f.accuracy ?? 0;
-    if (acc > AUTO_OUT_MAX_ACCURACY_M) return false;
-    return offices.every((o) => haversine({ lat: f.lat, lng: f.lng }, { lat: o.lat, lng: o.lng }) - acc > o.radius);
-  };
-  const run: (typeof fixes)[number][] = [];
-  for (const f of newestFirst) { if (!outside(f)) break; run.push(f); }
-  if (run.length < AUTO_OUT_MIN_FIXES) return null;
-  const newest = run[0];
-  const oldest = run[run.length - 1];
-  if (newest.at.getTime() - oldest.at.getTime() < AUTO_OUT_DWELL_MS) return null;
-  return { leftAt: oldest.at, last: { lat: newest.lat, lng: newest.lng } };
-}
-
-// ── morning arrival wake (automatic attendance) ──
-// The phone's own boundary detection can lag or be swallowed by a battery saver, and its periodic
-// safety check runs only every ~15 minutes. So during each branch's ARRIVAL WINDOW the server
-// sends a silent push every few minutes to the phones of people who have not checked in yet; the
-// app wakes, takes a fix and punches if it is at the office (attendance.arrival.ts does the timing).
-// Window is BRANCH-LOCAL 'HH:mm-HH:mm' (default 08:30–11:30), days are ISO weekdays (default Mon–Sat).
-export const ARRIVAL_WINDOW = process.env.ATTENDANCE_ARRIVAL_WINDOW || '08:30-11:30';
-export const ARRIVAL_DAYS = process.env.ATTENDANCE_ARRIVAL_DAYS || '1-6';
-
-// Pure: is `at` inside the arrival window on a working day, on the clock of timezone `tz`?
-export function inArrivalWindow(at: Date, tz: string, window: string = ARRIVAL_WINDOW, days: string = ARRIVAL_DAYS): boolean {
-  const m = /^(\d{2}):(\d{2})-(\d{2}):(\d{2})$/.exec(window.trim());
-  const d = /^([1-7])-([1-7])$/.exec(days.trim());
-  if (!m || !d) return false;
-  let parts: Intl.DateTimeFormatPart[];
-  try {
-    parts = new Intl.DateTimeFormat('en-GB', { timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(at);
-  } catch { return false; }
-  const get = (t: string): string => parts.find((p) => p.type === t)?.value ?? '';
-  const iso = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(get('weekday')) + 1;
-  if (iso < Number(d[1]) || iso > Number(d[2])) return false;
-  const mins = (Number(get('hour')) % 24) * 60 + Number(get('minute'));
-  return mins >= Number(m[1]) * 60 + Number(m[2]) && mins < Number(m[3]) * 60 + Number(m[4]);
-}
+// No automatic attendance for staff (owner, 2026-10-13 — reverses the 10-05 "fully automatic"
+// decision): every check-in and check-out a person makes is the manual face-photo punch. Only
+// HIDDEN (director) accounts punch automatically, as they have since 07-31.
 
 // Pure decision: which instant a check-out is stamped with. The punch often lands LONG after the
 // person actually left — the Exit event fired with no usable fix, then Doze deferred the phone's
@@ -501,17 +427,13 @@ export const attendanceService = {
     if (await isUntracked(userId)) throw BadRequest('Attendance is not tracked for your account');
     // Hidden (director) punches are fully automatic — no face photo exists for them by design.
     const hidden = await attendanceHidden.isHidden(userId);
-    // AUTOMATIC punch (the phone's office-boundary engine): no photo by design, but it is held to
-    // a REAL office fence — an account with no office configured cannot be auto-punched at all.
-    const auto = !hidden && body.method === 'auto' && !body.facePhotoUrl;
-    if (auto && !AUTO_PUNCH_ENABLED) throw BadRequest('Automatic attendance is turned off — check in with a face photo');
-    if (!hidden && !auto && !body.facePhotoUrl) throw BadRequest('A face photo is required to check in');
+    // Everyone else punches by hand with a face photo. An automatic punch (`method:'auto'`, no
+    // photo) from a phone still running the old automatic-attendance code is refused right here.
+    if (!hidden && !body.facePhotoUrl) throw BadRequest('A face photo is required to check in');
     const key = todayKey();
     const today = await attendanceRepo.findToday(userId, key);
     if (today?.checkInAt && !today.checkOutAt) throw BadRequest('Already checked in today');
     const reopening = !!(today?.checkInAt && today.checkOutAt);
-    if (auto && !autoMayOpenDay(today)) throw BadRequest('You checked out yourself today — automatic check-in will not re-open the day');
-    if (auto && !(await officesForUser(userId)).length) throw BadRequest('No office location is set for you — automatic attendance needs one');
     const { distance, wifiVerified } = await this.assertAtOffice(userId, body);
     const now = new Date();
     const saved = await attendanceRepo.upsert(userId, key, {
@@ -523,9 +445,8 @@ export const attendanceService = {
       longitude: body.coords?.lng ?? null,
       distanceMeters: distance,
       wifiSsid: wifiVerified ? cleanSsid(body.wifiSsid) : null,
-      faceVerified: hidden ? null : !auto, // true = a face photo was captured (every manual punch); false = automatic
-      // An automatic RE-entry must not wipe the photo evidence of a manual first check-in.
-      checkInPhotoUrl: body.facePhotoUrl ?? (reopening ? (today?.checkInPhotoUrl ?? null) : null),
+      faceVerified: hidden ? null : true, // a face photo is mandatory on every manual punch
+      checkInPhotoUrl: body.facePhotoUrl ?? null,
     });
     // Two fire-and-forget announcements: the puncher's own "You checked in" in My Alerts, and the
     // live line in their branch's HR channel. NEVER for hidden users — their punches surface nowhere.
@@ -534,33 +455,22 @@ export const attendanceService = {
     return mapMe(saved);
   },
 
-  // POST /attendance/check-out — closes the day. A MANUAL check-out has the same gate as a manual
-  // check-in (owner rules, 07-31): inside the office geofence with a face photo captured at punch
-  // time. An AUTOMATIC one (owner decision, 10-05) is the phone reporting that it left.
+  // POST /attendance/check-out — closes the day. Same gate as check-in (owner rules, 07-31):
+  // must be within the office geofence with a face photo captured at punch time.
   async checkOut(userId: string, body: PunchBody) {
     if (await isUntracked(userId)) throw BadRequest('Attendance is not tracked for your account');
     const hidden = await attendanceHidden.isHidden(userId);
-    const auto = !hidden && body.method === 'auto' && !body.facePhotoUrl;
-    if (auto && !AUTO_PUNCH_ENABLED) throw BadRequest('Automatic attendance is turned off — check out with a face photo');
-    if (!hidden && !auto && !body.facePhotoUrl) throw BadRequest('A face photo is required to check out');
+    if (!hidden && !body.facePhotoUrl) throw BadRequest('A face photo is required to check out');
     const key = todayKey();
     const today = await attendanceRepo.findToday(userId, key);
     if (!today?.checkInAt) throw BadRequest('Not checked in');
     if (today.checkOutAt) throw BadRequest('Already checked out');
     const now = new Date();
-    // Hidden and AUTOMATIC check-outs arrive from OUTSIDE the fence (that's what a departure is) —
-    // the "be at the office" gate applies to manual punches only; the coords are still recorded.
-    // An automatic one must PROVE the departure instead: a fix is required, there must be an
-    // office to have left, and a fix still inside a fence is GPS drift, not leaving (400 — the
-    // device clears its pending-exit marker on that).
-    const { distance, wifiVerified } = hidden || auto
+    // Hidden check-outs may arrive from OUTSIDE the fence (that's what a departure is) — the
+    // geofence gate applies to manual punches only; the coords are still recorded.
+    const { distance, wifiVerified } = hidden
       ? await (async () => {
           const offices = await officesForUser(userId);
-          if (auto) {
-            if (!offices.length) throw BadRequest('No office location is set for you — automatic attendance needs one');
-            if (!body.coords) throw BadRequest('Automatic check-out needs a location fix');
-            if (nearestOffice(offices, body.coords)?.within) throw BadRequest('Still at the office — automatic check-out ignored');
-          }
           return {
             distance: body.coords && offices.length ? (nearestOffice(offices, body.coords)?.distance ?? null) : null,
             wifiVerified: wifiVerifiedFor(offices, body.wifiSsid),
@@ -573,45 +483,13 @@ export const attendanceService = {
       method: viaFor(body, wifiVerified),
       present: false,
       distanceMeters: distance ?? today.distanceMeters,
-      faceVerified: hidden || auto ? today.faceVerified : true,
+      faceVerified: hidden ? today.faceVerified : true,
       checkOutPhotoUrl: body.facePhotoUrl ?? null,
     });
     // Same pair as check-in: the puncher's own My Alerts event, and the branch HR channel's line.
     if (ATTENDANCE_ALERTS_ENABLED && !hidden) void alertService.recordAttendancePunch(userId, 'out', outAt, saved?.method ?? null);
     if (PUNCH_CHAT_ENABLED && !hidden) void postPunchToHrChannel(userId, 'out', outAt, saved?.method ?? null);
     return mapMe(saved);
-  },
-
-  // Who the arrival wake should reach RIGHT NOW: active, tracked people (not exempt, not
-  // super-admin; hidden directors included — theirs is automatic too) whose working branch has an
-  // office, whose branch is inside its local arrival window, and who have no check-in yet today.
-  // One pass over the directory per call (tens of users) — the sweep calls it once a minute at most.
-  async arrivalWakeTargets(now: Date = new Date()): Promise<string[]> {
-    if (!AUTO_PUNCH_ENABLED) return [];
-    let users = await crmRepo.listUsers({ status: 'active' });
-    users = users.filter((u) => u.access?.app === true);
-    if (!users.length) return [];
-    const exempt = await attendanceExempt.exemptSet();
-    const hiddenSet = await attendanceHidden.hiddenSet();
-    users = users.filter((u) => { const id = String(u._id); return hiddenSet.has(id) || !exempt.has(id); });
-    const ids = users.map((u) => String(u._id));
-    const workBranches = await userWorkBranches.mapFor(ids);
-    const branchOf = (u: CrmUser): string => workBranches[String(u._id)] ?? ((u.branch_ids ?? [])[0] ? String((u.branch_ids ?? [])[0]) : '');
-    const branchIds = [...new Set(users.map(branchOf).filter((id) => Types.ObjectId.isValid(id)))];
-    if (!branchIds.length) return [];
-    const [branches, offices, assigned] = await Promise.all([
-      crmRepo.branchesByIds(branchIds.map((id) => new Types.ObjectId(id))),
-      officeRepo.byBranchIds(branchIds),
-      userOffices.mapFor(ids),
-    ]);
-    const withOffice = new Set(offices.map((o) => o.branchId));
-    const inWindow = new Set(branches.filter((b) => inArrivalWindow(now, branchAutoClose(b).tz)).map((b) => String(b._id)));
-    const due = users.filter((u) => { const b = branchOf(u); return inWindow.has(b) && (withOffice.has(b) || !!assigned[String(u._id)]); });
-    if (!due.length) return [];
-    const dueIds = due.map((u) => String(u._id));
-    const rows = await attendanceRepo.forUsersOnDay(todayKey(), dueIds);
-    const checkedIn = new Set(rows.filter((r) => r.checkInAt).map((r) => r.userId));
-    return dueIds.filter((id) => !checkedIn.has(id));
   },
 
   // GET /attendance/offices — the geofences the caller may punch at (drives the app's office picker
