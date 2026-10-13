@@ -24,7 +24,6 @@ import { ensureClientErrorIndexes } from './clientErrors.router';
 import { startEmailPolling } from '../email/email.poll';
 import { startReminderDueSweep, stopReminderDueSweep } from './reminders/reminder.sweep';
 import { startAttendanceDayClose, stopAttendanceDayClose } from './attendance/attendance.dayclose';
-import { startAttendanceArrivalWake, stopAttendanceArrivalWake } from './attendance/attendance.arrival';
 import { startLeaveDecisionSweep, stopLeaveDecisionSweep } from './hr/leaveDecision.sweep';
 import { startAlertAttachmentSweep, stopAlertAttachmentSweep } from './alerts/alert.sweep';
 
@@ -66,7 +65,6 @@ async function bootstrap(): Promise<void> {
   startAlertAttachmentSweep(); // reap stored alert PDFs before their event docs TTL out
   startPresenceHeartbeat(); // stamps lastSeenAt for online users every 60s (a crash loses ≤60s)
   startAttendanceDayClose(); // 10pm branch-wise attendance day-close summary to each attendance channel
-  startAttendanceArrivalWake(); // automatic attendance: silent wake for people not yet checked in, during each branch's arrival window
   startLeaveDecisionSweep(); // "Leave / time correction approved/rejected" push when the ERP (or the app) decides a row
 
   const shutdown = async (): Promise<void> => {
@@ -74,7 +72,6 @@ async function bootstrap(): Promise<void> {
     stopAlertAttachmentSweep();
     stopPresenceHeartbeat();
     stopAttendanceDayClose();
-    stopAttendanceArrivalWake();
     stopLeaveDecisionSweep();
     await disconnectMongo();
     httpServer.close(() => process.exit(0));
