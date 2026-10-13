@@ -379,18 +379,20 @@ alertsIngestRouter.post(
     durations: z.preprocess(csv, z.array(z.coerce.number().int().min(0).max(60 * 60 * 1000)).max(CHAT_BUNDLE_MAX_FILES)).optional(),
     dedupeKey: z.string().trim().max(120).optional(),
     dryRun: flag.optional(),
+    // The ticket raiser's login email — the bundle is sent as their message (group 'tickets' only).
+    raisedBy: z.string().trim().toLowerCase().email().max(200).optional(),
   }).refine(hasTarget, { message: 'branchCode or conversationId is required' })),
   mediaRateLimit,
   asyncHandler(async (req, res) => {
     const files = Array.isArray(req.files) ? req.files : [];
-    const { branchCode, group, conversationId, title, body, kinds, durations, dedupeKey, dryRun } = req.body as {
+    const { branchCode, group, conversationId, title, body, kinds, durations, dedupeKey, dryRun, raisedBy } = req.body as {
       branchCode?: string; group?: ReportGroupKind; conversationId?: string; title: string; body?: string;
-      kinds: ChatMediaKind[]; durations?: number[]; dedupeKey?: string; dryRun?: boolean;
+      kinds: ChatMediaKind[]; durations?: number[]; dedupeKey?: string; dryRun?: boolean; raisedBy?: string;
     };
     if (!files.length) throw BadRequest('No files uploaded (multipart field "files")');
     if (kinds.length !== files.length) throw BadRequest(`${files.length} files but ${kinds.length} kinds — name one kind per file, in order`);
     const out = await reportChat.postBundle({
-      branchCode, group, conversationId, title, body, dedupeKey, dryRun,
+      branchCode, group, conversationId, title, body, dedupeKey, dryRun, raisedBy,
       files: files.map((f, i) => ({ kind: kinds[i], buffer: f.buffer, name: f.originalname, mime: f.mimetype, durationMs: durations?.[i] })),
     });
     res.json({ ok: true, ...out });

@@ -104,6 +104,22 @@ export async function resolveReportSender(): Promise<{ id: string; name: string 
   return { id: senderCache.id, name };
 }
 
+// The person who raised a support ticket, as the account the ticket's bundle is sent from (owner,
+// 2026-10-13: the bubble shows who raised it, not "KBiz Books"). Looked up by email — the ERP and
+// CRM tickets carry the raiser's login email. null for an unknown email or an account that may not
+// use the app (inactive, or app access switched off): the directory hides those, so every phone
+// would label the bubble "Member" — the post goes out as KBiz Books instead.
+export async function resolveTicketRaiser(email: string | undefined): Promise<{ id: string; name: string } | null> {
+  const e = String(email ?? '').trim().toLowerCase();
+  if (!e) return null;
+  const user = await crmRepo.findUserByEmail(e);
+  if (!user) return null;
+  if (user.status && user.status !== 'active') return null;
+  if (user.access?.app === false) return null;
+  const name = `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim() || user.email;
+  return { id: String(user._id), name };
+}
+
 export interface ReportChatInput {
   branchCode?: string;
   group?: ReportGroupKind; // which family of group the branch code resolves to (default 'finance')
@@ -158,6 +174,9 @@ export interface ReportChatBundleInput {
   dedupeKey?: string;
   dryRun?: boolean;
   files: ReportChatBundleFile[];
+  // The ticket raiser's login email: the bundle is sent as their own message. Honoured for the
+  // company-wide 'tickets' room only — every other room is a report feed and stays KBiz Books.
+  raisedBy?: string;
 }
 
 // The chat-list / notification line for a bundle: its title, without the *bold* markers.
@@ -249,7 +268,9 @@ export const reportChat = {
       return { file: f, check };
     });
     const target = await resolveTarget(input);
-    const sender = await resolveReportSender();
+    // The raiser when the ticket names one the app knows; KBiz Books otherwise.
+    const raiser = input.group === 'tickets' ? await resolveTicketRaiser(input.raisedBy) : null;
+    const sender = raiser ?? await resolveReportSender();
     if (input.dryRun) {
       return { conversationId: target.id, group: target.name, messageId: '', duplicate: false, dryRun: true, sender: sender.name };
     }
@@ -276,6 +297,6 @@ export const reportChat = {
       senderName: sender.name,
       preview: bundlePreview(input.title, attachments.length),
     });
-    return { conversationId: target.id, group: target.name, messageId: sent.id, duplicate: !!sent.duplicate, attachmentUrls: attachments.map((a) => a.url) };
+    return { conversationId: target.id, group: target.name, messageId: sent.id, duplicate: !!sent.duplicate, sender: sender.name, attachmentUrls: attachments.map((a) => a.url) };
   },
 };

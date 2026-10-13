@@ -6,10 +6,17 @@ jest.mock('../../../storage', () => ({ getStorage: () => ({ save }) }));
 jest.mock('../../chat/chat.service', () => ({
   chatService: { postServiceMessage: jest.fn(), findServiceMessageId: jest.fn() },
 }));
+// Users by email: the KBiz Books sender, a ticket raiser, and raisers who may not use the app.
+const people: Record<string, object> = {
+  'kbiz.books@travkings.com': { _id: 'u-books', first_name: 'KBiz', last_name: 'Books', email: 'kbiz.books@travkings.com' },
+  'raiser@example.com': { _id: 'u-raiser', first_name: 'Test', last_name: 'Raiser', email: 'raiser@example.com', status: 'active' },
+  'left@example.com': { _id: 'u-left', first_name: 'Gone', last_name: 'User', email: 'left@example.com', status: 'inactive' },
+  'noapp@example.com': { _id: 'u-noapp', first_name: 'No', last_name: 'App', email: 'noapp@example.com', access: { app: false } },
+};
 jest.mock('../../crm.repo', () => ({
-  crmRepo: { findUserByEmail: jest.fn(async () => ({ _id: 'u-books', first_name: 'KBiz', last_name: 'Books', email: 'kbiz.books@travkings.com' })), getUserById: jest.fn() },
+  crmRepo: { findUserByEmail: jest.fn(async (email: string) => people[email] ?? null), getUserById: jest.fn() },
 }));
-const rooms = [{ _id: 'c-tickets', name: 'Ticket Support', lastActivityAt: new Date() }, { _id: 'c-other', name: 'BOM Support Desk', lastActivityAt: new Date() }];
+const rooms = [{ _id: 'c-tickets', name: 'Ticket Support', lastActivityAt: new Date() }, { _id: 'c-other', name: 'BOM Support Desk', lastActivityAt: new Date() }, { _id: 'c-finance', name: 'HQ - BOM Finance', lastActivityAt: new Date() }];
 jest.mock('../../chat/chat.models', () => ({
   ConversationModel: () => ({
     find: () => ({ select: () => ({ lean: async () => rooms }) }),
@@ -96,6 +103,28 @@ describe('postBundle — a ticket as ONE message', () => {
       senderName: 'KBiz Books',
       preview: '📎 New ERP ticket — test',
     });
+  });
+
+  // Owner, 2026-10-13: the bubble shows who raised the ticket, not "KBiz Books".
+  it('is sent as the person who raised the ticket', async () => {
+    const out = await reportChat.postBundle({ group: 'tickets', title: 't', raisedBy: 'Raiser@Example.com', files: files() });
+    expect(chatService.postServiceMessage.mock.calls[0][1]).toBe('u-raiser');
+    expect(chatService.postServiceMessage.mock.calls[0][2]).toMatchObject({ senderName: 'Test Raiser' });
+    expect(out.sender).toBe('Test Raiser');
+  });
+
+  it('falls back to KBiz Books for an unknown, inactive or app-barred raiser, or no raiser at all', async () => {
+    for (const raisedBy of ['nobody@example.com', 'left@example.com', 'noapp@example.com', undefined]) {
+      chatService.postServiceMessage.mockClear();
+      await reportChat.postBundle({ group: 'tickets', title: 't', raisedBy, files: files() });
+      expect([raisedBy, chatService.postServiceMessage.mock.calls[0][1]]).toEqual([raisedBy, 'u-books']);
+    }
+  });
+
+  it('a raiser is honoured in the tickets room only — a report feed stays KBiz Books', async () => {
+    await reportChat.postBundle({ group: 'finance', branchCode: 'BOM', title: 't', raisedBy: 'raiser@example.com', files: files() });
+    expect(chatService.postServiceMessage.mock.calls[0][0]).toBe('c-finance');
+    expect(chatService.postServiceMessage.mock.calls[0][1]).toBe('u-books');
   });
 
   it('one bad file refuses the whole bundle before anything is stored or posted', async () => {

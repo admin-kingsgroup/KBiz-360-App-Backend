@@ -100,13 +100,14 @@ describe('POST /api/alerts/chat/bundle — one ticket, one message', () => {
     const res = await bundle()
       .field('group', 'tickets').field('title', '*New ERP ticket — test*').field('body', 'TKT-00009 · Medium · Bug')
       .field('kinds', 'voice,image,video').field('durations', '4000,0,0').field('dedupeKey', 'erp-ticket-TKT-00009')
+      .field('raisedBy', 'Developer@KingsGroupCo.com')
       .attach('files', WEBM, { filename: 'voice-note.webm', contentType: 'audio/webm' })
       .attach('files', PNG, { filename: 'shot.png', contentType: 'image/png' })
       .attach('files', WEBM, { filename: 'screen-recording.webm', contentType: 'video/webm' });
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true, ...OUT });
     const arg = reportChat.postBundle.mock.calls[0][0];
-    expect(arg).toMatchObject({ group: 'tickets', title: '*New ERP ticket — test*', body: 'TKT-00009 · Medium · Bug', dedupeKey: 'erp-ticket-TKT-00009' });
+    expect(arg).toMatchObject({ group: 'tickets', title: '*New ERP ticket — test*', body: 'TKT-00009 · Medium · Bug', dedupeKey: 'erp-ticket-TKT-00009', raisedBy: 'developer@kingsgroupco.com' });
     expect(arg.files.map((f: { kind: string; name: string; mime: string; durationMs?: number }) => [f.kind, f.name, f.mime, f.durationMs])).toEqual([
       ['voice', 'voice-note.webm', 'audio/webm', 4000],
       ['image', 'shot.png', 'image/png', 0],
