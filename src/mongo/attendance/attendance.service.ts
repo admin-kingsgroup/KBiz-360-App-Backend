@@ -284,15 +284,32 @@ function preferDefaults(offices: OfficeGeofenceDoc[]): OfficeGeofenceDoc[] {
   return defaults.length ? defaults : offices;
 }
 
-// The offices a user may punch at, in priority order:
-//   1. An explicit per-user OFFICE assignment (e.g. Faiz → Bombay HQ) — locks them to exactly that office.
+// The offices a user may punch at.
+// MULTI-BRANCH access (company-wide role, or more than one CRM branch) → every ACTIVE office of every
+// branch they can work in, wherever they are that day (owner, 2026-10-15: Faiz has every branch but
+// was locked to Bombay HQ and could not punch at BOM). Their office / working-branch assignment is no
+// longer a lock for them — both simply stay on the list.
+// SINGLE-BRANCH users, in priority order:
+//   1. An explicit per-user OFFICE assignment (e.g. → Bombay HQ) — locks them to exactly that office.
 //   2. An explicit WORKING BRANCH assignment — restricts them to that branch's default office(s).
 //   3. Otherwise, for each of their branches: the branch's DEFAULT office if one is set, else ALL the
 //      branch's offices (so single-office branches and un-defaulted branches keep working unchanged).
-// Company-wide roles with no assignment see every tenant office.
-async function officesForUser(userId: string): Promise<OfficeGeofenceDoc[]> {
+export async function officesForUser(userId: string): Promise<OfficeGeofenceDoc[]> {
   const access = await accessService.accessForUserId(userId);
   if (!access) return [];
+
+  const accessBranchIds = new Set(access.branchIds ?? []);
+  if (access.companyWide || accessBranchIds.size > 1) {
+    const workBranchId = await userWorkBranches.branchIdFor(userId);
+    if (workBranchId) accessBranchIds.add(workBranchId);
+    const reachable = access.companyWide
+      ? (await officeRepo.listByTenant(access.tenantId)).filter((o) => o.active)
+      : await officeRepo.byBranchIds([...accessBranchIds]);
+    // An assigned office outside their branches (e.g. lent to another branch) still counts.
+    const assignedId = await userOffices.officeIdFor(userId);
+    const extra = assignedId && !reachable.some((o) => String(o._id) === assignedId) ? await officeRepo.byId(assignedId) : null;
+    return extra?.active ? [extra, ...reachable] : reachable;
+  }
 
   const assignedId = await userOffices.officeIdFor(userId);
   if (assignedId) {
@@ -309,7 +326,6 @@ async function officesForUser(userId: string): Promise<OfficeGeofenceDoc[]> {
   const workBranchId = await userWorkBranches.branchIdFor(userId);
   if (workBranchId) return preferDefaults(await officeRepo.byBranchIds([workBranchId]));
 
-  if (access.companyWide) return officeRepo.listByTenant(access.tenantId);
   const branchIds = access.branchIds ?? [];
   if (!branchIds.length) return [];
 
