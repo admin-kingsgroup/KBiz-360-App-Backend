@@ -267,37 +267,6 @@ export const directoryService = {
     }
   },
 
-  // ── User provisioning (writes to the CRM users collection so the account can log in normally) ──
-  async createUser(adminId: string, input: { email: string; password: string; firstName?: string; lastName?: string; phone?: string; roleId?: string; branchIds?: string[]; businessIds?: string[] }) {
-    const access = await accessService.accessForUserId(adminId);
-    if (!access) throw Forbidden('Session user not found');
-    const email = input.email.trim().toLowerCase();
-    if (!email) throw BadRequest('Email is required');
-    if (!input.password || input.password.length < 6) throw BadRequest('Password must be at least 6 characters');
-    if (await crmRepo.findUserByEmail(email)) throw BadRequest('A user with this email already exists');
-    const now = new Date();
-    const doc: Record<string, unknown> = {
-      email,
-      password: await bcrypt.hash(input.password, 10),
-      first_name: input.firstName?.trim() ?? '',
-      last_name: input.lastName?.trim() ?? '',
-      phone: input.phone?.trim() || null,
-      role_id: input.roleId && Types.ObjectId.isValid(input.roleId) ? new Types.ObjectId(input.roleId) : null,
-      branch_ids: (input.branchIds ?? []).filter((b) => Types.ObjectId.isValid(b)).map((b) => new Types.ObjectId(b)),
-      tenant_id: access.tenantId && Types.ObjectId.isValid(access.tenantId) ? new Types.ObjectId(access.tenantId) : null,
-      // A user created FROM Smart Connect is a Smart Connect user — grant app access explicitly so
-      // they can sign in. The login gate (auth.ts) is deny-by-default on access.app === true, so
-      // without this every app-created user is locked out with "ask an administrator to enable it".
-      access: { app: true },
-      status: 'active',
-      email_verified: true,
-      created_at: now,
-      updated_at: now,
-    };
-    const created = await crmRepo.createUser(doc);
-    if (input.businessIds?.length) await userBusinessAccess.setBusinesses(String(created._id), input.businessIds, adminId);
-    return mapUser(created, await roleMap());
-  },
 
   async updateUser(adminId: string, id: string, patch: { firstName?: string; lastName?: string; phone?: string; roleId?: string; branchIds?: string[]; businessIds?: string[]; password?: string; status?: string }) {
     const access = await accessService.accessForUserId(adminId);

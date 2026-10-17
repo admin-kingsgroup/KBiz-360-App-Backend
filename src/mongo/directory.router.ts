@@ -81,7 +81,8 @@ directoryRouter.post('/branches', requireAuth, requireSuper, validate(z.object({
   userIds: z.array(z.string()).max(500).optional(),
 })), asyncHandler(async (req, res) => res.status(201).json(await directoryService.createBranch(uid(req), req.body))));
 
-// ── User provisioning (super-admin; writes to the CRM users collection) ──
+// ── User editing (super-admin; writes to the CRM users collection) ──
+// No POST /users: new users are created only in KBiz360 Books (ERP → Settings → Users & Roles).
 const userBody = z.object({
   email: z.string().email(),
   password: z.string().min(6).optional(),
@@ -93,8 +94,6 @@ const userBody = z.object({
   businessIds: z.array(z.string()).max(100).optional(), // explicit business grants (app-side)
   status: z.string().optional(),
 });
-directoryRouter.post('/users', requireAuth, requireSuper, validate(userBody.extend({ password: z.string().min(6) })),
-  asyncHandler(async (req, res) => res.status(201).json(await directoryService.createUser(uid(req), req.body))));
 directoryRouter.put('/users/:id', requireAuth, requireSuper, validate(userBody.partial()),
   asyncHandler(async (req, res) => res.json(await directoryService.updateUser(uid(req), req.params.id, req.body))));
 
