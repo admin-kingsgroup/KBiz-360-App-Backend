@@ -114,11 +114,7 @@ export const crmRepo = {
     return col('branches').find({ _id: { $in: ids } }).toArray() as Promise<CrmBranch[]>;
   },
 
-  // ── WRITES (user provisioning — the ONLY sanctioned CRM writes; routed through crmWriteDb) ──
-  async createUser(doc: Record<string, unknown>): Promise<CrmUser> {
-    const res = await writeCol('users').insertOne(doc);
-    return writeCol('users').findOne({ _id: res.insertedId }) as Promise<CrmUser>;
-  },
+  // ── WRITES (user edits — the ONLY sanctioned CRM writes; routed through crmWriteDb) ──
   async updateUser(id: string, set: Record<string, unknown>): Promise<CrmUser | null> {
     const _id = oid(id);
     if (!_id) return null;
