@@ -23,6 +23,14 @@ export interface AppConfig {
   // ERP approvals in the app (owner, 2026-10-07): the ERP API base (e.g. https://kbizbooks-kings.duckdns.org)
   // and the shared secret its app door expects (the ERP's APP_SERVICE_TOKEN). Either unset = off (503).
   erp: { apiUrl?: string; appServiceToken?: string };
+  // Force update (owner, 2026-10-07): the oldest app version allowed to run, per platform. An app
+  // below it shows a blocking "Update required" screen until the user updates from the store.
+  // Unset = no one is blocked. Set it only AFTER the new version is live in that store.
+  appUpdate: {
+    android: { minVersion?: string; storeUrl: string };
+    ios: { minVersion?: string; storeUrl?: string };
+    notes: string[];
+  };
   // uri = the app connection (readWrite kb360_app, read-only CRM under least-privilege). crmWriteUri
   // (optional) = a separately-credentialed connection used ONLY for sanctioned CRM provisioning writes;
   // unset falls back to `uri`. See DB_LEAST_PRIVILEGE.md.
@@ -93,6 +101,18 @@ export const config: AppConfig = {
   erp: {
     apiUrl: (process.env.ERP_API_URL || '').trim().replace(/\/+$/, '') || undefined,
     appServiceToken: (process.env.ERP_APP_SERVICE_TOKEN || '').trim() || undefined,
+  },
+  appUpdate: {
+    android: {
+      minVersion: (process.env.APP_MIN_VERSION_ANDROID || '').trim() || undefined,
+      storeUrl: (process.env.APP_STORE_URL_ANDROID || '').trim() || 'https://play.google.com/store/apps/details?id=com.kingsgroup.kbiz360',
+    },
+    ios: {
+      minVersion: (process.env.APP_MIN_VERSION_IOS || '').trim() || undefined,
+      storeUrl: (process.env.APP_STORE_URL_IOS || '').trim() || undefined,
+    },
+    // "What's new" lines on the update screen, separated by | (e.g. "Faster chats|New HR menu").
+    notes: (process.env.APP_RELEASE_NOTES || '').split('|').map((n) => n.trim()).filter(Boolean),
   },
   alerts: {
     // Trimmed to mirror the ERP/CRM emitters (which trim theirs) — a padded paste in .env must
