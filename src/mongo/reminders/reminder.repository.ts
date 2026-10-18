@@ -18,6 +18,13 @@ export const reminderRepo = {
 
   countReview: (byId: string) => ReminderModel().countDocuments({ state: 'review', byId }),
 
+  // Did this user create the reminder a groupId names? Matches the shared groupId, or — for a reminder
+  // written before groups existed — the id of one of its copies (the app sends that id as the group).
+  groupOwnedBy: async (groupId: string, byId: string): Promise<boolean> => {
+    const id = oid(groupId);
+    return !!(await ReminderModel().exists({ byId, $or: [{ groupId }, ...(id ? [{ _id: id }] : [])] }));
+  },
+
   // Pending reminders whose due time has passed and no due push was sent yet (due-time sweep).
   listDueUnnotified: (now: Date) =>
     ReminderModel().find({ state: 'pending', dueAt: { $ne: null, $lte: now }, dueNotifiedAt: null }).lean<ReminderDoc[]>(),

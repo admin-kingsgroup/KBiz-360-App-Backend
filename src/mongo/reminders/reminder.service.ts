@@ -36,6 +36,7 @@ export interface ReminderRecordDTO {
   completedAt?: number; approvedAt?: number;
   image?: string; // screenshot url (relative /uploads/… on local storage, absolute on S3)
   source?: string; // 'erp' when raised from KBiz Books
+  groupId?: string; // shared by every copy of one reminder (absent on reminders from before 2026-10-18)
 }
 
 function toRecord(r: ReminderDoc, meta: Map<string, Meta>): ReminderRecordDTO {
@@ -51,7 +52,7 @@ function toRecord(r: ReminderDoc, meta: Map<string, Meta>): ReminderRecordDTO {
     state: r.state, when: r.whenLabel ?? undefined, overdue, date: r.dueDate ?? undefined,
     dueAt: r.dueAt?.toISOString(),
     completedAt: r.completedAt?.getTime(), approvedAt: r.approvedAt?.getTime(),
-    image: r.imageUrl ?? undefined, source: r.source ?? undefined,
+    image: r.imageUrl ?? undefined, source: r.source ?? undefined, groupId: r.groupId ?? undefined,
   };
 }
 
@@ -165,9 +166,14 @@ export const remindersService = {
   // POST /reminders — creator = current user; assignees must be real users. Multiple assignees
   // fan out to ONE reminder document per person, so each completes / gets reviewed / archives
   // independently through the unchanged single-assignee state machine.
-  async create(userId: string, body: { text: string; forId?: string; forIds?: string[]; when?: string; section?: string; dueAt?: string; imageUrl?: string; source?: string }): Promise<ReminderRecordDTO[]> {
+  // Every copy of one create call shares a groupId. An edit that ADDS people passes the reminder's
+  // groupId so the new copies join it (owner 2026-10-18: add a person while editing) — allowed only
+  // into a reminder the caller created.
+  async create(userId: string, body: { text: string; forId?: string; forIds?: string[]; when?: string; section?: string; dueAt?: string; imageUrl?: string; source?: string; groupId?: string }): Promise<ReminderRecordDTO[]> {
     const forIds = [...new Set(body.forIds?.length ? body.forIds : body.forId ? [body.forId] : [])];
     if (!forIds.length) throw BadRequest('Assignee required');
+    if (body.groupId && !(await reminderRepo.groupOwnedBy(body.groupId, userId))) throw Forbidden('Only the creator can add people to this reminder');
+    const groupId = body.groupId ?? new Types.ObjectId().toHexString();
     const targets = await Promise.all(forIds.map((id) => crmRepo.getUserById(id)));
     if (targets.some((t) => !t)) throw BadRequest('Unknown assignee');
     const meta = await resolveMeta([...forIds, userId]);
@@ -177,7 +183,7 @@ export const remindersService = {
       const doc = await reminderRepo.create({
         text: body.text, section: body.section ?? 'today', forId, byId: userId,
         state: 'pending', whenLabel: body.when ?? null, dueAt,
-        imageUrl: body.imageUrl ?? null, source: body.source ?? null,
+        imageUrl: body.imageUrl ?? null, source: body.source ?? null, groupId,
       });
       // Notify the assignee (not self): realtime badge + a push "X created a reminder for you".
       if (forId !== userId) {
@@ -190,7 +196,7 @@ export const remindersService = {
   },
 
   // PATCH /reminders/:id — complete (assignee) / approve (creator) / reassign (creator) / edit (creator).
-  async patch(id: string, body: { action?: 'complete' | 'approve'; forId?: string; text?: string; when?: string; section?: string; dueAt?: string }, userId: string) {
+  async patch(id: string, body: { action?: 'complete' | 'approve'; forId?: string; text?: string; when?: string; section?: string; dueAt?: string; imageUrl?: string | null; groupId?: string }, userId: string) {
     const r = await reminderRepo.byId(id);
     if (!r) throw NotFound('Reminder not found');
 
@@ -233,12 +239,16 @@ export const remindersService = {
       }
       return this.result(id, 'approved');
     }
-    // field edit (creator only). A changed due time re-arms the due-time push.
+    // field edit (creator only). A changed due time re-arms the due-time push. imageUrl null removes
+    // the picture. groupId stamps an older reminder's copies with one group when an edit changes
+    // who it is for, so the copies still read as one line after the first copy is removed.
     if (r.byId !== userId) throw Forbidden('Only the creator can edit this reminder');
     const nextDueAt = body.dueAt !== undefined ? parseDueAt(body.dueAt) : r.dueAt;
     await reminderRepo.update(id, {
       text: body.text ?? r.text, section: body.section ?? r.section, whenLabel: body.when ?? r.whenLabel,
       dueAt: nextDueAt, ...(body.dueAt !== undefined ? { dueNotifiedAt: null } : {}),
+      ...(body.imageUrl !== undefined ? { imageUrl: body.imageUrl } : {}),
+      ...(body.groupId ? { groupId: body.groupId } : {}),
     });
     return this.result(id, 'updated');
   },
