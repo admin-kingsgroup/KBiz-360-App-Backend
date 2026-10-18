@@ -22,6 +22,9 @@ export interface ReminderDoc {
   approvedAt: Date | null;
   imageUrl: string | null; // a screenshot attached to the reminder (storage url; null = none)
   source: string | null; // where it was raised: 'erp' = KBiz Books, null = the app
+  // The copies of ONE reminder (one doc per assignee) share a groupId, so the app shows them as one
+  // line even when a person was added later by an edit. null on reminders written before 2026-10-18.
+  groupId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -42,12 +45,14 @@ const ReminderSchema = new Schema<ReminderDoc>(
     approvedAt: { type: Date, default: null },
     imageUrl: { type: String, default: null },
     source: { type: String, default: null },
+    groupId: { type: String, default: null },
   },
   { timestamps: true, collection: 'reminders' },
 );
 ReminderSchema.index({ forId: 1, state: 1, createdAt: -1 });
 ReminderSchema.index({ byId: 1, state: 1, createdAt: -1 });
 ReminderSchema.index({ state: 1, createdAt: -1 });
+ReminderSchema.index({ groupId: 1 });
 ReminderSchema.index({ state: 1, dueAt: 1, dueNotifiedAt: 1 }); // due-time sweep
 
 let _Reminder: Model<ReminderDoc> | null = null;

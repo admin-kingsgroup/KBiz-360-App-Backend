@@ -22,6 +22,7 @@ const createSchema = z
     section: z.string().optional(),
     dueAt: z.string().datetime({ offset: true }).optional(), // real due timestamp (ISO)
     imageUrl: z.string().min(1).max(2000).optional(), // a screenshot already uploaded via POST /api/uploads
+    groupId: z.string().regex(/^[0-9a-f]{24}$/i).optional(), // join an existing reminder (an edit adding people)
   })
   .refine((b) => !!b.forId || !!b.forIds?.length, { message: 'forId or forIds required' });
 const patchSchema = z.object({
@@ -30,7 +31,9 @@ const patchSchema = z.object({
   text: z.string().min(1).optional(),
   when: z.string().optional(),
   section: z.string().optional(),
-  dueAt: z.string().datetime({ offset: true }).optional(),
+  dueAt: z.string().datetime({ offset: true }).nullable().optional(), // null clears the date
+  imageUrl: z.string().min(1).max(2000).nullable().optional(), // replace the picture; null removes it
+  groupId: z.string().regex(/^[0-9a-f]{24}$/i).optional(),
 });
 
 // GET /api/reminders?tab=forme|iset|review|all|archive
