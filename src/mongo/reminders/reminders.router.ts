@@ -31,7 +31,7 @@ const patchSchema = z.object({
   text: z.string().min(1).optional(),
   when: z.string().optional(),
   section: z.string().optional(),
-  dueAt: z.string().datetime({ offset: true }).optional(),
+  dueAt: z.string().datetime({ offset: true }).nullable().optional(), // null clears the date
   imageUrl: z.string().min(1).max(2000).nullable().optional(), // replace the picture; null removes it
   groupId: z.string().regex(/^[0-9a-f]{24}$/i).optional(),
 });

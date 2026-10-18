@@ -196,7 +196,7 @@ export const remindersService = {
   },
 
   // PATCH /reminders/:id — complete (assignee) / approve (creator) / reassign (creator) / edit (creator).
-  async patch(id: string, body: { action?: 'complete' | 'approve'; forId?: string; text?: string; when?: string; section?: string; dueAt?: string; imageUrl?: string | null; groupId?: string }, userId: string) {
+  async patch(id: string, body: { action?: 'complete' | 'approve'; forId?: string; text?: string; when?: string; section?: string; dueAt?: string | null; imageUrl?: string | null; groupId?: string }, userId: string) {
     const r = await reminderRepo.byId(id);
     if (!r) throw NotFound('Reminder not found');
 
@@ -239,13 +239,15 @@ export const remindersService = {
       }
       return this.result(id, 'approved');
     }
-    // field edit (creator only). A changed due time re-arms the due-time push. imageUrl null removes
-    // the picture. groupId stamps an older reminder's copies with one group when an edit changes
-    // who it is for, so the copies still read as one line after the first copy is removed.
+    // field edit (creator only). A changed due time re-arms the due-time push; dueAt null clears the
+    // date ("Clear date" in the app's edit, owner 2026-10-18) along with its label. imageUrl null
+    // removes the picture. groupId stamps an older reminder's copies with one group when an edit
+    // changes who it is for, so the copies still read as one line after the first copy is removed.
     if (r.byId !== userId) throw Forbidden('Only the creator can edit this reminder');
     const nextDueAt = body.dueAt !== undefined ? parseDueAt(body.dueAt) : r.dueAt;
     await reminderRepo.update(id, {
-      text: body.text ?? r.text, section: body.section ?? r.section, whenLabel: body.when ?? r.whenLabel,
+      text: body.text ?? r.text, section: body.section ?? r.section,
+      whenLabel: body.dueAt === null ? null : body.when ?? r.whenLabel,
       dueAt: nextDueAt, ...(body.dueAt !== undefined ? { dueNotifiedAt: null } : {}),
       ...(body.imageUrl !== undefined ? { imageUrl: body.imageUrl } : {}),
       ...(body.groupId ? { groupId: body.groupId } : {}),

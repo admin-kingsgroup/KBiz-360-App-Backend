@@ -32,7 +32,7 @@ import { remindersService } from '../reminder.service';
 
 beforeEach(() => { docs.length = 0; });
 
-describe('reminder groups', () => {
+describe('reminder groups, picture and date edits', () => {
   it('gives every copy of one create call the same groupId', async () => {
     const recs = await remindersService.create('afshin', { text: 'OWM setup', forIds: ['afshin', 'sughra'] });
     expect(recs).toHaveLength(2);
@@ -75,5 +75,22 @@ describe('reminder groups', () => {
     expect(out.reminder.image).toBeUndefined();
     out = await remindersService.patch(id, { text: 'Text only' }, 'afshin');
     expect(out.reminder.groupId).toBe(g); // untouched when not sent
+  });
+
+  it('a field edit with dueAt null clears the date and its label', async () => {
+    docs.push({ _id: new Types.ObjectId(), byId: 'afshin', forId: 'afshin', groupId: null, text: 'Due', state: 'pending', dueAt: new Date('2026-10-19T06:30:00Z'), whenLabel: '19 Oct 2026 · 12:00 PM' });
+    const id = String(docs[0]._id);
+    const out = await remindersService.patch(id, { dueAt: null, when: 'ignored' }, 'afshin');
+    expect(out.reminder.dueAt).toBeUndefined();
+    expect(out.reminder.when).toBeUndefined();
+    expect(docs[0].dueNotifiedAt).toBeNull();
+  });
+
+  it('a field edit with a new time keeps it to the minute', async () => {
+    docs.push({ _id: new Types.ObjectId(), byId: 'afshin', forId: 'afshin', groupId: null, text: 'Due', state: 'pending', dueAt: null, whenLabel: null });
+    const id = String(docs[0]._id);
+    const out = await remindersService.patch(id, { dueAt: '2026-10-19T06:30:00.000Z', when: '19 Oct 2026 · 12:00 PM' }, 'afshin');
+    expect(out.reminder.dueAt).toBe('2026-10-19T06:30:00.000Z');
+    expect(out.reminder.when).toBe('19 Oct 2026 · 12:00 PM');
   });
 });
