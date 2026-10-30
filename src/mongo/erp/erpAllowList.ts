@@ -28,6 +28,8 @@ export const ERP_ALLOW: ReadonlyArray<readonly [string, RegExp]> = [
   ['GET', re('/api/hr/employees/leave-applications')],
   ['PUT', re(`/api/hr/employees/leave-applications/${ID}/(approve|reject)`)],
   ['GET', re('/api/reconciliation/close/board')],
+  // The Owner's Review in the app and on its home-screen widget (owner, 2026-10-30): what the Director approved, READ only.
+  ['GET', re('/api/ba-dashboard/owner/director-decided')],
 ];
 
 /** `path` is the ERP path ("/api/vouchers/approvals"), without the query string. */
