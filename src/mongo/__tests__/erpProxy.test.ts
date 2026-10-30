@@ -51,12 +51,14 @@ describe('allow-list', () => {
     ['GET', '/api/tk/inbox'], ['GET', '/api/credit-facilities/requests'], ['GET', '/api/hr/employees/leave-applications'],
     ['PUT', `/api/hr/employees/leave-applications/${ID}/reject`], ['GET', '/api/reconciliation/close/board'],
     ['POST', `/api/tk/change-requests/${ID}/retry`], ['POST', `/api/tk/change-requests/${ID}/close`], ['GET', '/api/payment-requests'],
+    ['GET', '/api/ba-dashboard/owner/director-decided'],
   ])('%s %s is allowed', (m, p) => expect(isAllowedErpCall(m, p)).toBe(true));
 
   it.each([
     ['DELETE', `/api/vouchers/${ID}`], ['POST', '/api/vouchers/approve-all'], ['POST', '/api/vouchers/approve-many'],
     ['GET', '/api/vouchers/abc'], ['GET', '/api/ledgers'], ['POST', '/api/auth/login'], ['POST', `/api/vouchers/${ID}/revoke`],
     ['GET', '/api/app-config/jwt.secret'], ['POST', '/api/payment-requests'], ['POST', '/api/tk/change-requests'],
+    ['POST', `/api/ba-dashboard/owner/director-decided/cr/${ID}`], ['GET', '/api/ba-dashboard/owner/control'],
   ])('%s %s is refused', (m, p) => expect(isAllowedErpCall(m, p)).toBe(false));
 
   it('a refused call never reaches the ERP', async () => {
