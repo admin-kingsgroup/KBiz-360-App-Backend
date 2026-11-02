@@ -3,7 +3,7 @@ import { crmRepo } from '../crm.repo';
 import { hrRepo } from './hr.repo';
 import { hrBranchCodeFor, nameOfUser } from './hrNotify';
 import { clockForPerson } from './regularization.service';
-import { freshChain, hhmmIn, LEAVE_CHAIN, OWNER_ROLE } from './timeCorrection.rules';
+import { hhmmIn, LEAVE_CHAIN, OWNER_ROLE } from './timeCorrection.rules';
 
 // ONE-TIME: the app-owned `attendance_regularizations` rows (every time correction asked before
 // 2026-10-06) move into the shared hr_leave_applications queue as kind 'time', so a request still
@@ -66,7 +66,7 @@ export async function migrateRegularizationsToSharedQueue(): Promise<number> {
         decisionNote: String(r.decisionNote ?? ''),
         markedDays: status === 'approved' ? [r.dateKey] : [],
         skippedDays: [],
-        chain: freshChain(),
+        chain: LEAVE_CHAIN.map((l) => ({ ...l })), // the chain of their day (FM → Director → Owner) — the signatures below are on it
         approvals,
         source: 'self',
         kind: 'time',

@@ -3,28 +3,47 @@ import { instantAt } from './attendanceMonth';
 // A TIME CORRECTION asked from the app is the SAME row the ERP's own "Correct time" files: an
 // hr_leave_applications document of kind 'time' (owner, 2026-10-06 — "when a user raises a time
 // change or a leave in the app it must also come to the ERP's approval section, under Leave, and
-// after approval show on that person's calendar"). One row, two doors:
+// after approval show on that person's calendar"). One row, decided in ONE place since 2026-11-02:
 //
-//   ERP   Approvals ▸ Leave — signed FM → Director → Owner (leaveApplication.controller); the
-//         Owner's signature writes the day as Present with these times through the sheet's planner.
-//   app   the Super Admin's Time-corrections queue — the Super Admin IS the Owner level of that
-//         chain (app level 1 = business owner), so an in-app approval is the Owner signing past the
-//         levels that have not signed, with the reason recorded on the row exactly as the ERP
-//         records a sign-past (LEAVE-GATE-02), and the day written through applyAdminTimes — the
-//         same evidence-preserving correction the ERP's planner makes.
+//   ERP   Approvals ▸ Requests ▸ HR — signed Director → FM (leaveApplication.controller); the FM's
+//         signature writes the day as Present with these times through the sheet's planner.
+//   app   the Super Admin's Time-corrections queue — a REVIEW list. Until 2026-11-02 the Super Admin
+//         was the Owner level of the old FM → Director → Owner chain and could approve here; the
+//         owner removed the Owner from HR approvals ("the Owner only reviews"), so a decision here
+//         is refused unless the row still carries an Owner level (regularization.service.decide).
 //
 // Everything here is PURE and mirrors the ERP's leaveApplication.service / approvalEngine (the
 // 2nd copy — change both together). Times on the row are 'HH:MM' on the person's BRANCH clock,
 // as the ERP keys and reads them; the app converts to and from instants at its doors.
 
+// The chain asks were signed on until 2026-10-29 — still what an older row carries, and what a row with none reads.
 export const LEAVE_CHAIN: readonly { order: number; role: string; label: string }[] = Object.freeze([
   Object.freeze({ order: 1, role: 'FinanceManager', label: 'Review (FM)' }),
   Object.freeze({ order: 2, role: 'Director', label: 'Confirm (Director)' }),
   Object.freeze({ order: 3, role: 'Owner', label: 'Approve (Owner)' }),
 ]);
+// DIRECTOR → FM, NO OWNER (owner, 2026-10-30 "in HR approval the flow should be BM → Director → FM"; 2026-11-02 "remove the
+// Owner — first the Director, then the Finance Manager, then it is approved; the Owner only reviews"). Every leave, WFH, swap
+// and time correction filed from 2026-11-02 carries the ERP's own chain (approvalEngine.LEAVE_HR_CHAIN): the Director
+// confirms, the FM approves — the FM's signature writes the days. The Director's OWN ask: the Owner takes his place
+// (LEAVE_HR_OWNER_CHAIN). Until then this backend stamped LEAVE_CHAIN above, so asks filed here waited on the Owner; the ERP
+// moves those onto this chain (leaveApplication.service.refitToChain).
+export const HR_ASK_CHAIN: readonly { order: number; role: string; label: string }[] = Object.freeze([
+  Object.freeze({ order: 1, role: 'Director', label: 'Confirm (Director)' }),
+  Object.freeze({ order: 2, role: 'FinanceManager', label: 'Approve (FM)' }),
+]);
+export const HR_ASK_OWNER_CHAIN: readonly { order: number; role: string; label: string }[] = Object.freeze([
+  Object.freeze({ order: 1, role: 'Owner', label: 'Confirm (Owner)' }),
+  Object.freeze({ order: 2, role: 'FinanceManager', label: 'Approve (FM)' }),
+]);
 export const OWNER_ROLE = 'Owner';
-/** A fresh copy of the standing chain, as the ERP stamps it on every new application. */
-export const freshChain = (): { order: number; role: string; label: string }[] => LEAVE_CHAIN.map((l) => ({ ...l }));
+/** Pure: is this HR designation the Director's (the ERP's leaveChainFor reads it the same way)? */
+export const isDirectorDesignation = (designation: unknown): boolean => /director/i.test(String(designation ?? ''));
+/** A fresh copy of the chain the ERP stamps on a new ask — Director → FM; the Director's own Owner → FM. */
+export const freshChain = (director = false): { order: number; role: string; label: string }[] =>
+  (director ? HR_ASK_OWNER_CHAIN : HR_ASK_CHAIN).map((l) => ({ ...l }));
+/** Pure: does this row's chain have an Owner level? From 2026-11-02 none filed does — the Owner reviews, never signs. */
+export const ownerSigns = (doc: ChainDoc | null | undefined): boolean => chainOf(doc).some((l) => l.role === OWNER_ROLE);
 
 export interface ChainLevel { order: number; role: string; label: string }
 export interface ChainSignature {

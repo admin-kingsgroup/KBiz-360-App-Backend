@@ -184,7 +184,7 @@ describe('swapService', () => {
     const row = mockRepo.insertLeaveApplication.mock.calls[0][0];
     expect(row).toMatchObject({ userId: A, kind: 'swap', status: 'pending', source: 'self', from: '2026-10-17', to: '2026-10-24', dayType: 'full', __v: 0,
       swap: { workDay: '2026-10-17', offDay: '2026-10-24', partnerUserId: B, partnerName: 'Bilal', partnerBranch: 'BOM', partnerStatus: 'pending' } });
-    expect(row.chain.map((l: { role: string }) => l.role)).toEqual(['FinanceManager', 'Director', 'Owner']);
+    expect(row.chain.map((l: { role: string }) => l.role)).toEqual(['Director', 'FinanceManager']); // no Owner (owner, 2026-11-02)
     expect(dto).toMatchObject({ role: 'applicant', waitingOn: 'Bilal (swap partner)' });
     expect(recordUserAlert).toHaveBeenCalledWith(B, expect.objectContaining({ title: '🔁 Asha asks to swap Saturdays with you', body: expect.stringMatching(/OFF on Sat 17 Oct and WORK on Sat 24 Oct/) }));
   });
@@ -255,7 +255,8 @@ describe('wfhService.apply', () => {
     mockRepo.openLeaveApplications.mockResolvedValue([]);
     const dto = await wfhService.apply(A, { from: '2026-10-14', to: '2026-10-15', reason: 'plumber at home' });
     expect(mockRepo.insertLeaveApplication.mock.calls[0][0]).toMatchObject({ userId: A, kind: 'wfh', status: 'pending', from: '2026-10-14', to: '2026-10-15', dayType: 'full', source: 'self' });
-    expect(dto).toMatchObject({ days: 2, status: 'pending', waitingOn: 'Review (FM)' });
+    expect(mockRepo.insertLeaveApplication.mock.calls[0][0].chain.map((l: { role: string }) => l.role)).toEqual(['Director', 'FinanceManager']);
+    expect(dto).toMatchObject({ days: 2, status: 'pending', waitingOn: 'Confirm (Director)' });
   });
   it('one ask per day across leave and WFH', async () => {
     mockRepo.openLeaveApplications.mockResolvedValue([{ from: '2026-10-15', to: '2026-10-16', status: 'pending', kind: 'leave', markedDays: [] }]);

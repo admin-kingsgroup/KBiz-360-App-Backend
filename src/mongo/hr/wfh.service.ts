@@ -5,12 +5,12 @@ import { hrRepo } from './hr.repo';
 import { validateApplication } from './leaveRules';
 import { leaveClash } from './leave.service';
 import { hrBranchCodeFor, nameOfUser, postToBranchHrAlerts } from './hrNotify';
-import { freshChain } from './timeCorrection.rules';
+import { freshChain, isDirectorDesignation } from './timeCorrection.rules';
 import { toWfhDto, type WfhApplicationDto } from './swapRules';
 
 // WORK FROM HOME (owner, 2026-10-12 — "apply for work from home so that on that day the employee is not marked absent,
 // shows WFH and counts in present"). The ask is the ERP's own hr_leave_applications row, kind 'wfh', in the ERP model's
-// exact shape — on Approvals ▸ HR at once, signed FM → Director → Owner there. The Owner's signature writes a 'wfh'
+// exact shape — on Approvals ▸ HR at once, signed Director → FM there (no Owner — 2026-11-02). The FM's signature writes a 'wfh'
 // override on each working day of the span: the day reads PRESENT (no punch needed, never late). Same bounds as leave;
 // one ask per day across leave and WFH.
 
@@ -49,7 +49,7 @@ export const wfhService = {
       decisionNote: '',
       markedDays: [],
       skippedDays: [],
-      chain: freshChain(),
+      chain: freshChain(isDirectorDesignation(emp.designation)),
       approvals: [],
       source: 'self',
       kind: 'wfh',
@@ -71,7 +71,7 @@ export const wfhService = {
         actorUserId: userId,
         source: 'Work from home',
         title: `🏠 ${doc.name} asked to work from home · ${span} (${ask.days.length}d)`,
-        body: `Reason: ${ask.reason}\nSigned FM → Director → Owner on the ERP → Approvals ▸ HR. Approved days count as present.`,
+        body: `Reason: ${ask.reason}\nSigned Director → FM on the ERP → Approvals ▸ HR. Approved days count as present.`,
         dedupeKey: `wfh-apply-${String(doc._id)}`,
       });
     })();
