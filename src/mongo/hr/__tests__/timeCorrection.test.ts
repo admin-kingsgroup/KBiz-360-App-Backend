@@ -1,5 +1,5 @@
 import {
-  branchTimezoneOf, chainOf, freshChain, hhmmIn, LEAVE_CHAIN, orderedTurn, ownerSignatures, signedBy,
+  branchTimezoneOf, chainOf, freshChain, hhmmIn, isDirectorDesignation, LEAVE_CHAIN, orderedTurn, ownerSignatures, ownerSigns, signedBy,
   toRegularizationDto, waitingOn, wallClockOf,
 } from '../timeCorrection.rules';
 import { instantAt } from '../attendanceMonth';
@@ -41,15 +41,33 @@ describe('the branch clock', () => {
 });
 
 describe('the chain', () => {
-  it('is FM → Director → Owner, and a row from before reads the standing chain', () => {
+  it("is Director → FM, no Owner (owner, 2026-11-02); the Director's own Owner → FM; a row with none reads the old chain", () => {
     expect(freshChain()).toEqual([
-      { order: 1, role: 'FinanceManager', label: 'Review (FM)' },
-      { order: 2, role: 'Director', label: 'Confirm (Director)' },
-      { order: 3, role: 'Owner', label: 'Approve (Owner)' },
+      { order: 1, role: 'Director', label: 'Confirm (Director)' },
+      { order: 2, role: 'FinanceManager', label: 'Approve (FM)' },
     ]);
-    expect(chainOf({})).toEqual(freshChain());
+    expect(freshChain(true)).toEqual([
+      { order: 1, role: 'Owner', label: 'Confirm (Owner)' },
+      { order: 2, role: 'FinanceManager', label: 'Approve (FM)' },
+    ]);
+    expect(freshChain()).not.toBe(freshChain()); // a copy — the row stamps its own
+    expect(chainOf({})).toEqual(LEAVE_CHAIN.map((l) => ({ ...l })));
     expect(chainOf({ chain: [{ order: 1, role: 'Owner', label: 'Only' }] })).toEqual([{ order: 1, role: 'Owner', label: 'Only' }]);
-    expect(freshChain()).not.toBe(LEAVE_CHAIN); // a copy — the row stamps its own
+    expect(waitingOn({ chain: freshChain() })).toBe('Confirm (Director)');
+    expect(waitingOn({ chain: freshChain(), approvals: [{ role: 'Director', by: 'd', at: AT }] })).toBe('Approve (FM)');
+  });
+
+  it('the Director is read off the HR designation, as the ERP reads it', () => {
+    expect(isDirectorDesignation('Director')).toBe(true);
+    expect(isDirectorDesignation('Managing Director')).toBe(true);
+    expect(isDirectorDesignation('Executive')).toBe(false);
+    expect(isDirectorDesignation(undefined)).toBe(false);
+  });
+
+  it('ownerSigns: only a row still on the old chain has an Owner level — a new one is the Owner\'s to review only', () => {
+    expect(ownerSigns({ chain: freshChain() })).toBe(false);
+    expect(ownerSigns({ chain: LEAVE_CHAIN.map((l) => ({ ...l })) })).toBe(true);
+    expect(ownerSigns({})).toBe(true); // no chain → the old standing one
   });
 
   it('says whose turn it is', () => {
@@ -60,7 +78,7 @@ describe('the chain', () => {
   });
 
   it('orderedTurn: a senior may sign past, a junior may not sign ahead, nobody signs twice', () => {
-    const chain = freshChain();
+    const chain = LEAVE_CHAIN.map((l) => ({ ...l })); // the old chain — sign-past rules are the same on any
     expect(orderedTurn(chain, [], 'Owner')).toMatchObject({ allowed: true, past: [{ role: 'FinanceManager' }, { role: 'Director' }] });
     expect(orderedTurn(chain, [{ role: 'FinanceManager', by: 'fm', at: AT }], 'Owner').past.map((l) => l.role)).toEqual(['Director']);
     expect(orderedTurn(chain, [{ role: 'FinanceManager', by: 'fm', at: AT }], 'FinanceManager').allowed).toBe(false);

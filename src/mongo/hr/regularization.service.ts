@@ -9,15 +9,15 @@ import { instantAt } from './attendanceMonth';
 import { hrBranchCodeFor, nameOfUser, postToBranchHrAlerts } from './hrNotify';
 import { sweepLeaveDecisions } from './leaveDecision.sweep';
 import {
-  branchTimezoneOf, chainOf, freshChain, ownerSignatures, toRegularizationDto, wallClockOf, type RegularizationDto,
+  branchTimezoneOf, chainOf, freshChain, isDirectorDesignation, ownerSignatures, ownerSigns, toRegularizationDto, wallClockOf, type RegularizationDto,
 } from './timeCorrection.rules';
 
 // Attendance regularisation — a TIME CORRECTION: "I was in by 9:40, the app never fired" / "forgot
 // to check out". Since 2026-10-06 the request is the SAME row the ERP's own "Correct time" files
 // (hr_leave_applications, kind 'time' — see timeCorrection.rules), so it lands in the ERP's
-// Approvals ▸ Leave tab the moment it is raised, signed there FM → Director → Owner, and in the
-// Super Admin's queue here — whichever door decides it, the other reads the decision. Approval
-// writes the day through attendanceService.applyAdminTimes — the same evidence-preserving
+// Approvals ▸ Requests ▸ HR the moment it is raised, signed there Director → FM (no Owner since
+// 2026-11-02), and listed in the Super Admin's queue here for review — the Super Admin decided
+// here only while the row's chain had an Owner level. Approval writes the day through attendanceService.applyAdminTimes — the same evidence-preserving
 // correction the ERP's sheet planner makes (a real punch keeps its method/photos/fix; only the
 // times move; the day is stamped adjustedBy/adjustedAt) — so history, team, the ERP calendar and
 // the app's month view all read the corrected day identically.
@@ -116,7 +116,7 @@ export const regularizationService = {
       decisionNote: '',
       markedDays: [],
       skippedDays: [],
-      chain: freshChain(),
+      chain: freshChain(isDirectorDesignation(emp?.designation)),
       approvals: [],
       source: 'self',
       kind: 'time',
@@ -137,7 +137,7 @@ export const regularizationService = {
         actorUserId: userId,
         source: 'Attendance',
         title: `🕒 ${doc.name} asked for a time correction · ${plan.date} (in ${fmtWall(checkIn)} · out ${checkOut ? fmtWall(checkOut) : 'open'})`,
-        body: `Reason: ${plan.reason}\nSigned FM → Director → Owner on the ERP → Approvals ▸ Leave, or by the Super Admin in the app → Approvals.`,
+        body: `Reason: ${plan.reason}\nSigned Director → FM on the ERP → Approvals ▸ HR.`,
         dedupeKey: `attendance-regularize-${String(doc._id)}`,
       });
     })();
@@ -189,13 +189,18 @@ export const regularizationService = {
   /** PUT /hr/regularizations/:id/decision { action, note } — the Super Admin decides. Approve writes the
    *  day through applyAdminTimes and signs the row as the OWNER level of the ERP's chain (the levels not
    *  yet signed are signed past, with the reason recorded, exactly as the ERP records a sign-past);
-   *  reject needs a note the requester reads. The requester is told by the decision sweep. */
+   *  reject needs a note the requester reads. The requester is told by the decision sweep.
+   *  ONLY on a row whose chain still has an Owner level: from 2026-11-02 time corrections are signed Director → FM on the
+   *  ERP and the Owner only reviews them (owner: "remove the Owner") — a decision here is refused (OWNER_REVIEWS_ONLY). */
   async decide(adminId: string, id: string, body: { action: 'approve' | 'reject'; note?: string }): Promise<RegularizationDto> {
     const viewer = await accessService.accessForUserId(adminId);
     if (!viewer?.isSuper) throw Forbidden('Only the super admin can decide attendance corrections');
     const doc = await hrRepo.getTimeCorrection(id);
     if (!doc) throw NotFound('No such request');
     if (doc.status !== 'pending') throw new AppError(409, `Already ${doc.status}`, 'NOT_PENDING');
+    if (!ownerSigns(doc)) {
+      throw new AppError(403, 'Time corrections are approved on the ERP — the Director confirms, then the Finance Manager approves. The Owner reviews them; nothing to sign here.', 'OWNER_REVIEWS_ONLY');
+    }
     const target = await crmRepo.getUserById(doc.userId);
     if (!target) throw BadRequest('User not found');
     if (viewer.tenantId && target.tenant_id && String(target.tenant_id) !== viewer.tenantId) throw Forbidden('User is outside your tenant');

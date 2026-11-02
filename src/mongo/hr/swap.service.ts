@@ -6,7 +6,7 @@ import { dayKeyIn } from '../attendance/attendanceBranch';
 import { employedOn } from './attendanceMonth';
 import { hrRepo, type HrEmployeeDoc, type HrLeaveApplicationDoc } from './hr.repo';
 import { hrBranchCodeFor, nameOfUser, postToBranchHrAlerts } from './hrNotify';
-import { freshChain } from './timeCorrection.rules';
+import { freshChain, isDirectorDesignation } from './timeCorrection.rules';
 import {
   DAY_RE, mergeDayMaps, satLabel, sideOf, swapBusyByPerson, swapProblem, swapRuleOf, toSwapDto, upcomingSaturdays,
   type SwapRequestDto,
@@ -15,8 +15,8 @@ import {
 // SATURDAY SWAP (owner, 2026-10-12 — "our employees have alternate Saturday week offs; give an option to request a swap so
 // an employee can swap the Saturday week off with another employee"). Owner's choices: an EXCHANGE of two Saturdays (the
 // applicant works one of their own week-off Saturdays and takes one of their working Saturdays off; the partner the other
-// way round), the partner ACCEPTS in this app first, then FM → Director → Owner sign it on the ERP (LEAVE-GATE-07), whose
-// Owner signature marks the four days. The ask is the ERP's own hr_leave_applications row, kind 'swap'.
+// way round), the partner ACCEPTS in this app first, then the Director and the FM sign it on the ERP (LEAVE-GATE-07; no Owner since
+// 2026-11-02), whose FM signature marks the four days. The ask is the ERP's own hr_leave_applications row, kind 'swap'.
 
 const ATTENDANCE_TZ = process.env.ATTENDANCE_TZ || 'Asia/Kolkata';
 const todayKey = (): string => dayKeyIn(ATTENDANCE_TZ);
@@ -123,7 +123,7 @@ export const swapService = {
     const partnerUserId = String(body.partnerUserId ?? '').trim();
     const reason = String(body.reason ?? '').trim().slice(0, 500);
     if (!DAY_RE.test(workDay) || !DAY_RE.test(offDay)) throw BadRequest('Pick both Saturdays');
-    if (!reason) throw BadRequest('Say why — the reason goes to your colleague and to the FM, the Director and the Owner');
+    if (!reason) throw BadRequest('Say why — the reason goes to your colleague and to the Director and the FM');
     if (!partnerUserId || partnerUserId === userId) throw BadRequest('Pick the colleague you are swapping with');
     const [me, them, partnerUser, meUser] = await Promise.all([
       hrRepo.employeeByUserId(userId), hrRepo.employeeByUserId(partnerUserId), crmRepo.getUserById(partnerUserId), crmRepo.getUserById(userId),
@@ -154,7 +154,7 @@ export const swapService = {
       decisionNote: '',
       markedDays: [],
       skippedDays: [],
-      chain: freshChain(),
+      chain: freshChain(isDirectorDesignation(me.designation)),
       approvals: [],
       source: 'self',
       kind: 'swap',
@@ -203,7 +203,7 @@ export const swapService = {
       void alertService.recordUserAlert(String(doc.userId), {
         source: 'HR',
         title: `🔁 ${sw.partnerName} accepted your Saturday swap`,
-        body: `You work ${satLabel(sw.workDay)} and are off ${satLabel(sw.offDay)} once it is approved — it now goes to the FM, the Director and the Owner.`,
+        body: `You work ${satLabel(sw.workDay)} and are off ${satLabel(sw.offDay)} once it is approved — it now goes to the Director, then the FM.`,
         context: 'Swap Saturday',
       }).catch(() => undefined);
       void (async () => {
@@ -214,7 +214,7 @@ export const swapService = {
           actorUserId: userId,
           source: 'Swap Saturday',
           title: `🔁 Saturday swap · ${doc.name} ⇄ ${sw.partnerName}`,
-          body: `${doc.name} works ${satLabel(sw.workDay)} and is off ${satLabel(sw.offDay)}; ${sw.partnerName} the other way round. Both agreed — signed FM → Director → Owner on the ERP → Approvals ▸ HR.`,
+          body: `${doc.name} works ${satLabel(sw.workDay)} and is off ${satLabel(sw.offDay)}; ${sw.partnerName} the other way round. Both agreed — signed Director → FM on the ERP → Approvals ▸ HR.`,
           dedupeKey: `swap-accepted-${String(doc._id)}`,
         });
       })();

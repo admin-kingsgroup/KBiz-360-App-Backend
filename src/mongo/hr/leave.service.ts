@@ -5,12 +5,12 @@ import { dayKeyIn } from '../attendance/attendanceBranch';
 import { hrRepo, type HrLeaveApplicationDoc } from './hr.repo';
 import { leaveBalance, spanDays, spansOverlap, validateApplication, type LeaveBalance, type LeaveDayEntry } from './leaveRules';
 import { hrBranchCodeFor, nameOfUser, postToBranchHrAlerts } from './hrNotify';
-import { freshChain } from './timeCorrection.rules';
+import { freshChain, isDirectorDesignation } from './timeCorrection.rules';
 
 // Paid-leave SELF-SERVICE for the app: see your balance, apply, withdraw while pending.
 // The application is ONLY the ask — it lands in the SAME hr_leave_applications collection the
-// ERP's Approvals ▸ Leave tab reads (signed FM → Director → Owner there), and nothing touches
-// attendance or the balance until the Owner approves it. The balance itself is derived on read,
+// ERP's Approvals ▸ Requests ▸ HR reads (signed Director → FM there, no Owner — 2026-11-02), and nothing touches
+// attendance or the balance until the FM approves it. The balance itself is derived on read,
 // the ERP's own rule (leaveRules). The row is written in the ERP model's EXACT shape (chain, kind,
 // source …) so the two queues cannot tell who filed it.
 
@@ -134,7 +134,7 @@ export const leaveService = {
       decisionNote: '',
       markedDays: [],
       skippedDays: [],
-      chain: freshChain(),
+      chain: freshChain(isDirectorDesignation(emp.designation)),
       approvals: [],
       source: 'self',
       kind: 'leave',
@@ -156,7 +156,7 @@ export const leaveService = {
         actorUserId: userId,
         source: 'Leave',
         title: `📝 ${doc.name} applied for ${ask.dayType === 'half' ? 'a HALF-DAY of ' : ''}leave · ${span} (${ask.dayType === 'half' ? '0.5' : ask.days.length}d)`,
-        body: `Reason: ${ask.reason}\nSigned FM → Director → Owner on the ERP → Approvals ▸ Leave.`,
+        body: `Reason: ${ask.reason}\nSigned Director → FM on the ERP → Approvals ▸ HR.`,
         dedupeKey: `leave-apply-${String(doc._id)}`,
       });
     })();
