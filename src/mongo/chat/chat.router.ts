@@ -129,6 +129,8 @@ chatRouter.post('/conversations/:id/read', asyncHandler(async (req, res) => res.
 // REST twin of the socket 'chat:delivered' ack — used by the killed/backgrounded app's push handler
 // (no socket alive there) so the sender's tick turns ✓✓ the moment the push reaches the device.
 chatRouter.post('/conversations/:id/delivered', asyncHandler(async (req, res) => res.json(await chatService.markDelivered(uid(req), req.params.id))));
+// Delete a one-to-one chat for ME (the other person keeps it) — see chatService.deleteChat.
+chatRouter.delete('/conversations/:id', asyncHandler(async (req, res) => res.json(await chatService.deleteChat(uid(req), req.params.id))));
 chatRouter.get('/conversations/:id/pinned', asyncHandler(async (req, res) => res.json(await chatService.pinned(uid(req), req.params.id))));
 
 // ── messages ──

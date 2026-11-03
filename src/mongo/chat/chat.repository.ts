@@ -31,7 +31,7 @@ export const conversationRepo = {
   },
   // Per-member chat settings (mute / archive / pin). Only the caller's own member row is touched, so
   // muting a group is personal — exactly like WhatsApp, where mute is yours and not the group's.
-  async setMemberSettings(conversationId: string, userId: string, patch: Partial<Pick<ConvMember, 'muted' | 'mutedUntil' | 'archived' | 'pinned'>>): Promise<void> {
+  async setMemberSettings(conversationId: string, userId: string, patch: Partial<Pick<ConvMember, 'muted' | 'mutedUntil' | 'archived' | 'pinned' | 'clearedAt' | 'unread' | 'lastReadAt'>>): Promise<void> {
     const $set: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(patch)) $set[`members.$.${k}`] = v;
     if (!Object.keys($set).length) return;
@@ -171,8 +171,18 @@ export const messageRepo = {
       .lean<MessageDoc[]>();
   },
 
-  pinnedFor: (conversationId: string) =>
-    MessageModel().find({ conversationId: oid(conversationId), pinned: true, deletedForEveryone: false }).sort({ pinnedAt: -1 }).lean<MessageDoc[]>(),
+  // deletedFor: a pinned message the viewer deleted for themselves (or with "Delete chat") is gone for them.
+  pinnedFor: (conversationId: string, userId: string) =>
+    MessageModel().find({ conversationId: oid(conversationId), pinned: true, deletedForEveryone: false, deletedFor: { $ne: userId } }).sort({ pinnedAt: -1 }).lean<MessageDoc[]>(),
+
+  // "Delete chat": every message in the conversation up to `upTo` joins this user's deletedFor, the
+  // same mark a one-message "Delete for me" leaves — so the thread, the catch-up sync, search, starred
+  // and pinned all drop them with the filters they already have. The other side's copy is untouched.
+  hideAllFor: (conversationId: Types.ObjectId, userId: string, upTo: Date) =>
+    MessageModel().updateMany(
+      { conversationId, deletedFor: { $ne: userId }, createdAt: { $lte: upTo } },
+      { $addToSet: { deletedFor: userId } },
+    ),
 
   starredFor: (userId: string) =>
     MessageModel().find({ starredBy: userId, deletedFor: { $ne: userId } }).sort({ _id: -1 }).limit(200).lean<MessageDoc[]>(),

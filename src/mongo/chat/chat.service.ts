@@ -198,6 +198,19 @@ async function postSystemMessage(conv: ConversationDoc, actorId: string, text: s
   emitToUsers([...new Set(audience)], CHAT_EVENTS.RECEIVE, toMessageBase(created));
 }
 
+// "Delete chat": nothing has been said in the chat since this member deleted it, so it stays off their
+// list. The first message after the deletion (from either side) brings it back, empty before that.
+function clearedFor(c: ConversationDoc, userId: string): Date | null {
+  const at = c.members.find((m) => m.userId === userId)?.clearedAt;
+  return at ? new Date(at) : null;
+}
+function hiddenFor(c: ConversationDoc, userId: string): boolean {
+  const cleared = clearedFor(c, userId);
+  if (!cleared) return false;
+  const last = c.lastMessage?.at ? new Date(c.lastMessage.at) : null;
+  return !last || last.getTime() <= cleared.getTime();
+}
+
 const SERVICE_MEDIA_LABEL: Record<string, string> = { image: '📷 Photo', video: '🎥 Video', document: '📄 Document', voice: '🎤 Voice message' };
 
 export const chatService = {
@@ -228,7 +241,7 @@ export const chatService = {
   },
 
   async listConversations(userId: string) {
-    const convs = await conversationRepo.listForUser(userId);
+    const convs = (await conversationRepo.listForUser(userId)).filter((c) => !hiddenFor(c, userId));
     const otherIds = convs.flatMap((c) => c.participantIds.filter((p) => p !== userId));
     const users = await resolveUsers(otherIds);
     const lastStatuses = await this.lastMessageStatuses(convs);
@@ -251,7 +264,8 @@ export const chatService = {
 
   buildConvDTO(c: ConversationDoc, userId: string, users: Record<string, { id: string; name: string; avatar?: string | null }>, lastStatuses: Record<string, MessageDoc['status']> = {}) {
     const me = c.members.find((m) => m.userId === userId);
-    const lm = c.lastMessage;
+    // A last message from before this member deleted the chat is not theirs to preview any more.
+    const lm = hiddenFor(c, userId) ? null : c.lastMessage;
     const base = {
       id: String(c._id),
       type: c.type,
@@ -263,6 +277,8 @@ export const chatService = {
       mutedUntil: me?.mutedUntil ? me.mutedUntil.toISOString() : null,
       archived: me?.archived ?? false,
       pinned: me?.pinned ?? false,
+      // When this member last deleted the chat — a second device of theirs drops what it stored before it.
+      clearedAt: me?.clearedAt ? new Date(me.clearedAt).toISOString() : null,
       disappearAfterSec: c.disappearAfterSec ?? null,
       lastActivityAt: c.lastActivityAt,
     };
@@ -311,6 +327,27 @@ export const chatService = {
     await conversationRepo.setMemberSettings(conversationId, userId, set);
     const fresh = await conversationRepo.findById(conversationId);
     return this.conversationDTO(fresh!, userId);
+  },
+
+  // ── delete chat (owner, 2026-11-03: "give option to delete the chat in kbiz app") ──
+  // WhatsApp's "Delete chat" for a one-to-one chat: it goes from the caller's list with every message
+  // in it, on all their devices. The other person keeps the chat and every message. Nothing is erased
+  // from the server — each message is marked deleted-for-the-caller, like a one-message "Delete for
+  // me". A later message (from either side) brings the chat back with only what came after.
+  // Groups are not deleted this way: a member leaves the group, an admin deletes it for everyone.
+  async deleteChat(userId: string, conversationId: string) {
+    const conv = await conversationRepo.findById(conversationId);
+    if (!conv) throw NotFound('Conversation not found');
+    assertMember(conv, userId);
+    if (conv.type !== 'direct') throw BadRequest('A group cannot be deleted as a chat — leave the group, or delete it for everyone as its admin');
+    const now = new Date();
+    await messageRepo.hideAllFor(conv._id, userId, now);
+    // Unread, pin and archive go with the chat; mute stays (it is about the person, and WhatsApp keeps it too).
+    // Not marked read: the other side's ticks must not turn blue because a chat was deleted.
+    await conversationRepo.setMemberSettings(conversationId, userId, { clearedAt: now, unread: 0, pinned: false, archived: false });
+    // My other devices drop the chat (the socket handler forgets it and its stored messages).
+    emitToUsers([userId], CHAT_EVENTS.CONVERSATION_DELETED, { conversationId });
+    return { ok: true, clearedAt: now.toISOString() };
   },
 
   // ── disappearing messages ──
@@ -732,7 +769,7 @@ export const chatService = {
     const conv = await conversationRepo.findById(conversationId);
     if (!conv) throw NotFound('Conversation not found');
     assertMember(conv, userId);
-    return (await messageRepo.pinnedFor(conversationId)).map((m) => toMessageDTO(m, userId));
+    return (await messageRepo.pinnedFor(conversationId, userId)).map((m) => toMessageDTO(m, userId));
   },
 
   async starred(userId: string) {

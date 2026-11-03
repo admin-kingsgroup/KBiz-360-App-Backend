@@ -12,6 +12,10 @@ export interface ConvMember {
   mutedUntil: Date | null; // null with muted=true ⇒ muted forever (WhatsApp's "Always")
   archived: boolean;
   pinned: boolean;
+  // "Delete chat" (direct chats, owner 2026-11-03): the moment this member deleted the chat. Every
+  // message up to then is in their deletedFor, and the chat stays off their list until a message
+  // arrives after it — the other person's copy is never touched. Absent/null = never deleted.
+  clearedAt?: Date | null;
 }
 export interface ConversationDoc {
   _id: Types.ObjectId;
@@ -45,6 +49,7 @@ const MemberSchema = new Schema<ConvMember>(
     mutedUntil: { type: Date, default: null },
     archived: { type: Boolean, default: false },
     pinned: { type: Boolean, default: false },
+    clearedAt: { type: Date, default: null },
   },
   { _id: false },
 );
