@@ -239,11 +239,18 @@ export const remindersService = {
       }
       return this.result(id, 'approved');
     }
-    // field edit (creator only). A changed due time re-arms the due-time push; dueAt null clears the
+    // field edit — the creator, or a manager (super admin / company manager): the same people who may
+    // delete it. Owner 2026-11-03: a reminder Shehzad wrote FOR him ("Warehouse discussion") could not be
+    // edited to add to it. Who it is for stays the creator's (reassign above, adding people in create).
+    // A changed due time re-arms the due-time push; dueAt null clears the
     // date ("Clear date" in the app's edit, owner 2026-10-18) along with its label. imageUrl null
     // removes the picture. groupId stamps an older reminder's copies with one group when an edit
     // changes who it is for, so the copies still read as one line after the first copy is removed.
-    if (r.byId !== userId) throw Forbidden('Only the creator can edit this reminder');
+    const byCreator = r.byId === userId;
+    if (!byCreator) {
+      const access = await accessService.accessForUserId(userId);
+      if (!access?.canManage) throw Forbidden('Only the creator or a manager can edit this reminder');
+    }
     const nextDueAt = body.dueAt !== undefined ? parseDueAt(body.dueAt) : r.dueAt;
     await reminderRepo.update(id, {
       text: body.text ?? r.text, section: body.section ?? r.section,
@@ -252,6 +259,9 @@ export const remindersService = {
       ...(body.imageUrl !== undefined ? { imageUrl: body.imageUrl } : {}),
       ...(body.groupId ? { groupId: body.groupId } : {}),
     });
+    // Someone else changed it: the creator's list refreshes (and the assignee's, if that is not the editor).
+    if (!byCreator) emitToUser(r.byId, 'reminder:update', { id });
+    if (r.forId !== userId) emitToUser(r.forId, 'reminder:update', { id });
     return this.result(id, 'updated');
   },
 
