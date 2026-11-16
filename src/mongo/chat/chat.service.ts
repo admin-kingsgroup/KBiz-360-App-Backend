@@ -8,6 +8,8 @@ import { chatSettingsRepo, conversationRepo, messageRepo } from './chat.reposito
 import { emitToUsers, isOnline, getLastSeen } from './chat.events';
 import { chatPush } from './chat.push';
 import { stripFormatting } from './formatting';
+import { TaskModel } from '../tasks/task.model';
+import { taskNotify } from '../tasks/task.notify';
 
 export const CHAT_EVENTS = {
   RECEIVE: 'chat:receive',
@@ -32,6 +34,19 @@ const DELETE_EVERYONE_WINDOW_MS = 60 * 60 * 1000; // 1 h
 // What the chat-list preview reads once a message is deleted for everyone.
 const DELETED_PREVIEW = 'This message was deleted';
 const directKeyOf = (a: string, b: string): string => [a, b].sort().join('|');
+
+// Task chats (spec §6): at most one push per chat per person every 5 minutes, so a burst of messages
+// in a task's chat buzzes once. An @mention always gets through. In-memory: a restart only resets it.
+export const TASK_CHAT_PUSH_GAP_MS = 5 * 60 * 1000;
+const lastTaskChatPush = new Map<string, number>();
+export function taskChatPushAllowed(conversationId: string, userId: string, mentioned: boolean, now = Date.now()): boolean {
+  const key = `${conversationId}:${userId}`;
+  const last = lastTaskChatPush.get(key) ?? 0;
+  if (!mentioned && now - last < TASK_CHAT_PUSH_GAP_MS) return false;
+  lastTaskChatPush.set(key, now);
+  if (lastTaskChatPush.size > 20_000) lastTaskChatPush.clear(); // bounded; worst case one extra push
+  return true;
+}
 
 // "24 hours" / "7 days" / "90 days" for the system notice a disappearing-messages change posts.
 function humanDuration(seconds: number): string {
@@ -245,12 +260,13 @@ export const chatService = {
     const otherIds = convs.flatMap((c) => c.participantIds.filter((p) => p !== userId));
     const users = await resolveUsers(otherIds);
     const lastStatuses = await this.lastMessageStatuses(convs);
-    return convs.map((c) => this.buildConvDTO(c, userId, users, lastStatuses));
+    const taskStatuses = await this.taskStatuses(convs);
+    return convs.map((c) => this.buildConvDTO(c, userId, users, lastStatuses, taskStatuses));
   },
 
   async conversationDTO(conv: ConversationDoc, userId: string) {
     const users = await resolveUsers(conv.participantIds.filter((p) => p !== userId));
-    return this.buildConvDTO(conv, userId, users, await this.lastMessageStatuses([conv]));
+    return this.buildConvDTO(conv, userId, users, await this.lastMessageStatuses([conv]), await this.taskStatuses([conv]));
   },
 
   // ONE query for the whole list: authoritative status of each conversation's lastMessage
@@ -262,7 +278,16 @@ export const chatService = {
     return Object.fromEntries(msgs.map((m) => [String(m._id), m.status]));
   },
 
-  buildConvDTO(c: ConversationDoc, userId: string, users: Record<string, { id: string; name: string; avatar?: string | null }>, lastStatuses: Record<string, MessageDoc['status']> = {}) {
+  // Task chats carry their task's status, so the chat list can file closed / cancelled ones under
+  // "Closed task chats" without fetching the tasks (ONE query for the whole list).
+  async taskStatuses(convs: ConversationDoc[]): Promise<Record<string, string>> {
+    const ids = convs.filter((c) => c.type === 'task' && c.taskId && Types.ObjectId.isValid(c.taskId)).map((c) => new Types.ObjectId(c.taskId as string));
+    if (!ids.length) return {};
+    const rows = await TaskModel().find({ _id: { $in: ids } }).select('_id status').lean<{ _id: Types.ObjectId; status: string }[]>();
+    return Object.fromEntries(rows.map((t) => [String(t._id), t.status]));
+  },
+
+  buildConvDTO(c: ConversationDoc, userId: string, users: Record<string, { id: string; name: string; avatar?: string | null }>, lastStatuses: Record<string, MessageDoc['status']> = {}, taskStatuses: Record<string, string> = {}) {
     const me = c.members.find((m) => m.userId === userId);
     // A last message from before this member deleted the chat is not theirs to preview any more.
     const lm = hiddenFor(c, userId) ? null : c.lastMessage;
@@ -298,6 +323,7 @@ export const chatService = {
       members: c.members.map((m) => ({ userId: m.userId, role: m.role })),
       companyId: c.companyId ?? null, // business this group belongs to
       branchId: c.branchId ?? null, // branch this group belongs to
+      ...(c.type === 'task' ? { taskId: c.taskId ?? null, taskStatus: c.taskId ? taskStatuses[c.taskId] ?? null : null } : {}),
     };
   },
 
@@ -339,6 +365,7 @@ export const chatService = {
     const conv = await conversationRepo.findById(conversationId);
     if (!conv) throw NotFound('Conversation not found');
     assertMember(conv, userId);
+    if (conv.type === 'task') throw BadRequest('A task chat stays with its task — it cannot be deleted');
     if (conv.type !== 'direct') throw BadRequest('A group cannot be deleted as a chat — leave the group, or delete it for everyone as its admin');
     const now = new Date();
     await messageRepo.hideAllFor(conv._id, userId, now);
@@ -357,6 +384,7 @@ export const chatService = {
     const conv = await conversationRepo.findById(conversationId);
     if (!conv) throw NotFound('Conversation not found');
     assertMember(conv, userId);
+    if (conv.type === 'task') throw BadRequest('Task chats are kept for the record — messages cannot disappear');
     if (conv.type === 'group') await assertManageGroup(conv, userId); // groups: admins decide
     if (seconds !== null && (!Number.isFinite(seconds) || seconds < 60 || seconds > 90 * 86400)) {
       throw BadRequest('Duration must be between 1 minute and 90 days');
@@ -376,6 +404,8 @@ export const chatService = {
 
   async setBlocked(userId: string, otherUserId: string, blocked: boolean) {
     if (userId === otherUserId) throw BadRequest('You cannot block yourself');
+    // An older app build shows "Block" on a task chat (it reads one as a 1:1 chat) and sends an empty id.
+    if (!otherUserId || !Types.ObjectId.isValid(otherUserId)) throw BadRequest('Pick a person to block');
     const settings = await chatSettingsRepo.setBlocked(userId, otherUserId, blocked);
     // Both sides re-read presence/permissions immediately (the blocked user is not told why).
     emitToUsers([userId], CHAT_EVENTS.CONVERSATION_UPDATED, { conversationId: null });
@@ -471,14 +501,23 @@ export const chatService = {
         // never to a recipient whose mute is still running.
         const blockers = new Set(await chatSettingsRepo.blockedBy(userId));
         const candidates = conv.participantIds.filter((p) => p !== userId && !blockers.has(p));
-        const recipients = (await Promise.all(candidates.map(async (r) => (await conversationRepo.isMuted(conv._id, r) ? null : r)))).filter((r): r is string => !!r);
+        let recipients = (await Promise.all(candidates.map(async (r) => (await conversationRepo.isMuted(conv._id, r) ? null : r)))).filter((r): r is string => !!r);
+        if (conv.type === 'task') {
+          recipients = recipients.filter((r) => taskChatPushAllowed(conversationId, r, mentions.includes(r)));
+          // An @mention in a task chat is a task event too: the in-app list and an email (spec §6).
+          const mentioned = mentions.filter((m) => m !== userId);
+          if (mentioned.length && conv.taskId) {
+            const task = await TaskModel().findById(conv.taskId).lean();
+            if (task) await taskNotify.sendInboxAndEmail('mention', task, mentioned, { actorId: userId, preview: pushPreview });
+          }
+        }
         // eslint-disable-next-line no-console
         console.log(`[chat-push] msg type=${type} conv=${conversationId} recipients=${recipients.length}`);
         if (!recipients.length) return;
         const sender = await crmRepo.getUserById(userId);
         const senderName = sender ? `${sender.first_name ?? ''} ${sender.last_name ?? ''}`.trim() || sender.email : 'New message';
-        const title = conv.type === 'group' ? (conv.name ?? 'Group') : senderName;
-        const body = conv.type === 'group' ? `${senderName}: ${pushPreview}` : pushPreview;
+        const title = conv.type === 'direct' ? senderName : (conv.name ?? (conv.type === 'task' ? 'Task' : 'Group'));
+        const body = conv.type === 'direct' ? pushPreview : `${senderName}: ${pushPreview}`;
         await Promise.all(recipients.map(async (r) => chatPush.notifyNewMessage(r, {
           title,
           body: mentions.includes(r) ? `${senderName} mentioned you: ${pushPreview}` : body,
@@ -666,7 +705,7 @@ export const chatService = {
     // Read receipts off ⇒ the blue tick is never broadcast. The read itself is still recorded (it
     // clears YOUR unread badge); only the telling of it is suppressed. Groups are exempt, exactly as
     // in WhatsApp, where the setting cannot hide reads in a group.
-    const tell = conv.type === 'group' || await chatSettingsRepo.readReceiptsEnabled(userId);
+    const tell = conv.type !== 'direct' || await chatSettingsRepo.readReceiptsEnabled(userId);
     if (ids.length && tell) emitToUsers(conv.participantIds, CHAT_EVENTS.READ, { conversationId, by: userId, messageIds: ids, at: now.getTime(), statuses });
     return { read: ids.length };
   },
@@ -909,6 +948,84 @@ export const chatService = {
     emitToUsers(conv.participantIds, CHAT_EVENTS.CONVERSATION_UPDATED, { conversationId });
     if (!alreadyAdmin) await postSystemMessage(conv, userId, `${await displayName(memberId)} is now an admin`, conv.participantIds);
     return { ok: true };
+  },
+
+  // ── task chats (managed by the task service only) ──
+  // One chat per task; members = assigner, assignee, watchers. Never locked (owner 2026-11-16).
+  async createTaskChat(actorId: string, input: { taskId: string; title: string; memberIds: string[]; companyId: string | null; branchId: string | null; notice: string }) {
+    const participantIds = [...new Set([actorId, ...input.memberIds])];
+    const me = await crmRepo.getUserById(actorId);
+    const now = new Date();
+    const conv = (await conversationRepo.create({
+      type: 'task',
+      taskId: input.taskId,
+      participantIds,
+      members: participantIds.map((uid) => ({ userId: uid, role: 'member', joinedAt: now, lastReadAt: uid === actorId ? now : null, unread: 0, muted: false, mutedUntil: null, archived: false, pinned: false })),
+      createdBy: actorId,
+      tenantId: me?.tenant_id ? String(me.tenant_id) : null,
+      name: input.title,
+      companyId: input.companyId,
+      branchId: input.branchId,
+      lastActivityAt: now,
+    })) as unknown as ConversationDoc;
+    await postSystemMessage(conv, actorId, input.notice, participantIds);
+    emitToUsers(participantIds, CHAT_EVENTS.CONVERSATION_NEW, { conversationId: String(conv._id) });
+    return String(conv._id);
+  },
+
+  // Make the chat's members exactly `memberIds` (who joined / left is the task service's notice to post).
+  async setTaskChatMembers(conversationId: string, memberIds: string[]) {
+    const conv = await conversationRepo.findById(conversationId);
+    if (!conv || conv.type !== 'task') return;
+    const want = [...new Set(memberIds)];
+    const toAdd = want.filter((id) => !conv.participantIds.includes(id));
+    const toRemove = conv.participantIds.filter((id) => !want.includes(id));
+    if (!toAdd.length && !toRemove.length) return;
+    if (toRemove.length) {
+      await ConversationModel().updateOne({ _id: conv._id }, { $pull: { participantIds: { $in: toRemove }, members: { userId: { $in: toRemove } } } });
+    }
+    if (toAdd.length) {
+      await ConversationModel().updateOne(
+        { _id: conv._id },
+        {
+          $addToSet: { participantIds: { $each: toAdd } },
+          $push: { members: { $each: toAdd.map((uid) => ({ userId: uid, role: 'member', joinedAt: new Date(), lastReadAt: null, unread: 0, muted: false, mutedUntil: null, archived: false, pinned: false })) } },
+        },
+      );
+    }
+    emitToUsers([...conv.participantIds, ...toAdd], CHAT_EVENTS.CONVERSATION_UPDATED, { conversationId });
+    if (toAdd.length) emitToUsers(toAdd, CHAT_EVENTS.CONVERSATION_NEW, { conversationId });
+    if (toRemove.length) emitToUsers(toRemove, CHAT_EVENTS.CONVERSATION_DELETED, { conversationId });
+  },
+
+  async renameTaskChat(conversationId: string, title: string) {
+    const conv = await conversationRepo.findById(conversationId);
+    if (!conv || conv.type !== 'task') return;
+    await ConversationModel().updateOne({ _id: conv._id }, { $set: { name: title } });
+    emitToUsers(conv.participantIds, CHAT_EVENTS.CONVERSATION_UPDATED, { conversationId });
+  },
+
+  // A system line in the task's chat ("Satish marked this Done – to close · 18 Nov, 4:12 pm").
+  async postTaskNotice(conversationId: string, actorId: string, text: string) {
+    const conv = await conversationRepo.findById(conversationId);
+    if (!conv || conv.type !== 'task') return;
+    await postSystemMessage(conv, actorId, text, conv.participantIds);
+  },
+
+  // Read a task chat without being a member — the task service has already checked that the reader
+  // may see the task (a manager above the assignee). Read-only: posting still needs membership.
+  async readTaskMessages(conversationId: string, viewerId: string, page: { before?: string; after?: string; limit?: number }) {
+    const conv = await conversationRepo.findById(conversationId);
+    if (!conv || conv.type !== 'task') throw NotFound('Task chat not found');
+    const msgs = await messageRepo.listByConversation(conversationId, viewerId, page);
+    return msgs.map((m) => toMessageDTO(m, viewerId));
+  },
+
+  async unreadFor(conversationIds: string[], userId: string): Promise<Record<string, number>> {
+    if (!conversationIds.length) return {};
+    const oids = conversationIds.filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id));
+    const convs = await ConversationModel().find({ _id: { $in: oids } }).select('_id members').lean<Pick<ConversationDoc, '_id' | 'members'>[]>();
+    return Object.fromEntries(convs.map((c) => [String(c._id), c.members.find((m) => m.userId === userId)?.unread ?? 0]));
   },
 
   // membership for socket room joins / typing

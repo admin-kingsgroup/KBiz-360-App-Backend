@@ -9,6 +9,8 @@ import { registerChatHandlers } from './chat/chat.socket';
 import { registerCallHandlers } from './calls/call.socket';
 import { ensureCallIndexes } from './calls/call.models';
 import { ensureReminderIndexes } from './reminders/reminder.model';
+import { ensureTaskIndexes } from './tasks/task.model';
+import { startTaskSweep, stopTaskSweep } from './tasks/task.sweep';
 import { ensureAttendanceIndexes } from './attendance/attendance.model';
 import { ensureLocationIndexes } from './location/location.model';
 import { ensureRegularizationIndexes } from './hr/regularization.model';
@@ -36,6 +38,7 @@ async function bootstrap(): Promise<void> {
   await ensureSessionIndexes(); // app_sessions: unique tokenHash + userId + TTL on expiresAt (indexed lookups, bounded growth)
   await ensureCallIndexes(); // call_logs / active_calls (TTL) / push_devices indexes
   await ensureReminderIndexes(); // reminders indexes
+  await ensureTaskIndexes(); // tasks, task_history, task_notifications, task_digests
   await ensureAttendanceIndexes(); // attendance indexes
   await ensureLocationIndexes(); // location trail (pings TTL + last-known per user)
   await ensureRegularizationIndexes(); // the retired app-owned regularisation collection (read by the migration only)
@@ -62,6 +65,7 @@ async function bootstrap(): Promise<void> {
 
   startEmailPolling(); // new-mail push (no-op until Microsoft email is configured + a user connects)
   startReminderDueSweep(); // "⏰ Reminder due" pushes for reminders whose due time arrives
+  startTaskSweep(); // task alerts (due tomorrow / in 2 h / overdue / not accepted), repeats, 8 am digest
   startAlertAttachmentSweep(); // reap stored alert PDFs before their event docs TTL out
   startPresenceHeartbeat(); // stamps lastSeenAt for online users every 60s (a crash loses ≤60s)
   startAttendanceDayClose(); // 10pm branch-wise attendance day-close summary to each attendance channel
@@ -69,6 +73,7 @@ async function bootstrap(): Promise<void> {
 
   const shutdown = async (): Promise<void> => {
     stopReminderDueSweep();
+    stopTaskSweep();
     stopAlertAttachmentSweep();
     stopPresenceHeartbeat();
     stopAttendanceDayClose();

@@ -19,7 +19,10 @@ export interface ConvMember {
 }
 export interface ConversationDoc {
   _id: Types.ObjectId;
-  type: 'direct' | 'group';
+  // 'task' (2026-11-16): one chat per Smart Connect task — members are the assigner, the assignee and the
+  // watchers, kept in step by the task service only (the group-management routes refuse it).
+  type: 'direct' | 'group' | 'task';
+  taskId?: string | null; // the task this chat belongs to (task chats only)
   participantIds: string[]; // denormalized (fast membership + direct dedupe)
   members: ConvMember[];
   createdBy: string;
@@ -56,7 +59,8 @@ const MemberSchema = new Schema<ConvMember>(
 
 const ConversationSchema = new Schema<ConversationDoc>(
   {
-    type: { type: String, enum: ['direct', 'group'], required: true },
+    type: { type: String, enum: ['direct', 'group', 'task'], required: true },
+    taskId: { type: String, default: null },
     participantIds: { type: [String], required: true, index: true },
     members: { type: [MemberSchema], default: [] },
     createdBy: { type: String, required: true },
@@ -85,6 +89,7 @@ const ConversationSchema = new Schema<ConversationDoc>(
 );
 ConversationSchema.index({ directKey: 1 }, { unique: true, sparse: true });
 ConversationSchema.index({ participantIds: 1, lastActivityAt: -1 });
+ConversationSchema.index({ taskId: 1 }, { sparse: true });
 
 // ─────────── Message ───────────
 export interface Attachment {
