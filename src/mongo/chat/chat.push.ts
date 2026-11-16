@@ -60,7 +60,7 @@ export interface ChatPushOpts {
   messageId?: string;
   senderId?: string;
   senderName?: string;
-  convType?: 'direct' | 'group';
+  convType?: 'direct' | 'group' | 'task';
   convName?: string;
   preview?: string;
   msgType?: string;

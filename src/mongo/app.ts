@@ -8,6 +8,7 @@ import { chatRouter } from './chat/chat.router';
 import { callsRouter } from './calls/calls.router';
 import { remindersRouter } from './reminders/reminders.router';
 import { remindersServiceRouter } from './reminders/remindersService.router';
+import { tasksRouter } from './tasks/tasks.router';
 import { attendanceRouter } from './attendance/attendance.router';
 import { locationRouter } from './location/location.router';
 import { hrRouter } from './hr/hr.router';
@@ -47,7 +48,8 @@ export function createMongoApp(): Express {
   app.use('/api', directoryRouter); // /users, /companies, /branches
   app.use('/api', chatRouter); // /conversations, /messages, /groups
   app.use('/api', callsRouter); // /calls/* (audio calling: signaling REST + history + analytics)
-  app.use('/api/reminders', remindersRouter); // reminders (CRUD + review/approval, real users)
+  app.use('/api/reminders', remindersRouter); // reminders (CRUD + review/approval, real users) — kept for old app builds + ERP Space+R
+  app.use('/api/tasks', tasksRouter); // Smart Connect tasks (replace reminders): lists, detail, status machine, watchers, dashboard
   app.use('/api/attendance', attendanceRouter); // attendance (punch in/out + today + team)
   app.use('/api/location', locationRouter); // work-hours location trail (device pings + live roster + day trail)
   app.use('/api/hr', hrRouter); // HR self-service (leave balance/applications + regularisation requests)
