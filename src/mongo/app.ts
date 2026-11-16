@@ -9,6 +9,7 @@ import { callsRouter } from './calls/calls.router';
 import { remindersRouter } from './reminders/reminders.router';
 import { remindersServiceRouter } from './reminders/remindersService.router';
 import { tasksRouter } from './tasks/tasks.router';
+import { tasksServiceRouter } from './tasks/tasksService.router';
 import { attendanceRouter } from './attendance/attendance.router';
 import { locationRouter } from './location/location.router';
 import { hrRouter } from './hr/hr.router';
@@ -39,6 +40,7 @@ export function createMongoApp(): Express {
   app.use('/api/auth', mongoAuthRouter);
   app.use('/api/alerts', alertsIngestRouter); // ERP/CRM service-token ingest — MUST precede chatRouter's /api-wide requireAuth
   app.use('/api/service/reminders', remindersServiceRouter); // ERP reads/writes the app's reminders as its own user (service token) — also pre-chatRouter
+  app.use('/api/service/tasks', tasksServiceRouter); // ERP right-click → a task, created as the ERP's signed-in user (service token) — also pre-chatRouter
   app.use('/api/service/alert-access', alertAccessServiceRouter); // ERP manages who sees which alert channel (service token) — also pre-chatRouter
   app.use('/api/client-errors', clientErrorsRouter); // crash reports (public, rate-limited) — also pre-chatRouter
   // Signed email-image proxy — also pre-chatRouter: <img> tags in the mail WebView cannot attach

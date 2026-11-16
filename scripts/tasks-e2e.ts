@@ -18,6 +18,9 @@ process.env.JWT_ACCESS_SECRET = 'e2e-access-secret-0123456789-0123456789-0123456
 process.env.JWT_REFRESH_SECRET = 'e2e-refresh-secret-0123456789-0123456789-0123456789';
 process.env.EXPO_PUSH_ENABLED = 'false';
 process.env.SMTP_HOST = '';
+process.env.ALERTS_INGEST_TOKEN = 'e2e-service-token-0123456789';
+process.env.STORAGE_DRIVER = 'local';
+process.env.STORAGE_LOCAL_DIR = `/tmp/kb360-tasks-e2e-uploads-${SUFFIX}`;
 
 let pass = 0;
 let fail = 0;
@@ -176,6 +179,28 @@ async function main(): Promise<void> {
     const copies = await TaskModel().find({ parentRecurringId: r.body.id }).lean();
     check('closing spawned exactly one next copy', copies.length === 1 && copies[0].dueAt!.getTime() > Date.parse(r.body.dueAt), copies.map((x) => x.dueAt));
 
+    console.log('\nERP right-click → task (service door, as the ERP user)');
+    const svc = (u: { _id: ObjectId } | null) => ({
+      get: (p: string) => { const r = request(app).get(`/api/service/tasks${p}`).set('Authorization', 'Bearer e2e-service-token-0123456789'); return u ? r.set('X-Act-As', id(u)) : r; },
+      post: (p: string, b: unknown) => { const r = request(app).post(`/api/service/tasks${p}`).set('Authorization', 'Bearer e2e-service-token-0123456789'); return (u ? r.set('X-Act-As', id(u)) : r).send(b as object); },
+    });
+    check('no service token → 401', (await request(app).get('/api/service/tasks/people').set('X-Act-As', id(mgr))).status === 401);
+    check('no X-Act-As → 400', (await svc(null).get('/people')).status === 400);
+    const ppl = await svc(mgr).get('/people');
+    check('people list for the ERP user (company-wide)', ppl.status === 200 && (ppl.body as any[]).some((p) => p.id === id(owner)) && (ppl.body as any[]).every((p) => 'app' in p), ppl.body);
+    const brs = await svc(mgr).get('/branches');
+    check('branches with codes and the business name', brs.status === 200 && (brs.body as any[]).some((b) => b.code === 'BOM' && b.companyName === 'Travkings'), brs.body);
+    const erpTask = await svc(mgr).post('', {
+      title: 'E2E: HDFC charges missing', assignedTo: id(satish), branchId: String(bom), priority: 'high', dueDate: tomorrow,
+      link: { label: 'Bank Reconciliation · BOM', url: 'https://kbizbooks-kings.duckdns.org/bank-reco?b=BOM' },
+      image: { mime: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==' },
+    });
+    check('created as the ERP user, source erp, link + screenshot on the task, no chat yet', erpTask.status === 201 && erpTask.body.assignedBy.id === id(mgr)
+      && erpTask.body.source === 'erp' && erpTask.body.link?.url?.startsWith('https://kbizbooks') && erpTask.body.attachments.length === 1 && erpTask.body.chatId === null, erpTask.body);
+    check('it is in the assignee\'s My tasks', ((await as(satish).get('/api/tasks?view=mine')).body as any[]).some((t) => t.id === erpTask.body.id));
+    check('a past due date is refused as the app refuses it', (await svc(mgr).post('', { title: 'x', assignedTo: id(satish), branchId: String(bom), priority: 'normal', dueDate: '2020-01-01' })).status === 400);
+    check('a javascript: link is refused', (await svc(mgr).post('', { title: 'x', assignedTo: id(satish), branchId: String(bom), priority: 'normal', dueDate: tomorrow, link: { label: 'x', url: 'javascript:alert(1)' } })).status === 400);
+
     console.log('\nConvert open reminders (script, --apply on the throwaway DB)');
     const appRaw = raw.db(APP_DB);
     const longText = `E2E reminder: ${'reconcile the HDFC statement '.repeat(6)}`;
@@ -209,6 +234,8 @@ async function main(): Promise<void> {
       if (!name.startsWith('kb360_tasks_e2e_')) throw new Error(`refusing to drop ${name}`);
       await raw.db(name).dropDatabase();
     }
+    const { rmSync } = await import('fs');
+    rmSync(process.env.STORAGE_LOCAL_DIR as string, { recursive: true, force: true });
     await raw.close();
   }
   console.log(`\n${pass} passed, ${fail} failed (throwaway DBs dropped)`);
