@@ -8,6 +8,7 @@ const history: Array<Record<string, unknown>> = [];
 const notices: Array<{ chatId: string; text: string }> = [];
 const chatMembers = new Map<string, string[]>();
 const sent: Array<{ event: string; to: string[]; actorId?: string | null }> = [];
+const chatState: Array<[string, 'closed' | 'reopened']> = [];
 
 // structuredClone drops the ObjectId class (String(_id) would read "[object Object]") — put it back.
 const clone = (t: TaskDoc): TaskDoc => ({ ...structuredClone(t), _id: t._id });
@@ -97,6 +98,8 @@ jest.mock('../../chat/chat.service', () => ({
     renameTaskChat: async () => undefined,
     postTaskNotice: async (chatId: string, _a: string, text: string) => { notices.push({ chatId, text }); },
     readTaskMessages: async () => [{ id: 'm1', text: 'hello' }],
+    closeTaskChat: async (chatId: string) => { chatState.push([chatId, 'closed']); },
+    reopenTaskChat: async (chatId: string) => { chatState.push([chatId, 'reopened']); },
     unreadFor: async () => ({}),
   },
 }));
@@ -110,15 +113,22 @@ import { tasksService } from '../task.service';
 const NOW = new Date('2026-11-18T06:00:00.000Z'); // 11:30 IST, Wednesday
 const base = { title: 'Close October books', branchId: BOM, priority: 'normal' as const, dueDate: '2026-11-20' };
 
-beforeEach(() => { tasks.length = 0; history.length = 0; notices.length = 0; chatMembers.clear(); sent.length = 0; });
+beforeEach(() => { tasks.length = 0; history.length = 0; notices.length = 0; chatMembers.clear(); sent.length = 0; chatState.length = 0; });
+
+// Create a task and start its chat (owner 2026-11-16 evening: no task comes with a chat).
+async function withChat(actor: string, input: Parameters<typeof tasksService.create>[1], starter = actor) {
+  const t = await tasksService.create(actor, input, { now: NOW });
+  const { chatId } = await tasksService.ensureChat(starter, t.id);
+  return { ...t, chatId };
+}
 
 describe('creating a task', () => {
-  it('opens its chat, defaults the time to 6 pm in the assignee’s zone, and tells the assignee', async () => {
+  it('has no chat yet, defaults the time to 6 pm in the assignee’s zone, and tells the assignee', async () => {
     const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', watcherIds: ['faiz'] }, { now: NOW });
     expect(t.status).toBe('assigned');
     expect(t.dueAt).toBe('2026-11-20T12:30:00.000Z');
-    expect(chatMembers.get(t.chatId as string)).toEqual(['afshin', 'satish', 'faiz']);
-    expect(notices[0].text).toBe('Afshin Dhanani assigned this task to Satish · due 20 Nov, 6:00 pm');
+    expect(t.chatId).toBeNull();
+    expect(notices).toEqual([]);
     expect(sent).toContainEqual({ event: 'assigned', to: ['satish'], actorId: 'afshin' });
     expect(sent).toContainEqual({ event: 'watcher_added', to: ['faiz'], actorId: 'afshin' });
     expect(history[0]).toMatchObject({ field: 'created', userId: 'afshin' });
@@ -143,6 +153,27 @@ describe('creating a task', () => {
   });
 });
 
+describe('Start chat (giver or assignee only, while open)', () => {
+  it('the assignee starts it; giver, assignee and watchers are members', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', watcherIds: ['faiz'] }, { now: NOW });
+    const { chatId } = await tasksService.ensureChat('satish', t.id);
+    expect(chatMembers.get(chatId)).toEqual(['afshin', 'satish', 'faiz']);
+    expect(notices[0].text).toBe('Satish started a chat about this task · Assigned · due 20 Nov, 6:00 pm');
+    expect((await tasksService.ensureChat('faiz', t.id)).chatId).toBe(chatId); // a watcher opens the existing one
+    expect((await tasksService.ensureChat('afshin', t.id)).chatId).toBe(chatId); // never a second chat
+  });
+  it('a watcher or a manager cannot start it', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', watcherIds: ['faiz'] }, { now: NOW });
+    await expect(tasksService.ensureChat('faiz', t.id)).rejects.toThrow('Only Afshin Dhanani or Satish can start this task\'s chat');
+    await expect(tasksService.ensureChat('farhan', t.id)).rejects.toThrow(/can start/);
+  });
+  it('not on a closed task', async () => {
+    const t = await tasksService.create('satish', { ...base, assignedTo: 'satish' }, { now: NOW });
+    await tasksService.changeStatus('satish', t.id, { to: 'done' }, NOW);
+    await expect(tasksService.ensureChat('satish', t.id)).rejects.toThrow(/closed/);
+  });
+});
+
 describe('who sees a task', () => {
   it('the people on it, a manager above the assignee in the branch, and the Super Admin — not other staff', async () => {
     const t = await tasksService.create('satish', { ...base, assignedTo: 'satish' }, { now: NOW });
@@ -154,7 +185,7 @@ describe('who sees a task', () => {
   });
 
   it('a manager reads the chat without being a member', async () => {
-    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish' }, { now: NOW });
+    const t = await withChat('afshin', { ...base, assignedTo: 'satish' });
     expect(chatMembers.get(t.chatId as string)).not.toContain('farhan');
     expect(await tasksService.messages('farhan', t.id, {})).toEqual([{ id: 'm1', text: 'hello' }]);
     await expect(tasksService.messages('faiz', t.id, {})).rejects.toThrow(/not found/i);
@@ -163,7 +194,7 @@ describe('who sees a task', () => {
 
 describe('status changes', () => {
   it('post a chat line and a history row, and tell the other side', async () => {
-    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish' }, { now: NOW });
+    const t = await withChat('afshin', { ...base, assignedTo: 'satish' });
     await tasksService.changeStatus('satish', t.id, { to: 'accepted' }, NOW);
     await tasksService.changeStatus('satish', t.id, { to: 'in_progress' }, NOW);
     const done = await tasksService.changeStatus('satish', t.id, { to: 'done' }, new Date('2026-11-18T10:42:00.000Z'));
@@ -175,6 +206,20 @@ describe('status changes', () => {
     const closed = await tasksService.changeStatus('afshin', t.id, { to: 'closed' }, new Date('2026-11-20T06:00:00.000Z'));
     expect(closed.status).toBe('closed');
     expect(notices.at(-1)?.text).toBe('Task closed by Afshin Dhanani on 20 Nov 2026.');
+    expect(chatState).toEqual([[t.chatId, 'closed']]); // off every list, read-only — the closing line posted first
+  });
+
+  it('Done – to close keeps the chat open; Reopened brings a closed chat back; Cancelled closes it', async () => {
+    const t = await withChat('afshin', { ...base, assignedTo: 'satish' });
+    for (const to of ['accepted', 'in_progress', 'done'] as const) await tasksService.changeStatus('satish', t.id, { to }, NOW);
+    expect(chatState).toEqual([]);
+    await tasksService.changeStatus('afshin', t.id, { to: 'closed' }, NOW);
+    await tasksService.changeStatus('afshin', t.id, { to: 'reopened', comment: 'Bank charges missing' }, NOW);
+    expect(chatState).toEqual([[t.chatId, 'closed'], [t.chatId, 'reopened']]);
+    expect(notices.at(-1)?.text).toMatch(/^Afshin Dhanani marked this Reopened — Bank charges missing/);
+    await tasksService.changeStatus('satish', t.id, { to: 'in_progress' }, NOW);
+    await tasksService.changeStatus('afshin', t.id, { to: 'cancelled', comment: 'No longer needed' }, NOW);
+    expect(chatState.at(-1)).toEqual([t.chatId, 'closed']);
   });
 
   it('a date change request, then the assigner approves it', async () => {
@@ -216,7 +261,7 @@ describe('editing and reassigning', () => {
   });
 
   it('reassign to self', async () => {
-    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish' }, { now: NOW });
+    const t = await withChat('afshin', { ...base, assignedTo: 'satish' });
     const out = await tasksService.reassign('afshin', t.id, { assignedTo: 'afshin' }, NOW);
     expect(out.status).toBe('accepted');
     expect(out.isSelf).toBe(true);
@@ -225,7 +270,7 @@ describe('editing and reassigning', () => {
   });
 
   it('reassigning keeps a watcher in the chat and resets to Assigned', async () => {
-    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', watcherIds: ['faiz'] }, { now: NOW });
+    const t = await withChat('afshin', { ...base, assignedTo: 'satish', watcherIds: ['faiz'] });
     await tasksService.changeStatus('satish', t.id, { to: 'accepted' }, NOW);
     const out = await tasksService.reassign('afshin', t.id, { assignedTo: 'faiz', comment: 'Satish on leave' }, NOW);
     expect(out.status).toBe('assigned');
@@ -236,7 +281,7 @@ describe('editing and reassigning', () => {
 
 describe('watchers', () => {
   it('a manager who can see the task may watch it, but not add others', async () => {
-    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish' }, { now: NOW });
+    const t = await withChat('afshin', { ...base, assignedTo: 'satish' });
     await expect(tasksService.watchers('farhan', t.id, { add: ['faiz'] }, NOW)).rejects.toThrow(/yourself/);
     const out = await tasksService.watchers('farhan', t.id, { add: ['farhan'] }, NOW);
     expect(out.myRole).toBe('watcher');

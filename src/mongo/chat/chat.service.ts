@@ -1,5 +1,5 @@
 import { Types } from 'mongoose';
-import { Forbidden, NotFound, BadRequest } from '../../common/errors';
+import { AppError, Forbidden, NotFound, BadRequest } from '../../common/errors';
 import { crmRepo } from '../crm.repo';
 import { accessService } from '../access';
 import { userAvatars } from '../userAvatars';
@@ -219,6 +219,10 @@ function clearedFor(c: ConversationDoc, userId: string): Date | null {
   const at = c.members.find((m) => m.userId === userId)?.clearedAt;
   return at ? new Date(at) : null;
 }
+// A closed / cancelled task's chat: off every chat list, read-only (readable from the task).
+function isClosedTaskChat(c: ConversationDoc): boolean {
+  return c.type === 'task' && !!c.closedAt;
+}
 function hiddenFor(c: ConversationDoc, userId: string): boolean {
   const cleared = clearedFor(c, userId);
   if (!cleared) return false;
@@ -256,7 +260,7 @@ export const chatService = {
   },
 
   async listConversations(userId: string) {
-    const convs = (await conversationRepo.listForUser(userId)).filter((c) => !hiddenFor(c, userId));
+    const convs = (await conversationRepo.listForUser(userId)).filter((c) => !hiddenFor(c, userId) && !isClosedTaskChat(c));
     const otherIds = convs.flatMap((c) => c.participantIds.filter((p) => p !== userId));
     const users = await resolveUsers(otherIds);
     const lastStatuses = await this.lastMessageStatuses(convs);
@@ -323,7 +327,7 @@ export const chatService = {
       members: c.members.map((m) => ({ userId: m.userId, role: m.role })),
       companyId: c.companyId ?? null, // business this group belongs to
       branchId: c.branchId ?? null, // branch this group belongs to
-      ...(c.type === 'task' ? { taskId: c.taskId ?? null, taskStatus: c.taskId ? taskStatuses[c.taskId] ?? null : null } : {}),
+      ...(c.type === 'task' ? { taskId: c.taskId ?? null, taskStatus: c.taskId ? taskStatuses[c.taskId] ?? null : null, closed: !!c.closedAt } : {}),
     };
   },
 
@@ -420,7 +424,7 @@ export const chatService = {
   // The watermark comes back as a PAIR (`until` + `untilId`) taken from the last row returned, never
   // from the clock — see changedSince for why the id half matters. Clients send both back.
   async syncSince(userId: string, since: Date, sinceId: string | undefined, limit = 200) {
-    const convs = await conversationRepo.listForUser(userId);
+    const convs = (await conversationRepo.listForUser(userId)).filter((c) => !isClosedTaskChat(c));
     const ids = convs.map((c) => c._id);
     const docs = await messageRepo.changedSince(ids, userId, since, sinceId, limit);
     const last = docs.length ? docs[docs.length - 1] : null;
@@ -438,6 +442,7 @@ export const chatService = {
     const conv = await conversationRepo.findById(conversationId);
     if (!conv) throw NotFound('Conversation not found');
     assertMember(conv, userId);
+    if (isClosedTaskChat(conv)) throw new AppError(423, 'This task is closed — its chat is read-only', 'TASK_CLOSED');
     // Blocking (direct chats): refused in BOTH directions — you cannot message someone you blocked,
     // and you cannot message someone who blocked you. The sender is not told which case applies.
     if (conv.type === 'direct') {
@@ -951,7 +956,8 @@ export const chatService = {
   },
 
   // ── task chats (managed by the task service only) ──
-  // One chat per task; members = assigner, assignee, watchers. Never locked (owner 2026-11-16).
+  // One chat per task, started from inside the task by its giver or assignee; members = assigner,
+  // assignee, watchers. Closed (off the lists, read-only) with the task, reopened with it.
   async createTaskChat(actorId: string, input: { taskId: string; title: string; memberIds: string[]; companyId: string | null; branchId: string | null; notice: string }) {
     const participantIds = [...new Set([actorId, ...input.memberIds])];
     const me = await crmRepo.getUserById(actorId);
@@ -993,9 +999,27 @@ export const chatService = {
         },
       );
     }
+    if (conv.closedAt) return; // closed task: nobody's list shows it, so there is nothing to refresh
     emitToUsers([...conv.participantIds, ...toAdd], CHAT_EVENTS.CONVERSATION_UPDATED, { conversationId });
     if (toAdd.length) emitToUsers(toAdd, CHAT_EVENTS.CONVERSATION_NEW, { conversationId });
     if (toRemove.length) emitToUsers(toRemove, CHAT_EVENTS.CONVERSATION_DELETED, { conversationId });
+  },
+
+  // The task was Closed / Cancelled: the chat leaves everyone's list (their apps drop it), its unread
+  // badges clear, and it takes no new messages. Nothing is deleted — the task still reads it.
+  async closeTaskChat(conversationId: string) {
+    const conv = await conversationRepo.findById(conversationId);
+    if (!conv || conv.type !== 'task' || conv.closedAt) return;
+    await ConversationModel().updateOne({ _id: conv._id }, { $set: { closedAt: new Date(), 'members.$[].unread': 0 } });
+    emitToUsers(conv.participantIds, CHAT_EVENTS.CONVERSATION_DELETED, { conversationId });
+  },
+
+  // The task was reopened: the chat comes back onto its members' lists, writable again.
+  async reopenTaskChat(conversationId: string) {
+    const conv = await conversationRepo.findById(conversationId);
+    if (!conv || conv.type !== 'task' || !conv.closedAt) return;
+    await ConversationModel().updateOne({ _id: conv._id }, { $set: { closedAt: null, lastActivityAt: new Date() } });
+    emitToUsers(conv.participantIds, CHAT_EVENTS.CONVERSATION_NEW, { conversationId });
   },
 
   async renameTaskChat(conversationId: string, title: string) {

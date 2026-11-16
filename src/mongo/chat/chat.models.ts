@@ -23,6 +23,10 @@ export interface ConversationDoc {
   // watchers, kept in step by the task service only (the group-management routes refuse it).
   type: 'direct' | 'group' | 'task';
   taskId?: string | null; // the task this chat belongs to (task chats only)
+  // Task chats only (owner, 2026-11-16 evening): set when the task is Closed or Cancelled. The chat then
+  // leaves every chat list and takes no new messages; its history stays readable from the task.
+  // Cleared again when the task is reopened.
+  closedAt?: Date | null;
   participantIds: string[]; // denormalized (fast membership + direct dedupe)
   members: ConvMember[];
   createdBy: string;
@@ -61,6 +65,7 @@ const ConversationSchema = new Schema<ConversationDoc>(
   {
     type: { type: String, enum: ['direct', 'group', 'task'], required: true },
     taskId: { type: String, default: null },
+    closedAt: { type: Date, default: null },
     participantIds: { type: [String], required: true, index: true },
     members: { type: [MemberSchema], default: [] },
     createdBy: { type: String, required: true },
