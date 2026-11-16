@@ -54,7 +54,7 @@ export const conversationRepo = {
   // on chat pushes: iOS never runs JS for alert pushes, so the payload is the only way to keep the
   // icon badge current while the app is killed/backgrounded.
   unreadChatCount: (userId: string): Promise<number> =>
-    ConversationModel().countDocuments({ participantIds: userId, members: { $elemMatch: { userId, unread: { $gt: 0 }, muted: { $ne: true } } } }),
+    ConversationModel().countDocuments({ participantIds: userId, closedAt: null, members: { $elemMatch: { userId, unread: { $gt: 0 }, muted: { $ne: true } } } }),
 
   // Whether this member currently has the chat muted, honouring a timed mute that has run out.
   async isMuted(conversationId: Types.ObjectId, userId: string): Promise<boolean> {

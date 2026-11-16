@@ -17,7 +17,8 @@ import {
 } from './task.types';
 
 // Smart Connect Tasks (spec 2026-11-16 + the owner's answers): anyone may assign anyone; a manager sees
-// the tasks of the people below them (Super Admin sees all); no escalation; the task chat never locks.
+// the tasks of the people below them (Super Admin sees all); no escalation. The task chat is started
+// from inside the task by its giver or assignee, and closes (off every list, read-only) with the task.
 
 export const TASK_EVENT = 'task:update'; // socket event: { taskId } — lists and details refetch
 
@@ -167,7 +168,7 @@ async function notice(task: TaskDoc, actorId: string, text: string): Promise<voi
 function announce(task: TaskDoc, extra: string[] = []): void {
   emitToUsers([...partiesOf(task), ...extra], TASK_EVENT, { taskId: String(task._id) });
   // The task chat's row (name, taskStatus) changes with the task — chat lists refetch it.
-  if (task.chatId) emitToUsers(chatMembersOf(task), 'chat:conversationUpdated', { conversationId: task.chatId });
+  if (task.chatId && !FINAL_STATUSES.includes(task.status)) emitToUsers(chatMembersOf(task), 'chat:conversationUpdated', { conversationId: task.chatId });
 }
 async function notify(event: TaskEvent, task: TaskDoc, recipients: string[], ctx: Parameters<typeof taskNotify.send>[3] = {}): Promise<void> {
   try { await taskNotify.send(event, task, recipients, ctx); } catch { /* notifications are best-effort */ }
@@ -187,7 +188,6 @@ export const tasksService = {
     const people = await taskPeople.resolve([actorId, input.assignedTo, ...(input.watcherIds ?? [])]);
     const assignee = people.get(input.assignedTo);
     if (!assignee) throw BadRequest('Pick who the task is for');
-    const actor = people.get(actorId) ?? unknownPerson(actorId);
     const companyId = await companyOfBranch(input.branchId);
     if (input.companyId && companyId && input.companyId !== companyId) throw BadRequest('That branch does not belong to the selected business');
     const dueAt = resolveDue(input, assignee.tz);
@@ -217,16 +217,7 @@ export const tasksService = {
       acceptedAt: self ? now : null,
     });
     const taskId = String(task._id);
-    const due = shortStamp(dueAt, assignee.tz);
-    const chatId = await chatService.createTaskChat(actorId, {
-      taskId,
-      title,
-      memberIds: chatMembersOf(task),
-      companyId: task.companyId,
-      branchId: task.branchId,
-      notice: self ? `${actor.name} created this task · due ${due}` : `${actor.name} assigned this task to ${assignee.name} · due ${due}`,
-    });
-    const saved = (await taskRepo.update(taskId, { chatId })) ?? { ...task, chatId };
+    const saved = task; // no chat yet — the giver or the assignee starts one from inside the task
     await taskRepo.addHistory([{ taskId, userId: actorId, field: 'created', newValue: title }]);
     await notify('assigned', saved, [saved.assignedTo], { actorId });
     if (watcherIds.length) await notify('watcher_added', saved, watcherIds, { actorId });
@@ -306,7 +297,11 @@ export const tasksService = {
     else if (plan.status === 'date_change_requested') line = `${actor.name} asked to move the due date to ${shortStamp(dueAt as Date, assigneeTz)}${reason} · ${stamp}`;
     else if (task.status === 'date_change_requested' && plan.status === 'accepted') line = `${actor.name} set the due date to ${shortStamp(updated.dueAt as Date, assigneeTz)} · ${stamp}`;
     else line = `${actor.name} marked this ${STATUS_LABEL[plan.status]}${reason} · ${stamp}`;
+    // Reopened: the chat comes back first, so the notice lands in a live chat. Closed / Cancelled: the
+    // notice is the chat's last line, then it leaves everyone's list and turns read-only.
+    if (plan.status === 'reopened' && updated.chatId) await chatService.reopenTaskChat(updated.chatId);
     await notice(updated, actorId, line);
+    if (FINAL_STATUSES.includes(plan.status) && updated.chatId) await chatService.closeTaskChat(updated.chatId);
 
     const watchers = updated.watchers.map((w) => w.userId);
     if (task.status === 'date_change_requested' && plan.status === 'accepted') await notify('due_changed', updated, [updated.assignedTo], { actorId });
@@ -471,24 +466,30 @@ export const tasksService = {
     return dto(updated, actorId);
   },
 
-  // POST /tasks/:id/chat — the task's chat id, creating the chat if the task has none yet (tasks
-  // converted from reminders get theirs on first open, so nobody's chat list fills up at once).
+  // POST /tasks/:id/chat — "Start chat" (owner, 2026-11-16 evening). No task comes with a chat: the
+  // person who gave it or the person it is for starts one from inside the task, while the task is open.
+  // Watchers are members once it exists. An existing chat's id is returned to anyone who may see the task.
   async ensureChat(actorId: string, id: string): Promise<{ chatId: string }> {
     const { task } = await loadVisible(actorId, id);
     if (task.chatId) return { chatId: task.chatId };
-    const people = await taskPeople.resolve([task.assignedBy, task.assignedTo]);
+    const people = await taskPeople.resolve([actorId, task.assignedBy, task.assignedTo]);
     const by = people.get(task.assignedBy) ?? unknownPerson(task.assignedBy);
     const to = people.get(task.assignedTo) ?? unknownPerson(task.assignedTo);
+    if (actorId !== task.assignedBy && actorId !== task.assignedTo) {
+      throw Forbidden(task.assignedBy === task.assignedTo
+        ? `Only ${by.name} can start this task's chat`
+        : `Only ${by.name} or ${to.name} can start this task's chat`);
+    }
+    if (FINAL_STATUSES.includes(task.status)) throw BadRequest('This task is closed — reopen it to start a chat');
+    const actor = people.get(actorId) ?? unknownPerson(actorId);
     const due = task.dueAt ? ` · due ${shortStamp(task.dueAt, to.tz)}` : '';
-    const chatId = await chatService.createTaskChat(task.assignedBy, {
+    const chatId = await chatService.createTaskChat(actorId, {
       taskId: id,
       title: task.title,
       memberIds: chatMembersOf(task),
       companyId: task.companyId,
       branchId: task.branchId,
-      notice: task.source === 'reminder'
-        ? `Task (from a reminder ${by.name} wrote for ${task.assignedBy === task.assignedTo ? 'themselves' : to.name})${due}`
-        : `Task for ${to.name}${due}`,
+      notice: `${actor.name} started a chat about this task · ${STATUS_LABEL[task.status]}${due}`,
     });
     // Two people opening it at the same moment: the first chat wins; the loser's empty chat is left unused.
     const updated = await taskRepo.update(id, { $set: { chatId } }, { chatId: null });

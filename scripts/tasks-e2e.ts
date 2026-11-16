@@ -82,8 +82,7 @@ async function main(): Promise<void> {
     const c = await as(owner).post('/api/tasks', { title: 'E2E: close October books', assignedTo: id(satish), branchId: String(bom), priority: 'high', dueDate: tomorrow, watcherIds: [id(faiz)] });
     check('create → 201 Assigned, 6 pm IST', c.status === 201 && c.body.status === 'assigned' && c.body.dueAt === new Date(`${tomorrow}T12:30:00.000Z`).toISOString(), c.body);
     const taskId = c.body.id as string;
-    const chatId = c.body.chatId as string;
-    check('task has a chat', !!chatId);
+    check('a new task has NO chat yet', c.body.chatId === null, c.body);
     const mine = await as(satish).get('/api/tasks?view=mine');
     check('Satish: My tasks has it', mine.status === 200 && mine.body.some((t: any) => t.id === taskId), mine.body);
     const given = await as(owner).get('/api/tasks?view=assigned');
@@ -94,6 +93,14 @@ async function main(): Promise<void> {
     check('Manager (BOM, level 3): Team has it', team.body.some((t: any) => t.id === taskId), team.body);
     const nboView = await as(wanjiru).get(`/api/tasks/${taskId}`);
     check('Nairobi staff cannot open it (404)', nboView.status === 404);
+
+    console.log('\nStart chat (giver or assignee only)');
+    check('a watcher cannot start the chat (403)', (await as(faiz).post(`/api/tasks/${taskId}/chat`)).status === 403);
+    check('a manager cannot start the chat (403)', (await as(mgr).post(`/api/tasks/${taskId}/chat`)).status === 403);
+    const started = await as(satish).post(`/api/tasks/${taskId}/chat`);
+    const chatId = started.body.chatId as string;
+    check('the assignee starts it', started.status === 200 && !!chatId, started.body);
+    check('the watcher then gets the same chat', (await as(faiz).post(`/api/tasks/${taskId}/chat`)).body.chatId === chatId);
     const convs = await as(satish).get('/api/conversations');
     const conv = (convs.body as any[]).find((x) => x.id === chatId);
     check('chat list: type task + taskId + named after the task', conv?.type === 'task' && conv?.taskId === taskId && conv?.name === 'E2E: close October books', conv);
@@ -113,21 +120,29 @@ async function main(): Promise<void> {
     const closed = await as(owner).post(`/api/tasks/${taskId}/status`, { to: 'closed' });
     check('assigner closes → Closed', closed.body.status === 'closed', closed.body);
     const convAfter = ((await as(satish).get('/api/conversations')).body as any[]).find((x) => x.id === chatId);
-    check('chat list row carries taskStatus = closed', convAfter?.taskStatus === 'closed', convAfter);
+    check('closed: the chat is off the chat list', !convAfter, convAfter);
     check('old-app "Block" on a task chat (empty id) → 400', (await as(satish).post('/api/chat/block/undefined')).status === 400);
 
-    console.log('\nTask chat (always open) + read-only for a manager');
-    const msgs = await as(satish).get(`/api/conversations/${chatId}/messages`);
+    console.log('\nClosed task chat: read-only, readable from the task, back on reopen');
+    const msgs = await as(satish).get(`/api/tasks/${taskId}/messages`);
     const texts = (msgs.body as any[]).filter((m) => m.type === 'system').map((m) => m.text);
-    check('system lines for every change', texts.some((t: string) => t.startsWith('Owner E2E assigned this task to Satish E2E')) && texts.some((t: string) => t.startsWith('Satish E2E marked this Done – to close')) && texts.some((t: string) => t.startsWith('Task closed by Owner E2E on')), texts);
+    check('system lines for every change since the chat started', texts.some((t: string) => t.startsWith('Satish E2E started a chat about this task')) && texts.some((t: string) => t.startsWith('Satish E2E marked this Done – to close')) && texts.some((t: string) => t.startsWith('Task closed by Owner E2E on')), texts);
     const after = await as(satish).post('/api/messages', { conversationId: chatId, text: 'Thanks — books are closed', type: 'text' });
-    check('closed task chat still takes messages (always open)', after.status === 201, after.body);
+    check('closed task chat refuses messages (423)', after.status === 423, after.body);
+    check('closed task: Start chat just returns the existing read-only chat', (await as(owner).post(`/api/tasks/${taskId}/chat`)).body.chatId === chatId);
+    const reo = await as(owner).post(`/api/tasks/${taskId}/status`, { to: 'reopened', comment: 'Bank charges missing' });
+    check('reopen → the chat is back on the list and takes messages', reo.body.status === 'reopened'
+      && ((await as(satish).get('/api/conversations')).body as any[]).some((x) => x.id === chatId)
+      && (await as(satish).post('/api/messages', { conversationId: chatId, text: 'On it', type: 'text' })).status === 201, reo.body);
+    await as(satish).post(`/api/tasks/${taskId}/status`, { to: 'in_progress' });
+    await as(satish).post(`/api/tasks/${taskId}/status`, { to: 'done' });
+    await as(owner).post(`/api/tasks/${taskId}/status`, { to: 'closed' });
     const mgrRead = await as(mgr).get(`/api/tasks/${taskId}/messages`);
     check('manager reads the chat via the task', mgrRead.status === 200 && (mgrRead.body as any[]).length >= 3);
     const mgrPost = await as(mgr).post('/api/messages', { conversationId: chatId, text: 'hello', type: 'text' });
     check('manager cannot post without joining (403)', mgrPost.status === 403, mgrPost.body);
     const hist = await as(owner).get(`/api/tasks/${taskId}`);
-    check('history has created + 4 status rows', hist.body.history.filter((h: any) => h.field === 'status').length === 4 && hist.body.history[0].field === 'created', hist.body.history);
+    check('history has created + 8 status rows', hist.body.history.filter((h: any) => h.field === 'status').length === 8 && hist.body.history[0].field === 'created', hist.body.history.map((h: any) => h.newValue));
 
     console.log('\nInput guards');
     check('121-char title → 400', (await as(owner).post('/api/tasks', { title: 'x'.repeat(121), assignedTo: id(satish), branchId: String(bom), priority: 'normal', dueDate: tomorrow })).status === 400);
@@ -187,7 +202,7 @@ async function main(): Promise<void> {
     check('converted tasks list without a chat; undated sorts last', lst.body.some((t: any) => t.id === pid && t.chatId === null) && lst.body[lst.body.length - 1].dueAt === null, lst.body.map((t: any) => [t.title, t.dueAt]));
     const e1 = await as(satish).post(`/api/tasks/${pid}/chat`);
     const e2 = await as(owner).post(`/api/tasks/${pid}/chat`);
-    check('first open creates the chat; the next returns the same one', e1.status === 200 && !!e1.body.chatId && e2.body.chatId === e1.body.chatId, [e1.body, e2.body]);
+    check('Start chat on a converted task; the giver then gets the same chat', e1.status === 200 && !!e1.body.chatId && e2.body.chatId === e1.body.chatId, [e1.body, e2.body]);
   } finally {
     await disconnectMongo();
     for (const name of [CRM_DB, APP_DB]) {
