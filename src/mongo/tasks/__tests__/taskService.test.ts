@@ -9,6 +9,7 @@ const notices: Array<{ chatId: string; text: string }> = [];
 const chatMembers = new Map<string, string[]>();
 const sent: Array<{ event: string; to: string[]; actorId?: string | null }> = [];
 const chatState: Array<[string, 'closed' | 'reopened']> = [];
+const talkedChats = new Set<string>(); // chats in which a person (not the app) has written
 
 // structuredClone drops the ObjectId class (String(_id) would read "[object Object]") — put it back.
 const clone = (t: TaskDoc): TaskDoc => ({ ...structuredClone(t), _id: t._id });
@@ -101,6 +102,7 @@ jest.mock('../../chat/chat.service', () => ({
     closeTaskChat: async (chatId: string) => { chatState.push([chatId, 'closed']); },
     reopenTaskChat: async (chatId: string) => { chatState.push([chatId, 'reopened']); },
     unreadFor: async () => ({}),
+    withPeopleMessages: async (ids: string[]) => new Set(ids.filter((id) => talkedChats.has(id))),
   },
 }));
 jest.mock('../../chat/chat.events', () => ({ emitToUsers: () => undefined }));
@@ -113,7 +115,7 @@ import { tasksService } from '../task.service';
 const NOW = new Date('2026-11-18T06:00:00.000Z'); // 11:30 IST, Wednesday
 const base = { title: 'Close October books', branchId: BOM, priority: 'normal' as const, dueDate: '2026-11-20' };
 
-beforeEach(() => { tasks.length = 0; history.length = 0; notices.length = 0; chatMembers.clear(); sent.length = 0; chatState.length = 0; });
+beforeEach(() => { tasks.length = 0; history.length = 0; notices.length = 0; chatMembers.clear(); sent.length = 0; chatState.length = 0; talkedChats.clear(); });
 
 // Create a task and start its chat (owner 2026-11-16 evening: no task comes with a chat).
 async function withChat(actor: string, input: Parameters<typeof tasksService.create>[1], starter = actor) {
@@ -161,6 +163,14 @@ describe('Start chat (giver or assignee only, while open)', () => {
     expect(notices[0].text).toBe('Satish started a chat about this task · Assigned · due 20 Nov, 6:00 pm');
     expect((await tasksService.ensureChat('faiz', t.id)).chatId).toBe(chatId); // a watcher opens the existing one
     expect((await tasksService.ensureChat('afshin', t.id)).chatId).toBe(chatId); // never a second chat
+  });
+  it('counts as talked about only once a person writes, not when the chat is just started', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish' }, { now: NOW });
+    expect((await tasksService.get('satish', t.id)).task.chatHasMessages).toBe(false); // no chat
+    const { chatId } = await tasksService.ensureChat('satish', t.id);
+    expect((await tasksService.get('satish', t.id)).task.chatHasMessages).toBe(false); // only the "started a chat" notice
+    talkedChats.add(chatId);
+    expect((await tasksService.get('satish', t.id)).task.chatHasMessages).toBe(true);
   });
   it('a watcher or a manager cannot start it', async () => {
     const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', watcherIds: ['faiz'] }, { now: NOW });
