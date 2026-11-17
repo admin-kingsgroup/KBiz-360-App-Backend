@@ -1052,6 +1052,18 @@ export const chatService = {
     return Object.fromEntries(convs.map((c) => [String(c._id), c.members.find((m) => m.userId === userId)?.unread ?? 0]));
   },
 
+  // The chats (of those given) in which a person has written: any message that is not one of the app's
+  // own notices ("X started a chat about this task", status changes). A task's chat badge stays red
+  // until then (owner, 2026-11-17).
+  // One small lookup per chat that stops at its first message from a person (the conversationId
+  // index): only "has anyone written" is asked, and a long task chat must not be read end to end for it.
+  async withPeopleMessages(conversationIds: string[]): Promise<Set<string>> {
+    const ids = [...new Set(conversationIds)].filter((id) => Types.ObjectId.isValid(id));
+    const hits = await Promise.all(ids.map(async (id) =>
+      (await MessageModel().exists({ conversationId: new Types.ObjectId(id), type: { $ne: 'system' } })) ? id : null));
+    return new Set(hits.filter((id): id is string => id !== null));
+  },
+
   // membership for socket room joins / typing
   async participantsOf(conversationId: string): Promise<string[]> {
     const conv = await conversationRepo.findById(conversationId);

@@ -30,6 +30,8 @@ export interface TaskDTO {
   link: { label: string; url: string } | null;
   chatId: string | null;
   unread: number;
+  // Someone has written in the task's chat (not just the app's notices) — the chat badge's green.
+  chatHasMessages: boolean;
   overdue: boolean;
   isSelf: boolean;
   myRole: TaskRole;
@@ -79,7 +81,8 @@ export async function toTaskDTOs(tasks: TaskDoc[], viewerId: string, now = new D
   if (!tasks.length) return [];
   const people = await taskPeople.resolve(tasks.flatMap((t) => [t.assignedTo, t.assignedBy, ...t.watchers.map((w) => w.userId)]));
   const { branches, companies } = await branchNames(tasks.map((t) => t.branchId));
-  const unread = await chatService.unreadFor(tasks.map((t) => t.chatId).filter((c): c is string => !!c), viewerId);
+  const chatIds = tasks.map((t) => t.chatId).filter((c): c is string => !!c);
+  const [unread, talked] = await Promise.all([chatService.unreadFor(chatIds, viewerId), chatService.withPeopleMessages(chatIds)]);
   const ref = (id: string): PersonRef => ({ id, name: (people.get(id) as TaskPerson | undefined)?.name ?? 'Unknown' });
   return tasks.map((t) => {
     const companyId = t.companyId ?? branches.get(t.branchId)?.companyId ?? null;
@@ -105,6 +108,7 @@ export async function toTaskDTOs(tasks: TaskDoc[], viewerId: string, now = new D
       link: t.link ?? null,
       chatId: t.chatId ?? null,
       unread: t.chatId ? unread[t.chatId] ?? 0 : 0,
+      chatHasMessages: !!t.chatId && talked.has(t.chatId),
       overdue: isOverdue(t, now),
       isSelf: t.assignedBy === t.assignedTo,
       myRole: roleOf(t, viewerId),
