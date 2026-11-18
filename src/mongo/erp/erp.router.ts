@@ -28,7 +28,7 @@ erpRouter.all('/*', asyncHandler(async (req: Request, res: Response) => {
 
   const rest = req.path.replace(/\/+$/, '');            // "/vouchers/approvals"
   const erpPath = `/api${rest}`;
-  if (!isAllowedErpCall(req.method, erpPath)) throw NotFound(`No ERP route for ${req.method} ${rest}`);
+  if (!isAllowedErpCall(req.method, erpPath, req.query)) throw NotFound(`No ERP route for ${req.method} ${rest}`);
   const qIndex = req.originalUrl.indexOf('?');
   const query = qIndex >= 0 ? req.originalUrl.slice(qIndex) : '';
   const hasBody = req.method === 'POST' || req.method === 'PUT';
