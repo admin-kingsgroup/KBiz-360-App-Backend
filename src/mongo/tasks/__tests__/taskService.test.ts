@@ -155,7 +155,7 @@ describe('creating a task', () => {
   });
 });
 
-describe('Start chat (giver or assignee only, while open)', () => {
+describe('Start chat (the people on the task — giver, assignee, watchers — while open)', () => {
   it('the assignee starts it; giver, assignee and watchers are members', async () => {
     const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', watcherIds: ['faiz'] }, { now: NOW });
     const { chatId } = await tasksService.ensureChat('satish', t.id);
@@ -172,10 +172,23 @@ describe('Start chat (giver or assignee only, while open)', () => {
     talkedChats.add(chatId);
     expect((await tasksService.get('satish', t.id)).task.chatHasMessages).toBe(true);
   });
-  it('a watcher or a manager cannot start it', async () => {
+  // Owner, 2026-11-18: "watcher is not able to create or open chat — watcher can also".
+  it('a watcher starts it too; the giver and the assignee then get the same chat', async () => {
     const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', watcherIds: ['faiz'] }, { now: NOW });
-    await expect(tasksService.ensureChat('faiz', t.id)).rejects.toThrow('Only Afshin Dhanani or Satish can start this task\'s chat');
-    await expect(tasksService.ensureChat('farhan', t.id)).rejects.toThrow(/can start/);
+    const { chatId } = await tasksService.ensureChat('faiz', t.id);
+    expect(chatMembers.get(chatId)).toEqual(['afshin', 'satish', 'faiz']);
+    expect(notices[0].text).toBe('Faiz started a chat about this task · Assigned · due 20 Nov, 6:00 pm');
+    expect((await tasksService.ensureChat('afshin', t.id)).chatId).toBe(chatId);
+    expect((await tasksService.ensureChat('satish', t.id)).chatId).toBe(chatId);
+    expect((await tasksService.get('faiz', t.id)).task.chatId).toBe(chatId);
+  });
+  it('a manager above who is not on the task cannot start it — until they watch it', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', watcherIds: ['faiz'] }, { now: NOW });
+    await expect(tasksService.ensureChat('farhan', t.id)).rejects.toThrow('Watch the task to start its chat');
+    expect((await tasksService.get('afshin', t.id)).task.chatId).toBeNull();
+    await tasksService.watchers('farhan', t.id, { add: ['farhan'] }, NOW);
+    const { chatId } = await tasksService.ensureChat('farhan', t.id);
+    expect(chatMembers.get(chatId)).toEqual(['afshin', 'satish', 'faiz', 'farhan']);
   });
   it('not on a closed task', async () => {
     const t = await tasksService.create('satish', { ...base, assignedTo: 'satish' }, { now: NOW });

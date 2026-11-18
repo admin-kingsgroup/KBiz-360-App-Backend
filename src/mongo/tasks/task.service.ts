@@ -18,7 +18,7 @@ import {
 
 // Smart Connect Tasks (spec 2026-11-16 + the owner's answers): anyone may assign anyone; a manager sees
 // the tasks of the people below them (Super Admin sees all); no escalation. The task chat is started
-// from inside the task by its giver or assignee, and closes (off every list, read-only) with the task.
+// from inside the task by its giver, assignee or a watcher, and closes (off every list, read-only) with the task.
 
 export const TASK_EVENT = 'task:update'; // socket event: { taskId } — lists and details refetch
 
@@ -217,7 +217,7 @@ export const tasksService = {
       acceptedAt: self ? now : null,
     });
     const taskId = String(task._id);
-    const saved = task; // no chat yet — the giver or the assignee starts one from inside the task
+    const saved = task; // no chat yet — the giver, the assignee or a watcher starts one from inside the task
     await taskRepo.addHistory([{ taskId, userId: actorId, field: 'created', newValue: title }]);
     await notify('assigned', saved, [saved.assignedTo], { actorId });
     if (watcherIds.length) await notify('watcher_added', saved, watcherIds, { actorId });
@@ -466,21 +466,18 @@ export const tasksService = {
     return dto(updated, actorId);
   },
 
-  // POST /tasks/:id/chat — "Start chat" (owner, 2026-11-16 evening). No task comes with a chat: the
-  // person who gave it or the person it is for starts one from inside the task, while the task is open.
-  // Watchers are members once it exists. An existing chat's id is returned to anyone who may see the task.
+  // POST /tasks/:id/chat — "Start chat" (owner, 2026-11-16 evening). No task comes with a chat: one of
+  // the people on it — the person who gave it, the person it is for, or a watcher (owner, 2026-11-18:
+  // "watcher can also") — starts one from inside the task, while the task is open. Everyone on the task
+  // is a member. A manager above who only sees the task watches it first. An existing chat's id is
+  // returned to anyone who may see the task.
   async ensureChat(actorId: string, id: string): Promise<{ chatId: string }> {
     const { task } = await loadVisible(actorId, id);
     if (task.chatId) return { chatId: task.chatId };
-    const people = await taskPeople.resolve([actorId, task.assignedBy, task.assignedTo]);
-    const by = people.get(task.assignedBy) ?? unknownPerson(task.assignedBy);
-    const to = people.get(task.assignedTo) ?? unknownPerson(task.assignedTo);
-    if (actorId !== task.assignedBy && actorId !== task.assignedTo) {
-      throw Forbidden(task.assignedBy === task.assignedTo
-        ? `Only ${by.name} can start this task's chat`
-        : `Only ${by.name} or ${to.name} can start this task's chat`);
-    }
+    if (!isParty(task, actorId)) throw Forbidden('Watch the task to start its chat');
     if (FINAL_STATUSES.includes(task.status)) throw BadRequest('This task is closed — reopen it to start a chat');
+    const people = await taskPeople.resolve([actorId, task.assignedTo]);
+    const to = people.get(task.assignedTo) ?? unknownPerson(task.assignedTo);
     const actor = people.get(actorId) ?? unknownPerson(actorId);
     const due = task.dueAt ? ` · due ${shortStamp(task.dueAt, to.tz)}` : '';
     const chatId = await chatService.createTaskChat(actorId, {
