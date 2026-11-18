@@ -10,6 +10,8 @@ export const ERP_ALLOW: ReadonlyArray<readonly [string, RegExp]> = [
   ['GET', re('/api/pending-work/approvals')],
   ['GET', re('/api/vouchers/approvals')],
   ['GET', re('/api/vouchers/approval-counts')],
+  // Approvals ▸ Entries ▸ Edits for FM (2026-11-18): the list only. Reviewing and deciding an edit stays in the ERP.
+  ['GET', re('/api/vouchers/edit-requests')],
   ['GET', re(`/api/vouchers/${ID}`)],
   ['GET', re(`/api/vouchers/${ID}/journal`)],
   ['POST', re(`/api/vouchers/${ID}/(review|approve|reject)`)],

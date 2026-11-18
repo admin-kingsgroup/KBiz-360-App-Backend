@@ -44,7 +44,7 @@ afterAll(() => { global.fetch = realFetch; });
 describe('allow-list', () => {
   it.each([
     ['GET', '/api/auth/whoami'], ['GET', '/api/app-config/approval.approveEmails'], ['GET', '/api/pending-work/approvals'],
-    ['GET', '/api/vouchers/approvals'], ['GET', '/api/vouchers/approval-counts'], ['GET', `/api/vouchers/${ID}`],
+    ['GET', '/api/vouchers/approvals'], ['GET', '/api/vouchers/approval-counts'], ['GET', '/api/vouchers/edit-requests'], ['GET', `/api/vouchers/${ID}`],
     ['GET', `/api/vouchers/${ID}/journal`], ['POST', `/api/vouchers/${ID}/review`], ['POST', `/api/vouchers/${ID}/approve`],
     ['POST', `/api/vouchers/${ID}/reject`], ['GET', '/api/booking-orders'], ['GET', `/api/booking-orders/${ID}`],
     ['POST', `/api/booking-orders/${ID}/review`], ['GET', '/api/tk/change-requests'], ['POST', `/api/tk/change-requests/${ID}/act`],
@@ -59,6 +59,8 @@ describe('allow-list', () => {
     ['GET', '/api/vouchers/abc'], ['GET', '/api/ledgers'], ['POST', '/api/auth/login'], ['POST', `/api/vouchers/${ID}/revoke`],
     ['GET', '/api/app-config/jwt.secret'], ['POST', '/api/payment-requests'], ['POST', '/api/tk/change-requests'],
     ['POST', `/api/ba-dashboard/owner/director-decided/cr/${ID}`], ['GET', '/api/ba-dashboard/owner/control'],
+    ['GET', '/api/vouchers/edit-requests/count'], ['GET', `/api/vouchers/${ID}/edit-request`], ['POST', `/api/vouchers/${ID}/edit-request/approve`],
+    ['POST', `/api/vouchers/${ID}/edit-request/reject`], ['POST', '/api/vouchers/edit-requests'],
   ])('%s %s is refused', (m, p) => expect(isAllowedErpCall(m, p)).toBe(false));
 
   it('a refused call never reaches the ERP', async () => {
