@@ -97,13 +97,16 @@ async function main(): Promise<void> {
     const nboView = await as(wanjiru).get(`/api/tasks/${taskId}`);
     check('Nairobi staff cannot open it (404)', nboView.status === 404);
 
-    console.log('\nStart chat (giver or assignee only)');
-    check('a watcher cannot start the chat (403)', (await as(faiz).post(`/api/tasks/${taskId}/chat`)).status === 403);
-    check('a manager cannot start the chat (403)', (await as(mgr).post(`/api/tasks/${taskId}/chat`)).status === 403);
-    const started = await as(satish).post(`/api/tasks/${taskId}/chat`);
+    console.log('\nStart chat (giver, assignee or a watcher — owner 2026-11-18)');
+    check('a manager who is not on the task cannot start the chat (403)', (await as(mgr).post(`/api/tasks/${taskId}/chat`)).status === 403);
+    const started = await as(faiz).post(`/api/tasks/${taskId}/chat`);
     const chatId = started.body.chatId as string;
-    check('the assignee starts it', started.status === 200 && !!chatId, started.body);
-    check('the watcher then gets the same chat', (await as(faiz).post(`/api/tasks/${taskId}/chat`)).body.chatId === chatId);
+    check('a watcher starts it', started.status === 200 && !!chatId, started.body);
+    check('the assignee then gets the same chat', (await as(satish).post(`/api/tasks/${taskId}/chat`)).body.chatId === chatId);
+    check('the giver then gets the same chat', (await as(owner).post(`/api/tasks/${taskId}/chat`)).body.chatId === chatId);
+    check('the watcher has it on their chat list', ((await as(faiz).get('/api/conversations')).body as any[]).some((x) => x.id === chatId));
+    const watcherMsg = await as(faiz).post('/api/messages', { conversationId: chatId, text: 'Watching — tell me if you need the bank statement', type: 'text' });
+    check('the watcher writes in it (201)', watcherMsg.status === 201, watcherMsg.body);
     const convs = await as(satish).get('/api/conversations');
     const conv = (convs.body as any[]).find((x) => x.id === chatId);
     check('chat list: type task + taskId + named after the task', conv?.type === 'task' && conv?.taskId === taskId && conv?.name === 'E2E: close October books', conv);
@@ -129,7 +132,7 @@ async function main(): Promise<void> {
     console.log('\nClosed task chat: read-only, readable from the task, back on reopen');
     const msgs = await as(satish).get(`/api/tasks/${taskId}/messages`);
     const texts = (msgs.body as any[]).filter((m) => m.type === 'system').map((m) => m.text);
-    check('system lines for every change since the chat started', texts.some((t: string) => t.startsWith('Satish E2E started a chat about this task')) && texts.some((t: string) => t.startsWith('Satish E2E marked this Done – to close')) && texts.some((t: string) => t.startsWith('Task closed by Owner E2E on')), texts);
+    check('system lines for every change since the chat started', texts.some((t: string) => t.startsWith('Faiz E2E started a chat about this task')) && texts.some((t: string) => t.startsWith('Satish E2E marked this Done – to close')) && texts.some((t: string) => t.startsWith('Task closed by Owner E2E on')), texts);
     const after = await as(satish).post('/api/messages', { conversationId: chatId, text: 'Thanks — books are closed', type: 'text' });
     check('closed task chat refuses messages (423)', after.status === 423, after.body);
     check('closed task: Start chat just returns the existing read-only chat', (await as(owner).post(`/api/tasks/${taskId}/chat`)).body.chatId === chatId);

@@ -956,7 +956,7 @@ export const chatService = {
   },
 
   // ── task chats (managed by the task service only) ──
-  // One chat per task, started from inside the task by its giver or assignee; members = assigner,
+  // One chat per task, started from inside the task by its giver, assignee or a watcher; members = assigner,
   // assignee, watchers. Closed (off the lists, read-only) with the task, reopened with it.
   async createTaskChat(actorId: string, input: { taskId: string; title: string; memberIds: string[]; companyId: string | null; branchId: string | null; notice: string }) {
     const participantIds = [...new Set([actorId, ...input.memberIds])];
