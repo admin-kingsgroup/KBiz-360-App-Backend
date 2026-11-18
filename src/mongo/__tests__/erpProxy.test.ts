@@ -63,6 +63,20 @@ describe('allow-list', () => {
     ['POST', `/api/vouchers/${ID}/edit-request/reject`], ['POST', '/api/vouchers/edit-requests'],
   ])('%s %s is refused', (m, p) => expect(isAllowedErpCall(m, p)).toBe(false));
 
+  it.each(['/api/pending-work/approvals/status', '/api/concerns/mine', '/api/concerns/erp', '/api/operations-board/cashplan', '/api/hub-deal/approval-counts'])(
+    'the Approvals tabs read %s', (p) => expect(isAllowedErpCall('GET', p)).toBe(true));
+
+  it('of the audit trail, only the recorded list is open', () => {
+    expect(isAllowedErpCall('GET', '/api/tk/monitor/audit', { recorded: '1' })).toBe(true);
+    expect(isAllowedErpCall('GET', '/api/tk/monitor/audit')).toBe(false);
+    expect(isAllowedErpCall('GET', '/api/tk/monitor/audit', { action: 'x' })).toBe(false);
+  });
+
+  it('a concern is never opened (that marks it Seen) or acted on', () => {
+    expect(isAllowedErpCall('GET', `/api/concerns/${ID}`)).toBe(false);
+    expect(isAllowedErpCall('POST', `/api/concerns/${ID}/reply`)).toBe(false);
+  });
+
   it('a refused call never reaches the ERP', async () => {
     const r = await request(app).delete(`/api/erp/vouchers/${ID}`);
     expect(r.status).toBe(404);

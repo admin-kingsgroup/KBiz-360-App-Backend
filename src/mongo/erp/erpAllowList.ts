@@ -4,7 +4,8 @@
 const ID = '[0-9a-fA-F]{24}';
 const re = (s: string): RegExp => new RegExp(`^${s}$`);
 
-export const ERP_ALLOW: ReadonlyArray<readonly [string, RegExp]> = [
+type Query = Record<string, unknown>;
+export const ERP_ALLOW: ReadonlyArray<readonly [string, RegExp, ((query: Query) => boolean)?]> = [
   ['GET', re('/api/auth/whoami')],
   ['GET', re('/api/app-config/approval\\.(verifyEmails|approveEmails|directorEmails|ownerEmails|dealApproveEmails)')],
   ['GET', re('/api/pending-work/approvals')],
@@ -32,11 +33,18 @@ export const ERP_ALLOW: ReadonlyArray<readonly [string, RegExp]> = [
   ['GET', re('/api/reconciliation/close/board')],
   // The Owner's Review in the app and on its home-screen widget (owner, 2026-10-30): what the Director approved, READ only.
   ['GET', re('/api/ba-dashboard/owner/director-decided')],
+  // The ERP's eight Approvals tabs in the app (2026-11-18), read only: Status (and, of the audit trail, only its recorded list),
+  // Raise & Resolve's lists and ERP Concerns (never one concern: opening it marks it Seen), the payables tiles, the Pairs count.
+  ['GET', re('/api/pending-work/approvals/status')],
+  ['GET', re('/api/tk/monitor/audit'), (query) => query.recorded === '1'],
+  ['GET', re('/api/concerns/(mine|erp)')],
+  ['GET', re('/api/operations-board/cashplan')],
+  ['GET', re('/api/hub-deal/approval-counts')],
 ];
 
 /** `path` is the ERP path ("/api/vouchers/approvals"), without the query string. */
-export function isAllowedErpCall(method: string, path: string): boolean {
+export function isAllowedErpCall(method: string, path: string, query: Query = {}): boolean {
   const m = String(method || '').toUpperCase();
   const p = String(path || '').replace(/\/+$/, '');
-  return ERP_ALLOW.some(([am, rx]) => am === m && rx.test(p));
+  return ERP_ALLOW.some(([am, rx, queryOk]) => am === m && rx.test(p) && (!queryOk || queryOk(query)));
 }
