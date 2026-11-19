@@ -1,10 +1,11 @@
 // Which group chat is a branch's home for a given kind of report.
 //
-// Owner, 2026-11-19: every Travkings branch keeps exactly TWO groups — "Accounts <CODE>" and
-// "Operation <CODE>" (e.g. "Accounts BOM", "Operation BOM"). "Accounts <CODE>" is the home of the
-// accounts, finance and hr families below; "Operation <CODE>" of ticketing and holidays. Those names
-// come FIRST in every family; the older per-desk names after them are still accepted, so a branch
-// whose groups have not been renamed yet keeps getting its posts.
+// Owner, 2026-11-19: every Travkings branch keeps exactly TWO groups — "<CODE> Accounts" and
+// "<CODE> Operations" (e.g. "BOM Accounts", "BOM Operations"; the code comes first). "<CODE> Accounts"
+// is the home of the accounts, finance and hr families below; "<CODE> Operations" of ticketing and
+// holidays. Those names come FIRST in every family; the earlier "Accounts BOM" / "Operation BOM" and
+// the older per-desk names after them are still accepted, so a branch whose groups have not been
+// renamed yet keeps getting its posts.
 //
 // The families, all per branch (the INB ones per branch PAIR):
 //   'finance'       → "HQ - BOM Finance" … the daily Receivables / Payables / Bank & Cash reports.
@@ -52,16 +53,17 @@ export const reportGroupKeys = (kind: ReportGroupKind, branchCode: string): stri
   }
   const c = squashName(branchCode);
   if (!c) return [];
-  // The branch's two groups since 2026-11-19 — "Accounts BOM", "Operation BOM".
-  const accounts = `accounts${c}`;
-  const operation = `operation${c}`;
+  // The branch's two groups since 2026-11-19 — "BOM Accounts", "BOM Operations" (code first), then
+  // the same day's first spelling "Accounts BOM" / "Operation BOM", kept so a rename never strands posts.
+  const accounts = [`${c}accounts`, `accounts${c}`];
+  const operations = [`${c}operations`, `${c}operation`, `operation${c}`];
   switch (kind) {
-    case 'accounts': return [accounts, `${c}branchaccounts`];
-    case 'ticketing': return [operation, `${c}ticketing`];
-    case 'holidays': return [operation, `${c}holidays`];
+    case 'accounts': return [...accounts, `${c}branchaccounts`];
+    case 'ticketing': return [...operations, `${c}ticketing`];
+    case 'holidays': return [...operations, `${c}holidays`];
     // "HQ - BOM HR", "BOM - HR Team", "BOM HR" — every shape a branch HR room gets named in.
-    case 'hr': return [accounts, `hq${c}hr`, `${c}hrteam`, `${c}hr`];
-    default: return [accounts, `hq${c}finance`, `${c}financeteam`];
+    case 'hr': return [...accounts, `hq${c}hr`, `${c}hrteam`, `${c}hr`];
+    default: return [...accounts, `hq${c}finance`, `${c}financeteam`];
   }
 };
 
@@ -95,10 +97,10 @@ export const reportGroupNameHint = (kind: ReportGroupKind): string => {
 export const reportGroupExpected = (kind: ReportGroupKind, branchCode: string): string => {
   const [a, b] = String(branchCode).split('/');
   switch (kind) {
-    case 'ticketing': case 'holidays': return `"Operation ${branchCode}"`;
+    case 'ticketing': case 'holidays': return `"${branchCode} Operations"`;
     case 'inb-ticketing': return `"INB Ticketing ${a}/${b}" (either order)`;
     case 'inb-holidays': return `"INB Holidays ${a}/${b}" (either order)`;
     case 'tickets': return '"Ticket Support"';
-    default: return `"Accounts ${branchCode}"`; // accounts, finance, hr
+    default: return `"${branchCode} Accounts"`; // accounts, finance, hr
   }
 };
