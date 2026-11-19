@@ -4,7 +4,7 @@ import { chatService } from '../chat/chat.service';
 import type { TaskDoc, TaskHistoryDoc } from './task.model';
 import { taskPeople, type TaskPerson } from './task.people';
 import { allowedTransitions, isOverdue } from './task.rules';
-import { FINAL_STATUSES, OPEN_STATUSES, type RepeatRule, type TaskPriority, type TaskStatus } from './task.types';
+import { FINAL_STATUSES, OPEN_STATUSES, type RepeatRule, type TaskDepartment, type TaskPriority, type TaskStatus } from './task.types';
 
 // The task as the app sees it (plan Task 3 — the keys are the app's contract).
 export interface PersonRef { id: string; name: string }
@@ -21,6 +21,7 @@ export interface TaskDTO {
   assignedBy: PersonRef;
   watchers: PersonRef[];
   priority: TaskPriority;
+  department: TaskDepartment | null;
   dueAt: string | null;
   status: TaskStatus;
   requestedDueAt: string | null;
@@ -99,6 +100,7 @@ export async function toTaskDTOs(tasks: TaskDoc[], viewerId: string, now = new D
       assignedBy: ref(t.assignedBy),
       watchers: t.watchers.map((w) => ref(w.userId)),
       priority: t.priority,
+      department: t.department ?? null,
       dueAt: iso(t.dueAt),
       status: t.status,
       requestedDueAt: iso(t.requestedDueAt),

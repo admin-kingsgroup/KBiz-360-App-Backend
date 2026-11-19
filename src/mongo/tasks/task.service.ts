@@ -8,12 +8,13 @@ import type { TaskDoc } from './task.model';
 import { taskRepo, type HistoryRow } from './task.repository';
 import { taskPeople, unknownPerson, type TaskPerson } from './task.people';
 import { taskNotify, type TaskEvent } from './task.notify';
+import { shareTaskInBranchGroup } from './task.groupPost';
 import { ALERTS_CLEARED, isOverdue, planTransition } from './task.rules';
 import { branchNames, toHistoryDTOs, toTaskDTOs, type TaskDTO } from './task.dto';
 import { DAY_KEY_RE, HHMM_RE, localParts, longDate, nextOccurrence, shortStamp, zonedDateTime } from './task.time';
 import {
   DEFAULT_DUE_TIME, DESCRIPTION_MAX, FINAL_STATUSES, LIVE_STATUSES, OPEN_STATUSES, STATUS_LABEL, TITLE_MAX,
-  type RepeatRule, type TaskPriority, type TaskStatus,
+  DEPARTMENT_LABEL, type RepeatRule, type TaskDepartment, type TaskPriority, type TaskStatus,
 } from './task.types';
 
 // Smart Connect Tasks (spec 2026-11-16 + the owner's answers): anyone may assign anyone; a manager sees
@@ -32,6 +33,7 @@ export interface CreateInput extends DueInput {
   branchId: string;
   companyId?: string | null;
   priority: TaskPriority;
+  department?: TaskDepartment | null; // Operations / Accounts — the branch group it is shared in
   attachments?: AttachmentInput[];
   repeat?: RepeatRule;
   link?: { label: string; url: string } | null;
@@ -41,6 +43,7 @@ export interface PatchInput extends DueInput {
   title?: string;
   description?: string;
   priority?: TaskPriority;
+  department?: TaskDepartment | null;
   branchId?: string;
   repeat?: RepeatRule;
   link?: { label: string; url: string } | null;
@@ -206,6 +209,7 @@ export const tasksService = {
       assignedBy: actorId,
       watchers: watcherIds.map((userId) => ({ userId, addedBy: actorId, addedAt: now })),
       priority: input.priority,
+      department: input.department ?? null,
       dueAt,
       status: self ? 'accepted' : 'assigned',
       attachments: (input.attachments ?? []).map((a) => ({ ...a, uploadedBy: actorId, uploadedAt: now })),
@@ -221,6 +225,8 @@ export const tasksService = {
     await taskRepo.addHistory([{ taskId, userId: actorId, field: 'created', newValue: title }]);
     await notify('assigned', saved, [saved.assignedTo], { actorId });
     if (watcherIds.length) await notify('watcher_added', saved, watcherIds, { actorId });
+    // The branch's Operations / Accounts group hears of it once — not a personal to-do, not each repeat copy.
+    if (saved.department && !self && !opts.parentRecurringId) await shareTaskInBranchGroup(saved, people);
     announce(saved);
     return dto(saved, actorId);
   },
@@ -399,6 +405,11 @@ export const tasksService = {
       const { branches } = await branchNames([input.branchId]);
       lines.push(`moved the task to ${branches.get(input.branchId)?.name ?? 'another branch'}`);
     }
+    if (input.department !== undefined && (input.department ?? null) !== (task.department ?? null)) {
+      set.department = input.department ?? null;
+      rows.push({ taskId: id, userId: actorId, field: 'department', oldValue: task.department ?? null, newValue: input.department ?? null, comment });
+      lines.push(input.department ? `set the department to ${DEPARTMENT_LABEL[input.department]}` : 'cleared the department');
+    }
     if (input.repeat !== undefined) {
       const repeat = cleanRepeat(input.repeat);
       if (!sameRepeat(repeat, task.repeat)) { set.repeat = repeat; rows.push({ taskId: id, userId: actorId, field: 'repeat', oldValue: JSON.stringify(task.repeat ?? { kind: 'none' }), newValue: JSON.stringify(repeat), comment }); lines.push(repeat.kind === 'none' ? 'stopped the repeat' : `set the task to repeat ${repeat.kind}`); }
@@ -575,6 +586,7 @@ export const tasksService = {
       branchId: task.branchId,
       companyId: task.companyId,
       priority: task.priority,
+      department: task.department ?? null,
       dueAt: next.toISOString(),
       repeat: task.repeat,
       link: task.link,

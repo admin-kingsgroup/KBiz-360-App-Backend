@@ -5,7 +5,7 @@ import { validate } from '../../common/validate';
 import { Unauthorized } from '../../common/errors';
 import { requireAuth } from '../middleware';
 import { tasksService, type CreateInput, type ListQuery, type PatchInput } from './task.service';
-import { DESCRIPTION_MAX, TASK_PRIORITIES, TASK_STATUSES, TITLE_MAX, type TaskStatus } from './task.types';
+import { DESCRIPTION_MAX, TASK_DEPARTMENTS, TASK_PRIORITIES, TASK_STATUSES, TITLE_MAX, type TaskStatus } from './task.types';
 
 // Mounted at /api/tasks. Every status rule is enforced in the service, not here — these schemas only
 // shape the input. There is no DELETE: tasks are never deleted, only cancelled.
@@ -36,6 +36,8 @@ const repeat = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('monthly'), dayOfMonth: z.number().int().min(1).max(31) }),
 ]);
 const link = z.object({ label: z.string().min(1).max(120), url: z.string().min(1).max(2000) }).nullable();
+// Operations / Accounts (owner, 2026-11-19) — optional so an app from before it still creates tasks.
+const department = z.enum(TASK_DEPARTMENTS as [string, ...string[]]).nullable();
 
 const createSchema = z.object({
   title: z.string().trim().min(1).max(TITLE_MAX),
@@ -45,6 +47,7 @@ const createSchema = z.object({
   branchId: id24,
   companyId: id24.nullable().optional(),
   priority: z.enum(TASK_PRIORITIES as [string, ...string[]]),
+  department: department.optional(),
   ...dueFields,
   attachments: z.array(attachment).max(20).optional(),
   repeat: repeat.optional(),
@@ -80,6 +83,7 @@ const patchSchema = z.object({
   title: z.string().trim().min(1).max(TITLE_MAX).optional(),
   description: z.string().max(DESCRIPTION_MAX).optional(),
   priority: z.enum(TASK_PRIORITIES as [string, ...string[]]).optional(),
+  department: department.optional(),
   branchId: id24.optional(),
   ...dueFields,
   repeat: repeat.optional(),

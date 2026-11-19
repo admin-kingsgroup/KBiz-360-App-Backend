@@ -9,7 +9,7 @@ import { crmRepo, type CrmUser } from '../crm.repo';
 import { requireServiceToken } from '../alerts/serviceAuth';
 import { userPositions } from '../userPositions';
 import { tasksService } from './task.service';
-import { DESCRIPTION_MAX, TASK_PRIORITIES, TITLE_MAX, type TaskPriority } from './task.types';
+import { DESCRIPTION_MAX, TASK_DEPARTMENTS, TASK_PRIORITIES, TITLE_MAX, type TaskDepartment, type TaskPriority } from './task.types';
 
 // /api/service/tasks — the door KBiz Books (the ERP) uses to create Smart Connect tasks (owner,
 // 2026-11-16: "right-click in the ERP creates a task"). Same arrangement as /api/service/reminders:
@@ -43,6 +43,8 @@ const createSchema = z.object({
   watcherIds: z.array(z.string().min(1).max(64)).max(50).optional(),
   branchId: z.string().min(1).max(64),
   priority: z.enum(TASK_PRIORITIES as [string, ...string[]]),
+  // Operations / Accounts — the branch group the task is shared in (owner, 2026-11-19).
+  department: z.enum(TASK_DEPARTMENTS as [string, ...string[]]).optional(),
   dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   dueTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
   // The ERP screen the task is about — opened from the task in the app.
@@ -110,6 +112,7 @@ tasksServiceRouter.post('/', validate(createSchema), asyncHandler(async (req, re
     watcherIds: body.watcherIds,
     branchId: body.branchId,
     priority: body.priority as TaskPriority,
+    department: (body.department as TaskDepartment | undefined) ?? null,
     dueDate: body.dueDate,
     dueTime: body.dueTime,
     link: body.link ?? null,

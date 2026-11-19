@@ -24,6 +24,12 @@ export const LIVE_STATUSES: TaskStatus[] = [...OPEN_STATUSES, 'done'];
 export const FINAL_STATUSES: TaskStatus[] = ['closed', 'cancelled'];
 
 export type TaskPriority = 'urgent' | 'high' | 'normal';
+
+// Owner, 2026-11-19: a task names its department, and is shared in the branch's group of that name
+// ("BOM Operations" / "BOM Accounts") so the team knows. null on older tasks and older app versions.
+export type TaskDepartment = 'operations' | 'accounts';
+export const TASK_DEPARTMENTS: TaskDepartment[] = ['operations', 'accounts'];
+export const DEPARTMENT_LABEL: Record<TaskDepartment, string> = { operations: 'Operations', accounts: 'Accounts' };
 export const TASK_PRIORITIES: TaskPriority[] = ['urgent', 'high', 'normal'];
 
 export type RepeatRule =
