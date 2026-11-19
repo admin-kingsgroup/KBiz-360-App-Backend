@@ -1,5 +1,11 @@
 // Which group chat is a branch's home for a given kind of report.
 //
+// Owner, 2026-11-19: every Travkings branch keeps exactly TWO groups — "Accounts <CODE>" and
+// "Operation <CODE>" (e.g. "Accounts BOM", "Operation BOM"). "Accounts <CODE>" is the home of the
+// accounts, finance and hr families below; "Operation <CODE>" of ticketing and holidays. Those names
+// come FIRST in every family; the older per-desk names after them are still accepted, so a branch
+// whose groups have not been renamed yet keeps getting its posts.
+//
 // The families, all per branch (the INB ones per branch PAIR):
 //   'finance'       → "HQ - BOM Finance" … the daily Receivables / Payables / Bank & Cash reports.
 //                     The hub's equivalent predates the HQ set and is called "MHUB - Finance Team",
@@ -46,13 +52,16 @@ export const reportGroupKeys = (kind: ReportGroupKind, branchCode: string): stri
   }
   const c = squashName(branchCode);
   if (!c) return [];
+  // The branch's two groups since 2026-11-19 — "Accounts BOM", "Operation BOM".
+  const accounts = `accounts${c}`;
+  const operation = `operation${c}`;
   switch (kind) {
-    case 'accounts': return [`${c}branchaccounts`];
-    case 'ticketing': return [`${c}ticketing`];
-    case 'holidays': return [`${c}holidays`];
+    case 'accounts': return [accounts, `${c}branchaccounts`];
+    case 'ticketing': return [operation, `${c}ticketing`];
+    case 'holidays': return [operation, `${c}holidays`];
     // "HQ - BOM HR", "BOM - HR Team", "BOM HR" — every shape a branch HR room gets named in.
-    case 'hr': return [`hq${c}hr`, `${c}hrteam`, `${c}hr`];
-    default: return [`hq${c}finance`, `${c}financeteam`];
+    case 'hr': return [accounts, `hq${c}hr`, `${c}hrteam`, `${c}hr`];
+    default: return [accounts, `hq${c}finance`, `${c}financeteam`];
   }
 };
 
@@ -64,31 +73,32 @@ export const reportGroupKey = (kind: ReportGroupKind, branchCode: string): strin
 export const isReportGroupFor = (name: string | null | undefined, kind: ReportGroupKind, branchCode: string): boolean =>
   reportGroupKeys(kind, branchCode).includes(squashName(name ?? ''));
 
-/** The word that must appear in a candidate group's name — the cheap Mongo pre-filter before
- *  the exact squashed match runs in JS (a regex built from the branch code would have to guess
- *  the punctuation). */
+/** A word (or an alternation of words) that must appear in a candidate group's name — the cheap
+ *  Mongo pre-filter before the exact squashed match runs in JS (a regex built from the branch code
+ *  would have to guess the punctuation). Every family's names must pass it: "Accounts BOM" carries
+ *  neither "finance" nor "hr", so those families let "accounts" through too. */
 export const reportGroupNameHint = (kind: ReportGroupKind): string => {
   switch (kind) {
     case 'accounts': return 'accounts';
-    case 'ticketing': case 'inb-ticketing': return 'ticketing';
-    case 'holidays': case 'inb-holidays': return 'holidays';
-    case 'hr': return 'hr';
+    case 'ticketing': return 'ticketing|operation';
+    case 'holidays': return 'holidays|operation';
+    case 'inb-ticketing': return 'ticketing';
+    case 'inb-holidays': return 'holidays';
+    case 'hr': return 'hr|accounts';
     case 'tickets': return 'support';
-    default: return 'finance';
+    default: return 'finance|accounts';
   }
 };
 
-/** Human wording for the "there is no such group" error. */
+/** Human wording for the "there is no such group" error. The ERP reads only its "No <kind> group"
+ *  start (concernChat noRoom), so the wording after it is free to name the current groups. */
 export const reportGroupExpected = (kind: ReportGroupKind, branchCode: string): string => {
   const [a, b] = String(branchCode).split('/');
   switch (kind) {
-    case 'accounts': return `"${branchCode} - Branch Accounts"`;
-    case 'ticketing': return `"${branchCode} - Ticketing"`;
-    case 'holidays': return `"${branchCode} - Holidays"`;
+    case 'ticketing': case 'holidays': return `"Operation ${branchCode}"`;
     case 'inb-ticketing': return `"INB Ticketing ${a}/${b}" (either order)`;
     case 'inb-holidays': return `"INB Holidays ${a}/${b}" (either order)`;
-    case 'hr': return `"HQ - ${branchCode} HR" or "${branchCode} - HR Team"`;
     case 'tickets': return '"Ticket Support"';
-    default: return `"HQ - ${branchCode} Finance" or "${branchCode} - Finance Team"`;
+    default: return `"Accounts ${branchCode}"`; // accounts, finance, hr
   }
 };

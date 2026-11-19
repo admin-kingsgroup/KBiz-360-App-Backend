@@ -1,4 +1,4 @@
-import { reportGroupExpected, reportGroupKey, reportGroupKeys, isReportGroupFor, squashName } from '../reportGroupName';
+import { reportGroupExpected, reportGroupKey, reportGroupKeys, reportGroupNameHint, isReportGroupFor, squashName } from '../reportGroupName';
 
 // Pure unit tests — no DB. The routing rule for every report the backends post into a group chat:
 // which group a branch's message belongs in. Getting this wrong is not a cosmetic bug — it would
@@ -32,7 +32,8 @@ describe('finance group routing', () => {
   });
 
   it('a new branch needs no code change — the key is derived from its code', () => {
-    expect(reportGroupKey('finance', 'DXB')).toBe('hqdxbfinance');
+    expect(reportGroupKey('finance', 'DXB')).toBe('accountsdxb');
+    expect(isReportGroupFor('Accounts DXB', 'finance', 'DXB')).toBe(true);
     expect(isReportGroupFor('HQ - DXB Finance', 'finance', 'DXB')).toBe(true);
   });
 
@@ -47,11 +48,12 @@ describe('the hub group', () => {
   it('accepts "MHUB - Finance Team" for MHUB, and only for MHUB', () => {
     expect(isReportGroupFor('MHUB - Finance Team', 'finance', 'MHUB')).toBe(true);
     expect(isReportGroupFor('MHUB - Finance Team', 'finance', 'BOM')).toBe(false);
-    expect(reportGroupKeys('finance', 'MHUB')).toEqual(['hqmhubfinance', 'mhubfinanceteam']);
+    expect(reportGroupKeys('finance', 'MHUB')).toEqual(['accountsmhub', 'hqmhubfinance', 'mhubfinanceteam']);
   });
 
-  it('still prefers the HQ name where both could exist', () => {
-    expect(reportGroupKey('finance', 'BOM')).toBe('hqbomfinance');
+  it('still accepts the HQ name where both could exist', () => {
+    expect(reportGroupKey('finance', 'BOM')).toBe('accountsbom');
+    expect(isReportGroupFor('HQ - BOM Finance', 'finance', 'BOM')).toBe(true);
     expect(isReportGroupFor('BOM - Finance Team', 'finance', 'BOM')).toBe(true);
     expect(isReportGroupFor('BOM - Branch Accounts', 'finance', 'BOM')).toBe(false);
   });
@@ -66,7 +68,7 @@ describe('hr group routing', () => {
     expect(isReportGroupFor('BOM - HR Team', 'hr', 'BOM')).toBe(true);
     expect(isReportGroupFor('BOM HR', 'hr', 'BOM')).toBe(true);
     expect(isReportGroupFor('MHUB - HR Team', 'hr', 'MHUB')).toBe(true);
-    expect(reportGroupKeys('hr', 'NBO')).toEqual(['hqnbohr', 'nbohrteam', 'nbohr']);
+    expect(reportGroupKeys('hr', 'NBO')).toEqual(['accountsnbo', 'hqnbohr', 'nbohrteam', 'nbohr']);
   });
 
   it('never matches another branch or the finance family', () => {
@@ -77,7 +79,7 @@ describe('hr group routing', () => {
   });
 
   it('says which group it expected when there is none', () => {
-    expect(reportGroupExpected('hr', 'DAR')).toBe('"HQ - DAR HR" or "DAR - HR Team"');
+    expect(reportGroupExpected('hr', 'DAR')).toBe('"Accounts DAR"');
   });
 });
 
@@ -87,7 +89,7 @@ describe('accounts group routing', () => {
     for (const name of ['BOM - Branch Accounts', 'BOM-Branch Accounts', 'bom  branch  accounts']) {
       expect(isReportGroupFor(name, 'accounts', 'BOM')).toBe(true);
     }
-    expect(reportGroupKeys('accounts', 'NBO')).toEqual(['nbobranchaccounts']);
+    expect(reportGroupKeys('accounts', 'NBO')).toEqual(['accountsnbo', 'nbobranchaccounts']);
   });
 
   it('the two families never cross', () => {
@@ -97,8 +99,67 @@ describe('accounts group routing', () => {
   });
 
   it('says which group it expected when there is none', () => {
-    expect(reportGroupExpected('accounts', 'DAR')).toBe('"DAR - Branch Accounts"');
-    expect(reportGroupExpected('finance', 'DAR')).toBe('"HQ - DAR Finance" or "DAR - Finance Team"');
+    expect(reportGroupExpected('accounts', 'DAR')).toBe('"Accounts DAR"');
+    expect(reportGroupExpected('finance', 'DAR')).toBe('"Accounts DAR"');
+  });
+});
+
+// Owner, 2026-11-19: every Travkings branch keeps exactly two groups — "Operation <CODE>" and
+// "Accounts <CODE>". Accounts takes what the branch's Branch Accounts, HQ Finance and HR rooms got
+// (concerns, voucher feed, daily reports, attendance); Operation takes the Ticketing / Holidays
+// desk posts. The old names stay accepted so nothing breaks while the groups are being renamed.
+describe('Operation / Accounts groups', () => {
+  it('"Accounts <CODE>" receives the accounts, finance and hr posts of that branch', () => {
+    for (const kind of ['accounts', 'finance', 'hr'] as const) {
+      for (const name of ['Accounts BOM', 'Accounts - BOM', 'accounts  bom', 'ACCOUNTS-BOM']) {
+        expect(isReportGroupFor(name, kind, 'BOM')).toBe(true);
+      }
+    }
+    expect(isReportGroupFor('Accounts MHUB', 'finance', 'MHUB')).toBe(true);
+  });
+
+  it('"Operation <CODE>" receives the Ticketing and Holidays desk posts of that branch', () => {
+    for (const kind of ['ticketing', 'holidays'] as const) {
+      for (const name of ['Operation BOM', 'Operation - BOM', 'operation bom']) {
+        expect(isReportGroupFor(name, kind, 'BOM')).toBe(true);
+      }
+    }
+  });
+
+  it('never crosses branch, family, or the short-code substring trap', () => {
+    expect(isReportGroupFor('Accounts BOM', 'accounts', 'AMD')).toBe(false);
+    expect(isReportGroupFor('Accounts BOMX', 'accounts', 'BOM')).toBe(false);
+    expect(isReportGroupFor('Accounts BOM', 'ticketing', 'BOM')).toBe(false);
+    expect(isReportGroupFor('Accounts BOM', 'holidays', 'BOM')).toBe(false);
+    expect(isReportGroupFor('Operation BOM', 'accounts', 'BOM')).toBe(false);
+    expect(isReportGroupFor('Operation BOM', 'finance', 'BOM')).toBe(false);
+    expect(isReportGroupFor('Operation BOM', 'hr', 'BOM')).toBe(false);
+    expect(isReportGroupFor('Operation BOM', 'inb-ticketing', 'BOM/AMD')).toBe(false);
+    expect(isReportGroupFor('Accounts BOM', 'tickets', '')).toBe(false);
+  });
+
+  it('the old names still route while the groups are renamed', () => {
+    expect(isReportGroupFor('BOM - Branch Accounts', 'accounts', 'BOM')).toBe(true);
+    expect(isReportGroupFor('MHUB - Finance Team', 'finance', 'MHUB')).toBe(true);
+    expect(isReportGroupFor('BOM - Ticketing', 'ticketing', 'BOM')).toBe(true);
+    expect(isReportGroupFor('BOM - Holidays', 'holidays', 'BOM')).toBe(true);
+  });
+
+  it('the Mongo pre-filter lets the new names through for every kind that uses them', () => {
+    const passes = (kind: Parameters<typeof reportGroupNameHint>[0], name: string) => new RegExp(reportGroupNameHint(kind), 'i').test(name);
+    expect(passes('accounts', 'Accounts BOM')).toBe(true);
+    expect(passes('finance', 'Accounts BOM')).toBe(true);
+    expect(passes('finance', 'MHUB - Finance Team')).toBe(true);
+    expect(passes('hr', 'Accounts BOM')).toBe(true);
+    expect(passes('hr', 'BOM - HR Team')).toBe(true);
+    expect(passes('ticketing', 'Operation BOM')).toBe(true);
+    expect(passes('holidays', 'Operation BOM')).toBe(true);
+    expect(passes('inb-ticketing', 'INB Ticketing AMD/BOM')).toBe(true);
+  });
+
+  it('names the new group when there is none', () => {
+    expect(reportGroupExpected('ticketing', 'AMD')).toBe('"Operation AMD"');
+    expect(reportGroupExpected('holidays', 'AMD')).toBe('"Operation AMD"');
   });
 });
 
@@ -142,7 +203,7 @@ describe('INB pair group routing', () => {
 
   it('says which room it expected when there is none', () => {
     expect(reportGroupExpected('inb-holidays', 'BOM/NBO')).toBe('"INB Holidays BOM/NBO" (either order)');
-    expect(reportGroupExpected('ticketing', 'DAR')).toBe('"DAR - Ticketing"');
+    expect(reportGroupExpected('ticketing', 'DAR')).toBe('"Operation DAR"');
   });
 });
 
