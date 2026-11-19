@@ -1,6 +1,6 @@
 import { Schema, type Model, type Types } from 'mongoose';
 import { appDb } from '../connection';
-import { TASK_PRIORITIES, TASK_STATUSES, type RepeatRule, type TaskPriority, type TaskStatus } from './task.types';
+import { TASK_DEPARTMENTS, TASK_PRIORITIES, TASK_STATUSES, type RepeatRule, type TaskDepartment, type TaskPriority, type TaskStatus } from './task.types';
 
 // ─────────── tasks ───────────
 export interface TaskWatcher { userId: string; addedBy: string; addedAt: Date }
@@ -21,6 +21,7 @@ export interface TaskDoc {
   assignedBy: string; // CRM user _id (the creator)
   watchers: TaskWatcher[];
   priority: TaskPriority;
+  department: TaskDepartment | null; // Operations / Accounts — which branch group the task was shared in
   dueAt: Date | null; // required on create; null only on tasks converted from undated reminders
   status: TaskStatus;
   requestedDueAt: Date | null; // the date the assignee asked for (Date change requested)
@@ -53,6 +54,7 @@ const TaskSchema = new Schema<TaskDoc>(
     assignedBy: { type: String, required: true },
     watchers: { type: [new Schema<TaskWatcher>({ userId: String, addedBy: String, addedAt: Date }, { _id: false })], default: [] },
     priority: { type: String, enum: TASK_PRIORITIES, default: 'normal' },
+    department: { type: String, enum: [...TASK_DEPARTMENTS, null], default: null },
     dueAt: { type: Date, default: null },
     status: { type: String, enum: TASK_STATUSES, default: 'assigned' },
     requestedDueAt: { type: Date, default: null },
@@ -100,7 +102,7 @@ export function TaskModel(): Model<TaskDoc> {
 // ─────────── task_history (audit: nothing is ever deleted) ───────────
 export type HistoryField =
   | 'created' | 'status' | 'title' | 'description' | 'dueAt' | 'priority' | 'branchId'
-  | 'assignedTo' | 'watchers' | 'attachment' | 'repeat' | 'link';
+  | 'assignedTo' | 'watchers' | 'attachment' | 'repeat' | 'link' | 'department';
 export interface TaskHistoryDoc {
   _id: Types.ObjectId;
   taskId: string;

@@ -34,7 +34,9 @@
 //
 // Deliberately its own module with no imports: the resolver it serves reaches into the chat
 // service and the storage layer, and this rule is worth testing without any of that.
-export type ReportGroupKind = 'finance' | 'hr' | 'accounts' | 'ticketing' | 'holidays' | 'inb-ticketing' | 'inb-holidays' | 'tickets';
+//   'operations'    → "BOM Operations" … a task given with the Operations department, shared so the
+//                     team knows (owner, 2026-11-19). Its own family: never a Ticketing / Holidays room.
+export type ReportGroupKind = 'finance' | 'hr' | 'accounts' | 'operations' | 'ticketing' | 'holidays' | 'inb-ticketing' | 'inb-holidays' | 'tickets';
 
 /** The kinds that address one company-wide room instead of a branch's. */
 export const isCompanyWideKind = (kind: ReportGroupKind): boolean => kind === 'tickets';
@@ -59,6 +61,7 @@ export const reportGroupKeys = (kind: ReportGroupKind, branchCode: string): stri
   const operations = [`${c}operations`, `${c}operation`, `operation${c}`];
   switch (kind) {
     case 'accounts': return [...accounts, `${c}branchaccounts`];
+    case 'operations': return operations;
     case 'ticketing': return [...operations, `${c}ticketing`];
     case 'holidays': return [...operations, `${c}holidays`];
     // "HQ - BOM HR", "BOM - HR Team", "BOM HR" — every shape a branch HR room gets named in.
@@ -82,6 +85,7 @@ export const isReportGroupFor = (name: string | null | undefined, kind: ReportGr
 export const reportGroupNameHint = (kind: ReportGroupKind): string => {
   switch (kind) {
     case 'accounts': return 'accounts';
+    case 'operations': return 'operation';
     case 'ticketing': return 'ticketing|operation';
     case 'holidays': return 'holidays|operation';
     case 'inb-ticketing': return 'ticketing';
@@ -97,7 +101,7 @@ export const reportGroupNameHint = (kind: ReportGroupKind): string => {
 export const reportGroupExpected = (kind: ReportGroupKind, branchCode: string): string => {
   const [a, b] = String(branchCode).split('/');
   switch (kind) {
-    case 'ticketing': case 'holidays': return `"${branchCode} Operations"`;
+    case 'operations': case 'ticketing': case 'holidays': return `"${branchCode} Operations"`;
     case 'inb-ticketing': return `"INB Ticketing ${a}/${b}" (either order)`;
     case 'inb-holidays': return `"INB Holidays ${a}/${b}" (either order)`;
     case 'tickets': return '"Ticket Support"';

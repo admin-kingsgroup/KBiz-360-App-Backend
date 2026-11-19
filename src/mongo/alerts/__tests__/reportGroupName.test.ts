@@ -246,3 +246,23 @@ describe('tickets — the one company-wide "Ticket Support" room (owner, 2026-10
     expect(reportGroupKey('tickets', 'AMD')).toBe('ticketsupport');
   });
 });
+
+// Tasks shared "so the team knows" (owner, 2026-11-19) go to the branch's Operations group by its own
+// family — never to an older Ticketing / Holidays room that happens to still exist.
+describe('operations — the task-sharing family', () => {
+  it('matches only "<CODE> Operations" (and its earlier spellings)', () => {
+    expect(reportGroupKeys('operations', 'BOM')).toEqual(['bomoperations', 'bomoperation', 'operationbom']);
+    for (const name of ['BOM Operations', 'BOM - Operations', 'Operation BOM']) expect(isReportGroupFor(name, 'operations', 'BOM')).toBe(true);
+  });
+  it('never a desk room, the Accounts group, another branch or the substring trap', () => {
+    expect(isReportGroupFor('BOM - Ticketing', 'operations', 'BOM')).toBe(false);
+    expect(isReportGroupFor('BOM - Holidays', 'operations', 'BOM')).toBe(false);
+    expect(isReportGroupFor('BOM Accounts', 'operations', 'BOM')).toBe(false);
+    expect(isReportGroupFor('AMD Operations', 'operations', 'BOM')).toBe(false);
+    expect(isReportGroupFor('BOMX Operations', 'operations', 'BOM')).toBe(false);
+  });
+  it('the pre-filter lets it through, and the error names it', () => {
+    expect(new RegExp(reportGroupNameHint('operations'), 'i').test('BOM Operations')).toBe(true);
+    expect(reportGroupExpected('operations', 'NBO')).toBe('"NBO Operations"');
+  });
+});

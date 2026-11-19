@@ -10,6 +10,8 @@ const chatMembers = new Map<string, string[]>();
 const sent: Array<{ event: string; to: string[]; actorId?: string | null }> = [];
 const chatState: Array<[string, 'closed' | 'reopened']> = [];
 const talkedChats = new Set<string>(); // chats in which a person (not the app) has written
+const groupPosts: Array<Record<string, unknown>> = []; // what reached a branch group chat (as KBiz Books)
+let groupPostError: string | null = null; // set to make the group post fail
 
 // structuredClone drops the ObjectId class (String(_id) would read "[object Object]") — put it back.
 const clone = (t: TaskDoc): TaskDoc => ({ ...structuredClone(t), _id: t._id });
@@ -53,6 +55,7 @@ jest.mock('../task.repository', () => ({
 // nbo = staff in Nairobi (5).
 const BOM = new Types.ObjectId().toHexString();
 const NBO = new Types.ObjectId().toHexString();
+const DAR = new Types.ObjectId().toHexString(); // the CRM codes Africa branches with an H (HDAR); its groups say "DAR …"
 const PEOPLE: Record<string, { level: number; branchIds: string[]; tz: string; name: string }> = {
   afshin: { level: 1, branchIds: [BOM], tz: 'Asia/Kolkata', name: 'Afshin Dhanani' },
   farhan: { level: 3, branchIds: [BOM], tz: 'Asia/Kolkata', name: 'Farhan' },
@@ -82,7 +85,7 @@ jest.mock('../../access', () => {
 });
 jest.mock('../../crm.repo', () => ({
   crmRepo: {
-    branchesByIds: async (ids: Types.ObjectId[]) => ids.map((id) => ({ _id: id, name: String(id) === BOM ? 'BOM' : 'NBO', code: String(id) === BOM ? 'BOM' : 'NBO', company_id: new Types.ObjectId('64b000000000000000000001') })),
+    branchesByIds: async (ids: Types.ObjectId[]) => ids.map((id) => ({ _id: id, name: String(id) === BOM ? 'BOM' : String(id) === DAR ? 'DAR' : 'NBO', code: String(id) === BOM ? 'BOM' : String(id) === DAR ? 'HDAR' : 'NBO', company_id: new Types.ObjectId('64b000000000000000000001') })),
     listCompanies: async () => [{ _id: new Types.ObjectId('64b000000000000000000001'), name: 'Travkings' }],
     listUsers: async () => Object.keys(PEOPLE).map((id) => ({ _id: id })),
   },
@@ -106,6 +109,15 @@ jest.mock('../../chat/chat.service', () => ({
   },
 }));
 jest.mock('../../chat/chat.events', () => ({ emitToUsers: () => undefined }));
+jest.mock('../../alerts/reportChat.service', () => ({
+  reportChat: {
+    post: async (input: Record<string, unknown>) => {
+      if (groupPostError) throw new Error(groupPostError);
+      groupPosts.push(input);
+      return { conversationId: 'g1', group: 'group', messageId: 'm1', duplicate: false };
+    },
+  },
+}));
 jest.mock('../task.notify', () => ({
   taskNotify: { send: async (event: string, _t: unknown, to: string[], ctx: { actorId?: string | null }) => { sent.push({ event, to: to.filter((x) => x !== ctx.actorId), actorId: ctx.actorId }); } },
 }));
@@ -115,7 +127,7 @@ import { tasksService } from '../task.service';
 const NOW = new Date('2026-11-18T06:00:00.000Z'); // 11:30 IST, Wednesday
 const base = { title: 'Close October books', branchId: BOM, priority: 'normal' as const, dueDate: '2026-11-20' };
 
-beforeEach(() => { tasks.length = 0; history.length = 0; notices.length = 0; chatMembers.clear(); sent.length = 0; chatState.length = 0; talkedChats.clear(); });
+beforeEach(() => { tasks.length = 0; history.length = 0; notices.length = 0; chatMembers.clear(); sent.length = 0; chatState.length = 0; talkedChats.clear(); groupPosts.length = 0; groupPostError = null; });
 
 // Create a task and start its chat (owner 2026-11-16 evening: no task comes with a chat).
 async function withChat(actor: string, input: Parameters<typeof tasksService.create>[1], starter = actor) {
@@ -152,6 +164,73 @@ describe('creating a task', () => {
     await expect(tasksService.create('afshin', { ...base, assignedTo: 'satish', dueDate: '2026-11-17' }, { now: NOW })).rejects.toThrow(/past/);
     await expect(tasksService.create('afshin', { ...base, assignedTo: 'satish', title: 'x'.repeat(121) }, { now: NOW })).rejects.toThrow(/120/);
     await expect(tasksService.create('afshin', { ...base, assignedTo: 'satish', dueDate: undefined }, { now: NOW })).rejects.toThrow(/due date is required/);
+  });
+});
+
+// Owner, 2026-11-19: a task asks for its department — Operations or Accounts — and, once created, is shared in
+// that branch's "<CODE> Operations" / "<CODE> Accounts" group "so the team knows". Sent as KBiz Books, once.
+describe('department and the branch group', () => {
+  it('an Accounts task is shared in the branch Accounts group with what the team needs to know', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', watcherIds: ['faiz'], priority: 'urgent', department: 'accounts', description: 'Match the HDFC statement first' }, { now: NOW });
+    expect(t.department).toBe('accounts');
+    expect(groupPosts).toHaveLength(1);
+    expect(groupPosts[0]).toMatchObject({ branchCode: 'BOM', group: 'accounts', dedupeKey: `task-${t.id}` });
+    expect(groupPosts[0].title).toBe('*📋 New task — Close October books*');
+    expect(String(groupPosts[0].body).split('\n')).toEqual([
+      'For: Satish · Given by: Afshin Dhanani',
+      'Due: 20 Nov, 6:00 pm · Priority: Urgent',
+      'Watching: Faiz',
+      'Match the HDFC statement first',
+    ]);
+  });
+
+  it('an Operations task goes to the Operations group', async () => {
+    await tasksService.create('afshin', { ...base, assignedTo: 'satish', department: 'operations' }, { now: NOW });
+    expect(groupPosts).toHaveLength(1);
+    expect(groupPosts[0]).toMatchObject({ branchCode: 'BOM', group: 'operations' });
+  });
+
+  it('an Africa branch (CRM code HDAR) posts to its "DAR …" group', async () => {
+    await tasksService.create('afshin', { ...base, branchId: DAR, assignedTo: 'satish', department: 'accounts' }, { now: NOW });
+    expect(groupPosts[0]).toMatchObject({ branchCode: 'DAR', group: 'accounts' });
+  });
+
+  it('carries the ERP screen it was raised on', async () => {
+    await tasksService.create('afshin', { ...base, assignedTo: 'satish', department: 'accounts', link: { label: 'Receipt RV-0042', url: 'https://books.example/vouchers/42' } }, { now: NOW });
+    expect(String(groupPosts[0].body)).toContain('From KBiz Books: Receipt RV-0042 — https://books.example/vouchers/42');
+  });
+
+  it('no department (an older app), no group message', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish' }, { now: NOW });
+    expect(t.department).toBeNull();
+    expect(groupPosts).toEqual([]);
+  });
+
+  it('a personal to-do is never shared', async () => {
+    const t = await tasksService.create('satish', { ...base, assignedTo: 'satish', department: 'accounts' }, { now: NOW });
+    expect(t.department).toBe('accounts');
+    expect(groupPosts).toEqual([]);
+  });
+
+  it('a branch with no such group, or any post failure, never stops the task', async () => {
+    groupPostError = 'No accounts group for branch "KGD" — expected a group named "KGD Accounts"';
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', department: 'accounts' }, { now: NOW });
+    expect(t.status).toBe('assigned');
+    expect(tasks).toHaveLength(1);
+  });
+
+  it('the next copy of a repeating task keeps its department but is not shared again', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', department: 'operations' }, { now: NOW, parentRecurringId: 'series-1' });
+    expect(t.department).toBe('operations');
+    expect(groupPosts).toEqual([]);
+  });
+
+  it('the giver can change the department later; nothing is posted again', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', department: 'accounts' }, { now: NOW });
+    const after = await tasksService.patch('afshin', t.id, { department: 'operations' }, NOW);
+    expect(after.department).toBe('operations');
+    expect(groupPosts).toHaveLength(1);
+    expect(history).toContainEqual(expect.objectContaining({ field: 'department', oldValue: 'accounts', newValue: 'operations' }));
   });
 });
 
