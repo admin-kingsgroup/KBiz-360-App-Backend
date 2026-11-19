@@ -32,8 +32,8 @@ describe('finance group routing', () => {
   });
 
   it('a new branch needs no code change — the key is derived from its code', () => {
-    expect(reportGroupKey('finance', 'DXB')).toBe('accountsdxb');
-    expect(isReportGroupFor('Accounts DXB', 'finance', 'DXB')).toBe(true);
+    expect(reportGroupKey('finance', 'DXB')).toBe('dxbaccounts');
+    expect(isReportGroupFor('DXB Accounts', 'finance', 'DXB')).toBe(true);
     expect(isReportGroupFor('HQ - DXB Finance', 'finance', 'DXB')).toBe(true);
   });
 
@@ -48,11 +48,11 @@ describe('the hub group', () => {
   it('accepts "MHUB - Finance Team" for MHUB, and only for MHUB', () => {
     expect(isReportGroupFor('MHUB - Finance Team', 'finance', 'MHUB')).toBe(true);
     expect(isReportGroupFor('MHUB - Finance Team', 'finance', 'BOM')).toBe(false);
-    expect(reportGroupKeys('finance', 'MHUB')).toEqual(['accountsmhub', 'hqmhubfinance', 'mhubfinanceteam']);
+    expect(reportGroupKeys('finance', 'MHUB')).toEqual(['mhubaccounts', 'accountsmhub', 'hqmhubfinance', 'mhubfinanceteam']);
   });
 
   it('still accepts the HQ name where both could exist', () => {
-    expect(reportGroupKey('finance', 'BOM')).toBe('accountsbom');
+    expect(reportGroupKey('finance', 'BOM')).toBe('bomaccounts');
     expect(isReportGroupFor('HQ - BOM Finance', 'finance', 'BOM')).toBe(true);
     expect(isReportGroupFor('BOM - Finance Team', 'finance', 'BOM')).toBe(true);
     expect(isReportGroupFor('BOM - Branch Accounts', 'finance', 'BOM')).toBe(false);
@@ -68,7 +68,7 @@ describe('hr group routing', () => {
     expect(isReportGroupFor('BOM - HR Team', 'hr', 'BOM')).toBe(true);
     expect(isReportGroupFor('BOM HR', 'hr', 'BOM')).toBe(true);
     expect(isReportGroupFor('MHUB - HR Team', 'hr', 'MHUB')).toBe(true);
-    expect(reportGroupKeys('hr', 'NBO')).toEqual(['accountsnbo', 'hqnbohr', 'nbohrteam', 'nbohr']);
+    expect(reportGroupKeys('hr', 'NBO')).toEqual(['nboaccounts', 'accountsnbo', 'hqnbohr', 'nbohrteam', 'nbohr']);
   });
 
   it('never matches another branch or the finance family', () => {
@@ -79,7 +79,7 @@ describe('hr group routing', () => {
   });
 
   it('says which group it expected when there is none', () => {
-    expect(reportGroupExpected('hr', 'DAR')).toBe('"Accounts DAR"');
+    expect(reportGroupExpected('hr', 'DAR')).toBe('"DAR Accounts"');
   });
 });
 
@@ -89,7 +89,7 @@ describe('accounts group routing', () => {
     for (const name of ['BOM - Branch Accounts', 'BOM-Branch Accounts', 'bom  branch  accounts']) {
       expect(isReportGroupFor(name, 'accounts', 'BOM')).toBe(true);
     }
-    expect(reportGroupKeys('accounts', 'NBO')).toEqual(['accountsnbo', 'nbobranchaccounts']);
+    expect(reportGroupKeys('accounts', 'NBO')).toEqual(['nboaccounts', 'accountsnbo', 'nbobranchaccounts']);
   });
 
   it('the two families never cross', () => {
@@ -99,8 +99,8 @@ describe('accounts group routing', () => {
   });
 
   it('says which group it expected when there is none', () => {
-    expect(reportGroupExpected('accounts', 'DAR')).toBe('"Accounts DAR"');
-    expect(reportGroupExpected('finance', 'DAR')).toBe('"Accounts DAR"');
+    expect(reportGroupExpected('accounts', 'DAR')).toBe('"DAR Accounts"');
+    expect(reportGroupExpected('finance', 'DAR')).toBe('"DAR Accounts"');
   });
 });
 
@@ -157,9 +157,31 @@ describe('Operation / Accounts groups', () => {
     expect(passes('inb-ticketing', 'INB Ticketing AMD/BOM')).toBe(true);
   });
 
+  it('"<CODE> Accounts" / "<CODE> Operations" — the code first (owner\'s final spelling)', () => {
+    for (const kind of ['accounts', 'finance', 'hr'] as const) {
+      for (const name of ['BOM Accounts', 'BOM - Accounts', 'bom accounts']) expect(isReportGroupFor(name, kind, 'BOM')).toBe(true);
+    }
+    for (const kind of ['ticketing', 'holidays'] as const) {
+      for (const name of ['BOM Operations', 'BOM - Operations', 'BOM Operation']) expect(isReportGroupFor(name, kind, 'BOM')).toBe(true);
+    }
+    expect(isReportGroupFor('MHUB Accounts', 'finance', 'MHUB')).toBe(true);
+    expect(isReportGroupFor('BOM Accounts', 'accounts', 'AMD')).toBe(false);
+    expect(isReportGroupFor('BOMX Accounts', 'accounts', 'BOM')).toBe(false);
+    expect(isReportGroupFor('BOM Accounts', 'ticketing', 'BOM')).toBe(false);
+    expect(isReportGroupFor('BOM Operations', 'accounts', 'BOM')).toBe(false);
+    expect(isReportGroupFor('BOM Operations', 'finance', 'BOM')).toBe(false);
+    expect(isReportGroupFor('BOM Operations', 'inb-ticketing', 'BOM/AMD')).toBe(false);
+    const passes = (kind: Parameters<typeof reportGroupNameHint>[0], name: string) => new RegExp(reportGroupNameHint(kind), 'i').test(name);
+    expect(passes('accounts', 'BOM Accounts')).toBe(true);
+    expect(passes('finance', 'BOM Accounts')).toBe(true);
+    expect(passes('hr', 'BOM Accounts')).toBe(true);
+    expect(passes('ticketing', 'BOM Operations')).toBe(true);
+    expect(passes('holidays', 'BOM Operations')).toBe(true);
+  });
+
   it('names the new group when there is none', () => {
-    expect(reportGroupExpected('ticketing', 'AMD')).toBe('"Operation AMD"');
-    expect(reportGroupExpected('holidays', 'AMD')).toBe('"Operation AMD"');
+    expect(reportGroupExpected('ticketing', 'AMD')).toBe('"AMD Operations"');
+    expect(reportGroupExpected('holidays', 'AMD')).toBe('"AMD Operations"');
   });
 });
 
@@ -203,7 +225,7 @@ describe('INB pair group routing', () => {
 
   it('says which room it expected when there is none', () => {
     expect(reportGroupExpected('inb-holidays', 'BOM/NBO')).toBe('"INB Holidays BOM/NBO" (either order)');
-    expect(reportGroupExpected('ticketing', 'DAR')).toBe('"Operation DAR"');
+    expect(reportGroupExpected('ticketing', 'DAR')).toBe('"DAR Operations"');
   });
 });
 
