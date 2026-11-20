@@ -8,8 +8,9 @@ import { getStorage } from '../../storage';
 import { crmRepo, type CrmUser } from '../crm.repo';
 import { requireServiceToken } from '../alerts/serviceAuth';
 import { userPositions } from '../userPositions';
-import { tasksService } from './task.service';
-import { DESCRIPTION_MAX, TASK_DEPARTMENTS, TASK_PRIORITIES, TITLE_MAX, type TaskDepartment, type TaskPriority } from './task.types';
+import { tasksService, type ListQuery } from './task.service';
+import { taskPeople } from './task.people';
+import { DESCRIPTION_MAX, TASK_DEPARTMENTS, TASK_PRIORITIES, TASK_STATUSES, TITLE_MAX, type TaskDepartment, type TaskPriority, type TaskStatus } from './task.types';
 
 // /api/service/tasks — the door KBiz Books (the ERP) uses to create Smart Connect tasks (owner,
 // 2026-11-16: "right-click in the ERP creates a task"). Same arrangement as /api/service/reminders:
@@ -120,4 +121,106 @@ tasksServiceRouter.post('/', validate(createSchema), asyncHandler(async (req, re
     source: 'erp',
   });
   res.status(201).json(task);
+}));
+
+// ── The ERP's Task tab (owner, 2026-11-20: "the task view of my Smart Connect app in my ERP") ──
+// Read the lists, open one task, move its status — the same tasksService calls the app's /api/tasks
+// makes, AS the acting user, so who-may-see and who-may-do stay the app's rules. No chat, edit or
+// reassign here yet: those stay in the app. The fixed paths are declared before '/:id'.
+const listQuery = z.object({
+  view: z.enum(['mine', 'assigned', 'watching', 'team', 'all']).default('mine'),
+  state: z.enum(['open', 'closed', 'all']).optional(),
+  personId: z.string().max(64).optional(),
+  q: z.string().max(200).optional(),
+});
+const dashboardQuery = z.object({ companyId: z.string().max(64).optional(), branchId: z.string().max(64).optional() });
+const statusSchema = z.object({
+  to: z.enum(TASK_STATUSES as [string, ...string[]]),
+  comment: z.string().max(DESCRIPTION_MAX).optional(),
+  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  dueTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+});
+
+// GET /api/service/tasks/dashboard — the per-person counts behind the Team list.
+tasksServiceRouter.get('/dashboard', validate(dashboardQuery, 'query'), asyncHandler(async (req, res) => {
+  const me = await actor(req);
+  res.json(await tasksService.dashboard(String(me._id), req.query as { companyId?: string; branchId?: string }));
+}));
+
+// GET /api/service/tasks?view=mine|assigned|watching|team|all&state=open|closed — one list.
+tasksServiceRouter.get('/', validate(listQuery, 'query'), asyncHandler(async (req, res) => {
+  const me = await actor(req);
+  res.json(await tasksService.list(String(me._id), req.query as unknown as ListQuery));
+}));
+
+// GET /api/service/tasks/:id — the task and its history (refused if the acting user may not see it).
+tasksServiceRouter.get('/:id', asyncHandler(async (req, res) => {
+  const me = await actor(req);
+  res.json(await tasksService.get(String(me._id), req.params.id));
+}));
+
+// ── The task's chat in the ERP (owner, 2026-11-20: "task chat inside the ERP as well") ──
+// Start it, read it, write in it, mark it read — as the acting user, by the app's own rules (only someone on
+// the task writes; a manager above reads; a closed task's chat is read-only). The ERP has no socket, so it
+// asks for new messages with `after` (the last id it holds). Each message carries its sender's name.
+const messagesQuery = z.object({
+  after: z.string().max(64).optional(),
+  before: z.string().max(64).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+const CHAT_FILE_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'application/pdf'] as const;
+const messageSchema = z.object({
+  text: z.string().max(4000).optional(),
+  clientId: z.string().max(64).optional(),
+  file: z.object({
+    name: z.string().trim().min(1).max(255),
+    mime: z.enum(CHAT_FILE_MIMES),
+    data: z.string().min(1).max(MAX_SCREENSHOT_B64), // base64, no data: prefix — ≈ 6 MB decoded
+  }).optional(),
+}).refine((b) => !!(b.text && b.text.trim()) || !!b.file, { message: 'Write a message or attach a file' });
+
+async function withSenderNames<T extends { senderId: string }>(msgs: T[]): Promise<Array<T & { senderName: string }>> {
+  const people = await taskPeople.resolve([...new Set(msgs.map((m) => m.senderId).filter(Boolean))]);
+  return msgs.map((m) => ({ ...m, senderName: people.get(m.senderId)?.name ?? 'Someone' }));
+}
+
+// POST /api/service/tasks/:id/chat — "Start chat" (or the existing chat's id).
+tasksServiceRouter.post('/:id/chat', asyncHandler(async (req, res) => {
+  const me = await actor(req);
+  res.json(await tasksService.ensureChat(String(me._id), req.params.id));
+}));
+
+// GET /api/service/tasks/:id/messages?after=|before=&limit= — oldest first; [] while no chat was started.
+tasksServiceRouter.get('/:id/messages', validate(messagesQuery, 'query'), asyncHandler(async (req, res) => {
+  const me = await actor(req);
+  const msgs = await tasksService.messages(String(me._id), req.params.id, req.query as { after?: string; before?: string; limit?: number });
+  res.json(await withSenderNames(msgs as Array<{ senderId: string }>));
+}));
+
+// POST /api/service/tasks/:id/messages — { text?, file?: { name, mime, data }, clientId? }.
+tasksServiceRouter.post('/:id/messages', validate(messageSchema), asyncHandler(async (req, res) => {
+  const me = await actor(req);
+  const body = req.body as z.infer<typeof messageSchema>;
+  const attachments: Array<{ url: string; name: string; size: number; mime: string }> = [];
+  if (body.file) {
+    const buffer = Buffer.from(body.file.data, 'base64');
+    if (!buffer.length) throw BadRequest('The file is empty');
+    const saved = await getStorage().save({ buffer, filename: body.file.name, mimeType: body.file.mime });
+    attachments.push({ url: saved.url, name: body.file.name, size: buffer.length, mime: body.file.mime });
+  }
+  const msg = await tasksService.sendChatMessage(String(me._id), req.params.id, { text: body.text?.trim() || '', attachments, clientId: body.clientId });
+  res.status(201).json((await withSenderNames([msg as { senderId: string }]))[0]);
+}));
+
+// POST /api/service/tasks/:id/read — clears the acting user's unread on the task's chat.
+tasksServiceRouter.post('/:id/read', asyncHandler(async (req, res) => {
+  const me = await actor(req);
+  res.json(await tasksService.markChatRead(String(me._id), req.params.id));
+}));
+
+// POST /api/service/tasks/:id/status — one status change; the app's machine decides if it is allowed.
+tasksServiceRouter.post('/:id/status', validate(statusSchema), asyncHandler(async (req, res) => {
+  const me = await actor(req);
+  const body = req.body as { to: TaskStatus; comment?: string; dueDate?: string; dueTime?: string };
+  res.json(await tasksService.changeStatus(String(me._id), req.params.id, body));
 }));

@@ -11,6 +11,8 @@ const sent: Array<{ event: string; to: string[]; actorId?: string | null }> = []
 const chatState: Array<[string, 'closed' | 'reopened']> = [];
 const talkedChats = new Set<string>(); // chats in which a person (not the app) has written
 const groupPosts: Array<Record<string, unknown>> = []; // what reached a branch group chat (as KBiz Books)
+const chatSends: Array<{ userId: string; chatId: string; input: Record<string, unknown> }> = []; // messages written from the ERP
+const chatReads: Array<[string, string]> = [];
 let groupPostError: string | null = null; // set to make the group post fail
 
 // structuredClone drops the ObjectId class (String(_id) would read "[object Object]") — put it back.
@@ -108,6 +110,8 @@ jest.mock('../../chat/chat.service', () => ({
     reopenTaskChat: async (chatId: string) => { chatState.push([chatId, 'reopened']); },
     unreadFor: async () => ({}),
     withPeopleMessages: async (ids: string[]) => new Set(ids.filter((id) => talkedChats.has(id))),
+    sendMessage: async (userId: string, chatId: string, input: Record<string, unknown>) => { chatSends.push({ userId, chatId, input }); return { id: 'm9', senderId: userId, ...input }; },
+    markRead: async (userId: string, chatId: string) => { chatReads.push([userId, chatId]); return { read: 2 }; },
   },
 }));
 jest.mock('../../chat/chat.events', () => ({ emitToUsers: () => undefined }));
@@ -134,7 +138,7 @@ import { tasksService } from '../task.service';
 const NOW = new Date('2026-11-18T06:00:00.000Z'); // 11:30 IST, Wednesday
 const base = { title: 'Close October books', branchId: BOM, priority: 'normal' as const, dueDate: '2026-11-20' };
 
-beforeEach(() => { tasks.length = 0; history.length = 0; notices.length = 0; chatMembers.clear(); sent.length = 0; chatState.length = 0; talkedChats.clear(); groupPosts.length = 0; groupPostError = null; for (const k of Object.keys(standing)) delete standing[k]; });
+beforeEach(() => { tasks.length = 0; history.length = 0; notices.length = 0; chatMembers.clear(); sent.length = 0; chatState.length = 0; talkedChats.clear(); groupPosts.length = 0; groupPostError = null; chatSends.length = 0; chatReads.length = 0; for (const k of Object.keys(standing)) delete standing[k]; });
 
 // Create a task and start its chat (owner 2026-11-16 evening: no task comes with a chat).
 async function withChat(actor: string, input: Parameters<typeof tasksService.create>[1], starter = actor) {
@@ -384,6 +388,45 @@ describe('Start chat (the people on the task — giver, assignee, watchers — w
     const t = await tasksService.create('satish', { ...base, assignedTo: 'satish' }, { now: NOW });
     await tasksService.changeStatus('satish', t.id, { to: 'done' }, NOW);
     await expect(tasksService.ensureChat('satish', t.id)).rejects.toThrow(/closed/);
+  });
+});
+
+// The ERP's task chat (owner, 2026-11-20): it writes and reads through the service door, by the app's rules.
+describe('writing in the task chat from the ERP', () => {
+  it('someone on the task writes into its chat; a picture goes as an image', async () => {
+    const t = await withChat('afshin', { ...base, assignedTo: 'satish', watcherIds: ['faiz'] }, 'satish');
+    await tasksService.sendChatMessage('faiz', t.id, { text: 'Checked the bank', clientId: 'c1' });
+    expect(chatSends[0]).toEqual({ userId: 'faiz', chatId: t.chatId, input: { type: 'text', text: 'Checked the bank', attachments: [], clientId: 'c1' } });
+    const pic = { url: 'https://s3/x.png', name: 'x.png', size: 10, mime: 'image/png' };
+    await tasksService.sendChatMessage('afshin', t.id, { attachments: [pic] });
+    expect(chatSends[1].input).toMatchObject({ type: 'image', attachments: [pic] });
+    await tasksService.sendChatMessage('afshin', t.id, { attachments: [{ ...pic, name: 'a.pdf', mime: 'application/pdf' }] });
+    expect(chatSends[2].input).toMatchObject({ type: 'document' });
+  });
+  it('not before the chat is started', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish' }, { now: NOW });
+    await expect(tasksService.sendChatMessage('satish', t.id, { text: 'hi' })).rejects.toThrow('Start the chat first');
+  });
+  it('a manager above reads but does not write — until they watch it', async () => {
+    const t = await withChat('afshin', { ...base, assignedTo: 'satish' }, 'satish');
+    await expect(tasksService.sendChatMessage('farhan', t.id, { text: 'hi' })).rejects.toThrow('Watch the task to write in its chat');
+    expect(await tasksService.markChatRead('farhan', t.id)).toEqual({ read: 0 });
+    expect(chatSends).toHaveLength(0);
+    expect(chatReads).toHaveLength(0);
+  });
+  it('someone who may not see the task cannot write or read', async () => {
+    const t = await withChat('afshin', { ...base, assignedTo: 'satish' }, 'satish');
+    await expect(tasksService.sendChatMessage('nbo', t.id, { text: 'hi' })).rejects.toThrow();
+    await expect(tasksService.markChatRead('nbo', t.id)).rejects.toThrow();
+  });
+  it('marks the chat read for someone on the task', async () => {
+    const t = await withChat('afshin', { ...base, assignedTo: 'satish' }, 'satish');
+    expect(await tasksService.markChatRead('satish', t.id)).toEqual({ read: 2 });
+    expect(chatReads).toEqual([['satish', t.chatId]]);
+  });
+  it('refuses a file over 20 MB', async () => {
+    const t = await withChat('afshin', { ...base, assignedTo: 'satish' }, 'satish');
+    await expect(tasksService.sendChatMessage('satish', t.id, { attachments: [{ url: 'u', name: 'big.pdf', size: 21 * 1024 * 1024, mime: 'application/pdf' }] })).rejects.toThrow(/over 20 MB/);
   });
 });
 
