@@ -1,5 +1,6 @@
-// Owner, 2026-11-20: every Operations task is watched by Harshit, Asif and Farhan. This file checks the
-// lookup of those three accounts; what the task service does with them is in taskService.test.ts.
+// Owner, 2026-11-20: every Operations task is watched by Harshit, Asif and Farhan, and every Accounts task
+// by Faiz, Farhan and Afshin. This file checks the lookup of those accounts; what the task service does
+// with them is in taskService.test.ts.
 let users: Array<{ _id: string; email: string; status?: string }> = [];
 let lookupError: string | null = null;
 const filters: Array<Record<string, unknown>> = [];
@@ -25,22 +26,30 @@ beforeEach(() => {
     { _id: 'u-satish', email: 'satish@travkings.com', status: 'active' },
     { _id: 'u-asif', email: 'asif@travkings.com' }, // no status = active, as the people list reads it
     { _id: 'u-harshit', email: 'harshit@travkings.com', status: 'active' },
+    { _id: 'u-afshin', email: 'afshin.dhanani@kingsgroupco.com', status: 'active' },
+    { _id: 'u-faiz', email: 'faiz@travkings.com', status: 'active' },
   ];
 });
 
 describe('the people who watch every task of a department', () => {
   it('Operations: Harshit, Asif and Farhan, by their login emails', () => {
     expect(DEPARTMENT_WATCHER_EMAILS.operations).toEqual(['harshit@travkings.com', 'asif@travkings.com', 'farhan@travkings.com']);
-    expect(DEPARTMENT_WATCHER_EMAILS.accounts).toBeUndefined();
+  });
+
+  it('Accounts: Faiz, Farhan and Afshin, by their login emails', () => {
+    expect(DEPARTMENT_WATCHER_EMAILS.accounts).toEqual(['faiz@travkings.com', 'farhan@travkings.com', 'afshin.dhanani@kingsgroupco.com']);
   });
 
   it('resolves them to their accounts, in the order they are named', async () => {
     expect(await departmentWatcherIds('operations')).toEqual(['u-harshit', 'u-asif', 'u-farhan']);
-    expect(filters).toEqual([{ email: { $in: ['harshit@travkings.com', 'asif@travkings.com', 'farhan@travkings.com'] } }]);
+    expect(await departmentWatcherIds('accounts')).toEqual(['u-faiz', 'u-farhan', 'u-afshin']);
+    expect(filters).toEqual([
+      { email: { $in: ['harshit@travkings.com', 'asif@travkings.com', 'farhan@travkings.com'] } },
+      { email: { $in: ['faiz@travkings.com', 'farhan@travkings.com', 'afshin.dhanani@kingsgroupco.com'] } },
+    ]);
   });
 
-  it('nobody for Accounts or for a task with no department — and no lookup is made', async () => {
-    expect(await departmentWatcherIds('accounts')).toEqual([]);
+  it('nobody for a task with no department — and no lookup is made', async () => {
     expect(await departmentWatcherIds(null)).toEqual([]);
     expect(await departmentWatcherIds(undefined)).toEqual([]);
     expect(filters).toEqual([]);
