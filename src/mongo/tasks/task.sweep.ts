@@ -2,6 +2,7 @@ import { mailer } from '../../mailer';
 import { TaskDigestModel, TaskModel, type TaskDoc } from './task.model';
 import { taskNotify, type TaskEvent } from './task.notify';
 import { taskPeople, unknownPerson, type TaskPerson } from './task.people';
+import { taskPush } from './task.push';
 import { tasksService } from './task.service';
 import { addDays, DEFAULT_TZ, localParts, nextOccurrence, shortStamp, tzForBranchCode, workingMsBetween } from './task.time';
 import { OPEN_STATUSES } from './task.types';
@@ -29,10 +30,10 @@ async function fire(event: TaskEvent, task: TaskDoc, key: AlertKey, recipients: 
   return true;
 }
 
-export interface SweepResult { dueTomorrow: number; due2h: number; overdue: number; acceptNudge: number; spawned: number; digests: number }
+export interface SweepResult { dueTomorrow: number; due2h: number; overdue: number; acceptNudge: number; spawned: number; digests: number; receipts: number }
 
 export async function runTaskSweep(now = new Date()): Promise<SweepResult> {
-  const out: SweepResult = { dueTomorrow: 0, due2h: 0, overdue: 0, acceptNudge: 0, spawned: 0, digests: 0 };
+  const out: SweepResult = { dueTomorrow: 0, due2h: 0, overdue: 0, acceptNudge: 0, spawned: 0, digests: 0, receipts: 0 };
   const open = { $in: OPEN_STATUSES };
   const people = new Map<string, TaskPerson>();
   const tzOf = async (id: string): Promise<string> => {
@@ -81,6 +82,8 @@ export async function runTaskSweep(now = new Date()): Promise<SweepResult> {
   // The digest only runs while it is 8 am somewhere we have people (saves a full scan every minute).
   const zones = [DEFAULT_TZ, tzForBranchCode('NBO'), tzForBranchCode('FBM')];
   if (zones.some((z) => localParts(now, z).hour === DIGEST_HOUR)) out.digests = await sendDigests(now);
+  // Did the task pushes of 15+ minutes ago reach the phones? Expo's receipts say (task.push.ts). Never fails the sweep.
+  out.receipts = await taskPush.checkReceipts(now).catch(() => 0);
   return out;
 }
 

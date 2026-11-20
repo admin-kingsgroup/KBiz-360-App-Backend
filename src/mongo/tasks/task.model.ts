@@ -133,6 +133,16 @@ export function TaskHistoryModel(): Model<TaskHistoryDoc> {
 }
 
 // ─────────── task_notifications (spec's notification_log + the in-app list) ───────────
+// What Expo said about the push of one notification (task.push.ts; owner, 2026-11-20). Reason codes only —
+// never a phone's push token.
+export interface TaskPushRecord {
+  devices: number; // phones the person had registered
+  accepted: number; // of those, how many Expo accepted the message for
+  delivered: number | null; // of the accepted, how many FCM / APNs took — null until the receipts are read
+  refused: string[]; // Expo's reasons (DeviceNotRegistered, …), each once
+  ticketIds: string[]; // accepted tickets whose receipt has not been read yet
+  checkedAt: Date | null; // when the receipts were read
+}
 export interface TaskNotificationDoc {
   _id: Types.ObjectId;
   userId: string;
@@ -140,10 +150,22 @@ export interface TaskNotificationDoc {
   event: string;
   title: string;
   body: string;
-  channels: Array<'push' | 'email' | 'inapp'>;
+  channels: Array<'push' | 'email' | 'inapp'>; // 'push' = Expo accepted it for at least one phone
+  push?: TaskPushRecord | null; // null = no push was tried (quiet hours, no phone, or the chat pushed it)
   sentAt: Date;
   openedAt: Date | null;
 }
+const TaskPushRecordSchema = new Schema<TaskPushRecord>(
+  {
+    devices: { type: Number, default: 0 },
+    accepted: { type: Number, default: 0 },
+    delivered: { type: Number, default: null },
+    refused: { type: [String], default: [] },
+    ticketIds: { type: [String], default: [] },
+    checkedAt: { type: Date, default: null },
+  },
+  { _id: false },
+);
 const TaskNotificationSchema = new Schema<TaskNotificationDoc>(
   {
     userId: { type: String, required: true },
@@ -152,6 +174,7 @@ const TaskNotificationSchema = new Schema<TaskNotificationDoc>(
     title: { type: String, default: '' },
     body: { type: String, default: '' },
     channels: { type: [String], default: [] },
+    push: { type: TaskPushRecordSchema, default: null },
     sentAt: { type: Date, default: Date.now },
     openedAt: { type: Date, default: null },
   },
