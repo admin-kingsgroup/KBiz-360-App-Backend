@@ -51,14 +51,16 @@ jest.mock('../task.repository', () => ({
   },
 }));
 
-// People: afshin = Super Admin (level 1), farhan = branch manager at BOM (3), satish / faiz = staff at BOM (5),
-// nbo = staff in Nairobi (5).
+// People: afshin = Super Admin (level 1), farhan = branch manager at BOM (3), harshit / asif = heads of
+// department at BOM (4), satish / faiz = staff at BOM (5), nbo = staff in Nairobi (5).
 const BOM = new Types.ObjectId().toHexString();
 const NBO = new Types.ObjectId().toHexString();
 const DAR = new Types.ObjectId().toHexString(); // the CRM codes Africa branches with an H (HDAR); its groups say "DAR …"
 const PEOPLE: Record<string, { level: number; branchIds: string[]; tz: string; name: string }> = {
   afshin: { level: 1, branchIds: [BOM], tz: 'Asia/Kolkata', name: 'Afshin Dhanani' },
   farhan: { level: 3, branchIds: [BOM], tz: 'Asia/Kolkata', name: 'Farhan' },
+  harshit: { level: 4, branchIds: [BOM], tz: 'Asia/Kolkata', name: 'Harshit' },
+  asif: { level: 4, branchIds: [BOM], tz: 'Asia/Kolkata', name: 'Asif' },
   satish: { level: 5, branchIds: [BOM], tz: 'Asia/Kolkata', name: 'Satish' },
   faiz: { level: 5, branchIds: [BOM], tz: 'Asia/Kolkata', name: 'Faiz' },
   nbo: { level: 5, branchIds: [NBO], tz: 'Africa/Nairobi', name: 'Wanjiru' },
@@ -118,6 +120,11 @@ jest.mock('../../alerts/reportChat.service', () => ({
     },
   },
 }));
+// The people who watch every task of a department (task.autoWatchers) — nobody, unless a test names them.
+const standing: Record<string, string[]> = {};
+jest.mock('../task.autoWatchers', () => ({
+  departmentWatcherIds: async (department: string | null | undefined) => (department ? standing[department] ?? [] : []),
+}));
 jest.mock('../task.notify', () => ({
   taskNotify: { send: async (event: string, _t: unknown, to: string[], ctx: { actorId?: string | null }) => { sent.push({ event, to: to.filter((x) => x !== ctx.actorId), actorId: ctx.actorId }); } },
 }));
@@ -127,7 +134,7 @@ import { tasksService } from '../task.service';
 const NOW = new Date('2026-11-18T06:00:00.000Z'); // 11:30 IST, Wednesday
 const base = { title: 'Close October books', branchId: BOM, priority: 'normal' as const, dueDate: '2026-11-20' };
 
-beforeEach(() => { tasks.length = 0; history.length = 0; notices.length = 0; chatMembers.clear(); sent.length = 0; chatState.length = 0; talkedChats.clear(); groupPosts.length = 0; groupPostError = null; });
+beforeEach(() => { tasks.length = 0; history.length = 0; notices.length = 0; chatMembers.clear(); sent.length = 0; chatState.length = 0; talkedChats.clear(); groupPosts.length = 0; groupPostError = null; for (const k of Object.keys(standing)) delete standing[k]; });
 
 // Create a task and start its chat (owner 2026-11-16 evening: no task comes with a chat).
 async function withChat(actor: string, input: Parameters<typeof tasksService.create>[1], starter = actor) {
@@ -231,6 +238,80 @@ describe('department and the branch group', () => {
     expect(after.department).toBe('operations');
     expect(groupPosts).toHaveLength(1);
     expect(history).toContainEqual(expect.objectContaining({ field: 'department', oldValue: 'accounts', newValue: 'operations' }));
+  });
+});
+
+// Owner, 2026-11-20: "when we create task in operation then harshit, asif, and farhan should automatically
+// added in watcher if the task is not assigned or for them".
+describe('Operations tasks are watched by Harshit, Asif and Farhan', () => {
+  const ids = (t: { watchers: Array<{ id: string }> }): string[] => t.watchers.map((w) => w.id);
+  beforeEach(() => { standing.operations = ['harshit', 'asif', 'farhan']; });
+
+  it('a new Operations task gets the three as watchers, tells them, and names them in the group post', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', department: 'operations' }, { now: NOW });
+    expect(ids(t)).toEqual(['harshit', 'asif', 'farhan']);
+    expect(sent).toContainEqual({ event: 'watcher_added', to: ['harshit', 'asif', 'farhan'], actorId: 'afshin' });
+    expect(String(groupPosts[0].body).split('\n')).toContain('Watching: Harshit, Asif, Farhan');
+    expect((await tasksService.get('asif', t.id)).task.myRole).toBe('watcher');
+  });
+
+  it('not the one who gave the task, and not the one it is for — they are on it already', async () => {
+    const byFarhan = await tasksService.create('farhan', { ...base, assignedTo: 'satish', department: 'operations' }, { now: NOW });
+    expect(ids(byFarhan)).toEqual(['harshit', 'asif']);
+    const forHarshit = await tasksService.create('afshin', { ...base, assignedTo: 'harshit', department: 'operations' }, { now: NOW });
+    expect(ids(forHarshit)).toEqual(['asif', 'farhan']);
+    const asifToFarhan = await tasksService.create('asif', { ...base, assignedTo: 'farhan', department: 'operations' }, { now: NOW });
+    expect(ids(asifToFarhan)).toEqual(['harshit']);
+  });
+
+  it('keeps the watchers picked by hand, and adds nobody twice', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', watcherIds: ['faiz', 'farhan'], department: 'operations' }, { now: NOW });
+    expect(ids(t)).toEqual(['faiz', 'farhan', 'harshit', 'asif']);
+  });
+
+  it('an Accounts task, or one with no department, gets only the watchers picked', async () => {
+    expect(ids(await tasksService.create('afshin', { ...base, assignedTo: 'satish', department: 'accounts' }, { now: NOW }))).toEqual([]);
+    expect(ids(await tasksService.create('afshin', { ...base, assignedTo: 'satish', watcherIds: ['faiz'] }, { now: NOW }))).toEqual(['faiz']);
+  });
+
+  it('a personal to-do stays personal', async () => {
+    const t = await tasksService.create('satish', { ...base, assignedTo: 'satish', department: 'operations' }, { now: NOW });
+    expect(ids(t)).toEqual([]);
+  });
+
+  it('the next copy of a repeating task carries the watchers its task had — someone taken off stays off', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', watcherIds: ['harshit'], department: 'operations' }, { now: NOW, parentRecurringId: 'series-1' });
+    expect(ids(t)).toEqual(['harshit']);
+  });
+
+  it('a task moved into Operations later gets them too, and its chat takes them in', async () => {
+    const t = await withChat('afshin', { ...base, assignedTo: 'satish', watcherIds: ['farhan'], department: 'accounts' });
+    sent.length = 0;
+    const after = await tasksService.patch('afshin', t.id, { department: 'operations' }, NOW);
+    expect(ids(after)).toEqual(['farhan', 'harshit', 'asif']);
+    expect(chatMembers.get(t.chatId)).toEqual(['afshin', 'satish', 'farhan', 'harshit', 'asif']);
+    expect(sent).toContainEqual({ event: 'watcher_added', to: ['harshit', 'asif'], actorId: 'afshin' });
+    expect(history).toContainEqual(expect.objectContaining({ field: 'watchers', oldValue: 'farhan', newValue: 'farhan,harshit,asif' }));
+    expect(notices.at(-1)?.text).toContain('set the department to Operations, added Harshit, Asif as watchers');
+  });
+
+  it('a task moved out of Operations keeps its watchers', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', department: 'operations' }, { now: NOW });
+    const after = await tasksService.patch('afshin', t.id, { department: 'accounts' }, NOW);
+    expect(ids(after)).toEqual(['harshit', 'asif', 'farhan']);
+  });
+
+  it('given to someone else, the one of the three who was doing it goes back to watching', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'harshit', department: 'operations' }, { now: NOW });
+    const after = await tasksService.reassign('afshin', t.id, { assignedTo: 'farhan' }, NOW);
+    expect(after.assignedTo.id).toBe('farhan');
+    expect(ids(after)).toEqual(['asif', 'harshit']);
+  });
+
+  it('reassigning any other task changes no watchers beyond the new assignee', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', watcherIds: ['faiz'], department: 'accounts' }, { now: NOW });
+    const after = await tasksService.reassign('afshin', t.id, { assignedTo: 'faiz' }, NOW);
+    expect(ids(after)).toEqual([]);
   });
 });
 

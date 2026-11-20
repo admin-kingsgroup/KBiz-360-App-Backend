@@ -57,7 +57,11 @@ async function main(): Promise<void> {
   const satish = mk('Satish', roles.emp, bom);
   const faiz = mk('Faiz', roles.emp, bom);
   const wanjiru = mk('Wanjiru', roles.emp, nbo);
-  await crm.collection('users').insertMany([owner, mgr, satish, faiz, wanjiru]);
+  // The three who watch every Operations task (task.autoWatchers) — found by their real login emails.
+  const harshit = { ...mk('Harshit', roles.emp, bom), email: 'harshit@travkings.com' };
+  const asif = { ...mk('Asif', roles.emp, bom), email: 'asif@travkings.com' };
+  const farhan = { ...mk('Farhan', roles.bm, bom), email: 'farhan@travkings.com' };
+  await crm.collection('users').insertMany([owner, mgr, satish, faiz, wanjiru, harshit, asif, farhan]);
   const id = (u: { _id: ObjectId }): string => String(u._id);
 
   const { connectMongo, disconnectMongo } = await import('../src/mongo/connection');
@@ -203,6 +207,25 @@ async function main(): Promise<void> {
     check('it is in the assignee\'s My tasks', ((await as(satish).get('/api/tasks?view=mine')).body as any[]).some((t) => t.id === erpTask.body.id));
     check('a past due date is refused as the app refuses it', (await svc(mgr).post('', { title: 'x', assignedTo: id(satish), branchId: String(bom), priority: 'normal', dueDate: '2020-01-01' })).status === 400);
     check('a javascript: link is refused', (await svc(mgr).post('', { title: 'x', assignedTo: id(satish), branchId: String(bom), priority: 'normal', dueDate: tomorrow, link: { label: 'x', url: 'javascript:alert(1)' } })).status === 400);
+
+    console.log('\nOperations tasks: Harshit, Asif and Farhan watch (owner 2026-11-20)');
+    const watcherIds = (t: any): string[] => (t.watchers as any[]).map((w) => w.id);
+    const opsBody = { assignedTo: id(satish), branchId: String(bom), priority: 'normal', dueDate: tomorrow, department: 'operations' };
+    const ops = await as(owner).post('/api/tasks', { ...opsBody, title: 'E2E: visa file for the Dubai group' });
+    check('an Operations task gets the three as watchers', ops.status === 201 && JSON.stringify(watcherIds(ops.body)) === JSON.stringify([id(harshit), id(asif), id(farhan)]), ops.body);
+    check('Harshit: Watching has it', ((await as(harshit).get('/api/tasks?view=watching')).body as any[]).some((t) => t.id === ops.body.id));
+    const opsChat = await as(asif).post(`/api/tasks/${ops.body.id}/chat`);
+    check('one of them starts its chat', opsChat.status === 200 && !!opsChat.body.chatId, opsChat.body);
+    const byFarhan = await as(farhan).post('/api/tasks', { ...opsBody, assignedTo: id(harshit), title: 'E2E: hotel vouchers for Goa' });
+    check('given by Farhan, for Harshit: only Asif is added', byFarhan.status === 201 && JSON.stringify(watcherIds(byFarhan.body)) === JSON.stringify([id(asif)]), byFarhan.body);
+    const handed = await as(farhan).post(`/api/tasks/${byFarhan.body.id}/reassign`, { assignedTo: id(satish) });
+    check('handed to someone else: Harshit goes back to watching', handed.status === 200 && JSON.stringify(watcherIds(handed.body)) === JSON.stringify([id(asif), id(harshit)]), handed.body);
+    const acc = await as(owner).post('/api/tasks', { ...opsBody, department: 'accounts', title: 'E2E: GST challan' });
+    check('an Accounts task gets nobody', acc.status === 201 && watcherIds(acc.body).length === 0, acc.body);
+    const moved = await as(owner).patch(`/api/tasks/${acc.body.id}`, { department: 'operations' });
+    check('moved into Operations: the three are added', moved.status === 200 && JSON.stringify(watcherIds(moved.body)) === JSON.stringify([id(harshit), id(asif), id(farhan)]), moved.body);
+    const erpOps = await svc(mgr).post('', { ...opsBody, title: 'E2E: ticket reissue from KBiz Books' });
+    check('created from KBiz Books: the three are added too', erpOps.status === 201 && JSON.stringify(watcherIds(erpOps.body)) === JSON.stringify([id(harshit), id(asif), id(farhan)]), erpOps.body);
 
     console.log('\nConvert open reminders (script, --apply on the throwaway DB)');
     const appRaw = raw.db(APP_DB);
