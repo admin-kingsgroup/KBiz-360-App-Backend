@@ -540,6 +540,27 @@ export const tasksService = {
     return chatService.readTaskMessages(task.chatId, actorId, page);
   },
 
+  // The ERP's task chat (owner, 2026-11-20: "task chat inside the ERP as well"). The app writes through its
+  // chat routes and socket; the ERP has neither, so its service door sends and reads through these two. Same
+  // rule as the app: only someone on the task (giver, doer, watcher) writes; a closed task's chat refuses
+  // (chatService.sendMessage, 423). The chat's push, @mention and unread handling are the app's, unchanged.
+  async sendChatMessage(actorId: string, id: string, input: { text?: string; attachments?: AttachmentInput[]; clientId?: string }) {
+    const { task } = await loadVisible(actorId, id);
+    if (!task.chatId) throw BadRequest('Start the chat first');
+    if (!isParty(task, actorId)) throw Forbidden('Watch the task to write in its chat');
+    const attachments = input.attachments ?? [];
+    for (const a of attachments) if (a.size > ATTACHMENT_MAX_BYTES) throw BadRequest(`"${a.name}" is over 20 MB`);
+    const type = !attachments.length ? 'text' : attachments.every((a) => a.mime.startsWith('image/')) ? 'image' : 'document';
+    return chatService.sendMessage(actorId, task.chatId, { type, text: input.text ?? '', attachments, clientId: input.clientId });
+  },
+
+  // Clears the reader's unread count on the task's chat — a member only (a manager reading from above has none).
+  async markChatRead(actorId: string, id: string): Promise<{ read: number }> {
+    const { task } = await loadVisible(actorId, id);
+    if (!task.chatId || !isParty(task, actorId)) return { read: 0 };
+    return chatService.markRead(actorId, task.chatId);
+  },
+
   // GET /tasks/dashboard — the same scope as view=all, so every number matches its list.
   async dashboard(actorId: string, filter: { companyId?: string; branchId?: string } = {}, now = new Date()) {
     const me = (await taskPeople.one(actorId)) ?? unknownPerson(actorId);
