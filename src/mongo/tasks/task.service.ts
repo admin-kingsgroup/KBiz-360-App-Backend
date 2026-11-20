@@ -9,6 +9,7 @@ import { taskRepo, type HistoryRow } from './task.repository';
 import { taskPeople, unknownPerson, type TaskPerson } from './task.people';
 import { taskNotify, type TaskEvent } from './task.notify';
 import { shareTaskInBranchGroup } from './task.groupPost';
+import { departmentWatcherIds } from './task.autoWatchers';
 import { ALERTS_CLEARED, isOverdue, planTransition } from './task.rules';
 import { branchNames, toHistoryDTOs, toTaskDTOs, type TaskDTO } from './task.dto';
 import { DAY_KEY_RE, HHMM_RE, localParts, longDate, nextOccurrence, shortStamp, zonedDateTime } from './task.time';
@@ -188,7 +189,11 @@ export const tasksService = {
     const now = opts.now ?? new Date();
     const title = cleanTitle(input.title);
     const description = cleanDescription(input.description);
-    const people = await taskPeople.resolve([actorId, input.assignedTo, ...(input.watcherIds ?? [])]);
+    const self = actorId === input.assignedTo;
+    // The people who watch every task of this department (Operations — task.autoWatchers). Not on a personal
+    // to-do, and not on a repeat copy: that one carries the watchers its task had.
+    const standing = self || opts.parentRecurringId ? [] : await departmentWatcherIds(input.department);
+    const people = await taskPeople.resolve([actorId, input.assignedTo, ...(input.watcherIds ?? []), ...standing]);
     const assignee = people.get(input.assignedTo);
     if (!assignee) throw BadRequest('Pick who the task is for');
     const companyId = await companyOfBranch(input.branchId);
@@ -196,8 +201,8 @@ export const tasksService = {
     const dueAt = resolveDue(input, assignee.tz);
     if (!dueAt) throw BadRequest('A due date is required');
     if (!opts.allowPast && dueAt.getTime() <= now.getTime()) throw BadRequest('The due date cannot be in the past');
-    const self = actorId === input.assignedTo;
-    const watcherIds = [...new Set(input.watcherIds ?? [])].filter((w) => w !== actorId && w !== input.assignedTo && people.has(w));
+    // Whoever gave the task or is doing it is on it already, so is never also a watcher.
+    const watcherIds = [...new Set([...(input.watcherIds ?? []), ...standing])].filter((w) => w !== actorId && w !== input.assignedTo && people.has(w));
     for (const a of input.attachments ?? []) if (a.size > ATTACHMENT_MAX_BYTES) throw BadRequest(`"${a.name}" is over 20 MB`);
 
     const task = await taskRepo.create({
@@ -330,6 +335,12 @@ export const tasksService = {
     if (!next) throw BadRequest('Pick who the task is for');
     const self = input.assignedTo === actorId;
     const watchers = task.watchers.filter((w) => w.userId !== input.assignedTo);
+    // One of the department's standing watchers (Operations — task.autoWatchers) was doing it: they were left
+    // out of the watchers only because the task was theirs, so they go back to watching it.
+    const wasDoing = task.assignedTo;
+    if (!self && wasDoing !== task.assignedBy && !watchers.some((w) => w.userId === wasDoing) && (await departmentWatcherIds(task.department)).includes(wasDoing)) {
+      watchers.push({ userId: wasDoing, addedBy: actorId, addedAt: now });
+    }
     const updated = await taskRepo.update(id, {
       $set: {
         assignedTo: input.assignedTo,
@@ -371,6 +382,7 @@ export const tasksService = {
     const rows: HistoryRow[] = [];
     const lines: string[] = [];
     const events: TaskEvent[] = [];
+    let joined: string[] = []; // watchers the edit brought in
     const comment = input.comment?.trim() || null;
 
     if (input.title !== undefined) {
@@ -409,6 +421,19 @@ export const tasksService = {
       set.department = input.department ?? null;
       rows.push({ taskId: id, userId: actorId, field: 'department', oldValue: task.department ?? null, newValue: input.department ?? null, comment });
       lines.push(input.department ? `set the department to ${DEPARTMENT_LABEL[input.department]}` : 'cleared the department');
+      // Moved into a department that has standing watchers (Operations — task.autoWatchers): they come along.
+      // Moving it out again leaves the watchers as they are.
+      if (task.assignedBy !== task.assignedTo) {
+        const standing = (await departmentWatcherIds(input.department)).filter((u) => u !== task.assignedBy && u !== task.assignedTo && !task.watchers.some((w) => w.userId === u));
+        const known = standing.length ? await taskPeople.resolve(standing) : new Map<string, TaskPerson>();
+        joined = standing.filter((u) => known.has(u));
+        if (joined.length) {
+          const watchers = [...task.watchers, ...joined.map((userId) => ({ userId, addedBy: actorId, addedAt: now }))];
+          set.watchers = watchers;
+          rows.push({ taskId: id, userId: actorId, field: 'watchers', oldValue: task.watchers.map((w) => w.userId).join(',') || null, newValue: watchers.map((w) => w.userId).join(','), comment });
+          lines.push(`added ${joined.map((u) => known.get(u)?.name ?? 'Someone').join(', ')} as watcher${joined.length > 1 ? 's' : ''}`);
+        }
+      }
     }
     if (input.repeat !== undefined) {
       const repeat = cleanRepeat(input.repeat);
@@ -425,8 +450,10 @@ export const tasksService = {
     if (!updated) throw NotFound('Task not found');
     await taskRepo.addHistory(rows);
     if (set.title && updated.chatId) await chatService.renameTaskChat(updated.chatId, updated.title);
+    if (joined.length && updated.chatId) await chatService.setTaskChatMembers(updated.chatId, chatMembersOf(updated));
     await notice(updated, actorId, `${actor.name} ${lines.join(', ')}${comment ? ` — ${comment}` : ''} · ${shortStamp(now, actor.tz)}`);
     for (const e of events) await notify(e, updated, [updated.assignedTo], { actorId, comment });
+    if (joined.length) await notify('watcher_added', updated, joined, { actorId });
     announce(updated);
     return dto(updated, actorId);
   },
