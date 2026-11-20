@@ -8,8 +8,8 @@ import { getStorage } from '../../storage';
 import { crmRepo, type CrmUser } from '../crm.repo';
 import { requireServiceToken } from '../alerts/serviceAuth';
 import { userPositions } from '../userPositions';
-import { tasksService } from './task.service';
-import { DESCRIPTION_MAX, TASK_DEPARTMENTS, TASK_PRIORITIES, TITLE_MAX, type TaskDepartment, type TaskPriority } from './task.types';
+import { tasksService, type ListQuery } from './task.service';
+import { DESCRIPTION_MAX, TASK_DEPARTMENTS, TASK_PRIORITIES, TASK_STATUSES, TITLE_MAX, type TaskDepartment, type TaskPriority, type TaskStatus } from './task.types';
 
 // /api/service/tasks — the door KBiz Books (the ERP) uses to create Smart Connect tasks (owner,
 // 2026-11-16: "right-click in the ERP creates a task"). Same arrangement as /api/service/reminders:
@@ -120,4 +120,47 @@ tasksServiceRouter.post('/', validate(createSchema), asyncHandler(async (req, re
     source: 'erp',
   });
   res.status(201).json(task);
+}));
+
+// ── The ERP's Task tab (owner, 2026-11-20: "the task view of my Smart Connect app in my ERP") ──
+// Read the lists, open one task, move its status — the same tasksService calls the app's /api/tasks
+// makes, AS the acting user, so who-may-see and who-may-do stay the app's rules. No chat, edit or
+// reassign here yet: those stay in the app. The fixed paths are declared before '/:id'.
+const listQuery = z.object({
+  view: z.enum(['mine', 'assigned', 'watching', 'team', 'all']).default('mine'),
+  state: z.enum(['open', 'closed', 'all']).optional(),
+  personId: z.string().max(64).optional(),
+  q: z.string().max(200).optional(),
+});
+const dashboardQuery = z.object({ companyId: z.string().max(64).optional(), branchId: z.string().max(64).optional() });
+const statusSchema = z.object({
+  to: z.enum(TASK_STATUSES as [string, ...string[]]),
+  comment: z.string().max(DESCRIPTION_MAX).optional(),
+  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  dueTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+});
+
+// GET /api/service/tasks/dashboard — the per-person counts behind the Team list.
+tasksServiceRouter.get('/dashboard', validate(dashboardQuery, 'query'), asyncHandler(async (req, res) => {
+  const me = await actor(req);
+  res.json(await tasksService.dashboard(String(me._id), req.query as { companyId?: string; branchId?: string }));
+}));
+
+// GET /api/service/tasks?view=mine|assigned|watching|team|all&state=open|closed — one list.
+tasksServiceRouter.get('/', validate(listQuery, 'query'), asyncHandler(async (req, res) => {
+  const me = await actor(req);
+  res.json(await tasksService.list(String(me._id), req.query as unknown as ListQuery));
+}));
+
+// GET /api/service/tasks/:id — the task and its history (refused if the acting user may not see it).
+tasksServiceRouter.get('/:id', asyncHandler(async (req, res) => {
+  const me = await actor(req);
+  res.json(await tasksService.get(String(me._id), req.params.id));
+}));
+
+// POST /api/service/tasks/:id/status — one status change; the app's machine decides if it is allowed.
+tasksServiceRouter.post('/:id/status', validate(statusSchema), asyncHandler(async (req, res) => {
+  const me = await actor(req);
+  const body = req.body as { to: TaskStatus; comment?: string; dueDate?: string; dueTime?: string };
+  res.json(await tasksService.changeStatus(String(me._id), req.params.id, body));
 }));
