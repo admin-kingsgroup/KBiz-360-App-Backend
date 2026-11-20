@@ -1,15 +1,14 @@
-import { config } from '../../config';
 import { mailer } from '../../mailer';
-import { callDeviceRepo } from '../calls/call.repository';
 import { emitToUser } from '../chat/chat.events';
-import { TaskNotificationModel, type TaskDoc } from './task.model';
+import { TaskNotificationModel, type TaskDoc, type TaskPushRecord } from './task.model';
 import { taskPeople, unknownPerson, type TaskPerson } from './task.people';
+import { taskPush } from './task.push';
 import { inQuietHours, shortStamp } from './task.time';
 
 // Task notifications (spec §6, minus escalation — owner 2026-11-16). Every event goes to the in-app
 // list, a server push (Expo → FCM/APNs) and an email. Push respects quiet hours (22:00–07:00 in the
 // recipient's zone) unless the task is Urgent; email always goes. The actor is never told about
-// their own action.
+// their own action. What Expo answered about the push is kept on the notification (task.push.ts).
 export type TaskEvent =
   | 'assigned' | 'reassigned' | 'reassigned_away' | 'watcher_added'
   | 'accepted' | 'date_change_requested' | 'waiting' | 'done'
@@ -24,45 +23,6 @@ export interface NotifyContext {
   newAssigneeName?: string;
   preview?: string; // the chat message, for a mention
   noPush?: boolean; // the chat already pushed this (an @mention) — in-app list + email only
-}
-
-const isExpoPushToken = (t: string): boolean => /^Expo(nent)?PushToken\[[^\]]+\]$/.test(t);
-const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
-
-async function pushToUser(userId: string, msg: { title: string; body: string; data: Record<string, unknown>; urgent: boolean }): Promise<boolean> {
-  const tokens = (await callDeviceRepo.tokensForUser(userId)).filter(isExpoPushToken);
-  if (!tokens.length) return false;
-  const messages = tokens.map((to) => ({
-    to,
-    title: msg.title,
-    body: msg.body.length > 160 ? `${msg.body.slice(0, 157)}…` : msg.body,
-    data: msg.data,
-    sound: 'default',
-    channelId: 'general', // non-badging channel — the app-icon badge is reserved for unread chats
-    priority: 'high',
-    ...(msg.urgent ? { interruptionLevel: 'time-sensitive' } : {}),
-  }));
-  if (!config.push.enabled) {
-    // eslint-disable-next-line no-console
-    console.log(`[task-push] dry-run "${msg.title}" to ${tokens.length} device(s) for ${userId}`);
-    return true;
-  }
-  try {
-    await fetch(EXPO_PUSH_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        ...(config.push.expoAccessToken ? { Authorization: `Bearer ${config.push.expoAccessToken}` } : {}),
-      },
-      body: JSON.stringify(messages),
-    });
-    return true;
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    console.warn('[task-push] send error:', (e as Error).message);
-    return false;
-  }
 }
 
 // The words of one notification, read in the recipient's zone.
@@ -106,17 +66,19 @@ export const taskNotify = {
       const to = people.get(uid) ?? unknownPerson(uid);
       const { title, body } = wording(event, task, actorName, to, ctx);
       const channels: Array<'push' | 'email' | 'inapp'> = ['inapp'];
+      let push: TaskPushRecord | null = null; // what Expo said; null = no push was tried
       try {
         const urgent = task.priority === 'urgent';
         if (!ctx.noPush && (urgent || !inQuietHours(now, to.tz))) {
-          if (await pushToUser(uid, { title, body, urgent, data: { type: 'task', taskId, chatId: task.chatId, event } })) channels.push('push');
+          push = await taskPush.toUser(uid, { title, body, urgent, data: { type: 'task', taskId, chatId: task.chatId, event } });
+          if (push && push.accepted > 0) channels.push('push');
         }
         if (to.email && await mailer.send({
           to: to.email,
           subject: `[Task] ${task.title} — ${title}`,
           text: `${title}\n\n${body}\n\nOpen KBiz360 Smart Connect → Tasks to see it.`,
         })) channels.push('email');
-        await TaskNotificationModel().create({ userId: uid, taskId, event, title, body, channels, sentAt: now, openedAt: null });
+        await TaskNotificationModel().create({ userId: uid, taskId, event, title, body, channels, push, sentAt: now, openedAt: null });
         emitToUser(uid, 'task:notification', { taskId, event, title, body });
       } catch (e) {
         // eslint-disable-next-line no-console

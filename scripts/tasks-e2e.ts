@@ -231,6 +231,54 @@ async function main(): Promise<void> {
     const erpOps = await svc(mgr).post('', { ...opsBody, title: 'E2E: ticket reissue from KBiz Books' });
     check('created from KBiz Books: the three are added too', erpOps.status === 201 && JSON.stringify(watcherIds(erpOps.body)) === JSON.stringify([id(harshit), id(asif), id(farhan)]), erpOps.body);
 
+    console.log('\nTask push: what Expo answered is kept, and its receipt is read later (owner 2026-11-20)');
+    {
+      const { config } = await import('../src/config');
+      const { taskPush } = await import('../src/mongo/tasks/task.push');
+      const { TaskNotificationModel } = await import('../src/mongo/tasks/task.model');
+      // Satish has two phones on record: one Expo accepts, one that no longer has the app.
+      const stamp = new Date();
+      await raw.db(APP_DB).collection('push_devices').insertMany([
+        { userId: id(satish), expoPushToken: 'ExponentPushToken[e2e-good-phone]', platform: 'android', createdAt: stamp, updatedAt: stamp },
+        { userId: id(satish), expoPushToken: 'ExponentPushToken[e2e-gone-phone]', platform: 'android', createdAt: stamp, updatedAt: stamp },
+      ]);
+      const realFetch = global.fetch;
+      const wasEnabled = config.push.enabled;
+      const asked: string[] = [];
+      // A stand-in for Expo: no network. Tickets on /send, receipts on /getReceipts.
+      (global as any).fetch = async (url: string, init: { body: string }) => {
+        asked.push(String(url));
+        const body = JSON.parse(init.body);
+        if (String(url).endsWith('/push/send')) {
+          return { status: 200, json: async () => ({ data: (body as any[]).map((m) => (String(m.to).includes('gone')
+            ? { status: 'error', message: `"${m.to}" is not a registered push notification recipient`, details: { error: 'DeviceNotRegistered' } }
+            : { status: 'ok', id: 'e2e-ticket-1' })) }) };
+        }
+        return { status: 200, json: async () => ({ data: Object.fromEntries((body.ids as string[]).map((t) => [t, { status: 'ok' }])) }) };
+      };
+      (config.push as { enabled: boolean }).enabled = true;
+      try {
+        // Urgent, so the push goes whatever the hour this runs at (no push 22:00–07:00 otherwise).
+        const pt = await as(owner).post('/api/tasks', { title: 'E2E: is the push recorded', assignedTo: id(satish), branchId: String(bom), priority: 'urgent', dueDate: tomorrow });
+        const note = await TaskNotificationModel().findOne({ taskId: pt.body.id, userId: id(satish), event: 'assigned' }).lean();
+        check('the notification keeps Expo\'s answer: 1 of 2 phones accepted, and why the other was not',
+          note?.push?.devices === 2 && note.push.accepted === 1 && note.push.delivered === null && JSON.stringify(note.push.refused) === '["DeviceNotRegistered"]'
+          && JSON.stringify(note.push.ticketIds) === '["e2e-ticket-1"]' && note.channels.includes('push'), note);
+        check('no phone token is kept in the record', !!note && !JSON.stringify(note).includes('ExponentPushToken'));
+        check('too early: the receipt is not asked for yet', (await taskPush.checkReceipts(new Date())) === 0 && !asked.some((u) => u.endsWith('/getReceipts')));
+        const later = new Date(Date.now() + 16 * 60_000);
+        check('16 minutes later the sweep reads the receipt', (await runTaskSweep(later)).receipts === 1);
+        const settled = await TaskNotificationModel().findOne({ _id: note!._id }).lean();
+        check('…and the notification says: delivered to 1 phone, checked, the reason kept',
+          settled?.push?.delivered === 1 && !!settled.push.checkedAt && settled.push.ticketIds.length === 0 && JSON.stringify(settled.push.refused) === '["DeviceNotRegistered"]', settled?.push);
+        check('a settled push is not asked about again', (await taskPush.checkReceipts(later)) === 0);
+      } finally {
+        (global as any).fetch = realFetch;
+        (config.push as { enabled: boolean }).enabled = wasEnabled;
+        await raw.db(APP_DB).collection('push_devices').deleteMany({ userId: id(satish) });
+      }
+    }
+
     console.log('\nConvert open reminders (script, --apply on the throwaway DB)');
     const appRaw = raw.db(APP_DB);
     const longText = `E2E reminder: ${'reconcile the HDFC statement '.repeat(6)}`;
