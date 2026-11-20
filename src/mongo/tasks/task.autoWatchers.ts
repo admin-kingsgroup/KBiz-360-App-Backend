@@ -2,13 +2,15 @@ import { crmRepo } from '../crm.repo';
 import type { TaskDepartment } from './task.types';
 
 // Owner, 2026-11-20: "when we create task in operation then harshit, asif, and farhan should automatically
-// added in watcher if the task is not assigned or for them". Every Operations task is watched by these three.
+// added in watcher if the task is not assigned or for them", and then "same like if task is of accounts then
+// add faiz, farhan and afshin". Every task of a department is watched by the people named for it here.
 // The task service leaves out whoever gave the task or is doing it — they are on it already.
 //
 // Named people, by login email, like the chat group rules (chat.service GROUP_*_EMAILS). To change who
 // watches a department's tasks, edit this list.
 export const DEPARTMENT_WATCHER_EMAILS: Partial<Record<TaskDepartment, readonly string[]>> = {
   operations: ['harshit@travkings.com', 'asif@travkings.com', 'farhan@travkings.com'],
+  accounts: ['faiz@travkings.com', 'farhan@travkings.com', 'afshin.dhanani@kingsgroupco.com'],
 };
 
 /**

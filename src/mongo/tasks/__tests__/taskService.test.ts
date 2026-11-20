@@ -269,7 +269,7 @@ describe('Operations tasks are watched by Harshit, Asif and Farhan', () => {
     expect(ids(t)).toEqual(['faiz', 'farhan', 'harshit', 'asif']);
   });
 
-  it('an Accounts task, or one with no department, gets only the watchers picked', async () => {
+  it('a department with nobody named, or no department, gets only the watchers picked', async () => {
     expect(ids(await tasksService.create('afshin', { ...base, assignedTo: 'satish', department: 'accounts' }, { now: NOW }))).toEqual([]);
     expect(ids(await tasksService.create('afshin', { ...base, assignedTo: 'satish', watcherIds: ['faiz'] }, { now: NOW }))).toEqual(['faiz']);
   });
@@ -312,6 +312,36 @@ describe('Operations tasks are watched by Harshit, Asif and Farhan', () => {
     const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', watcherIds: ['faiz'], department: 'accounts' }, { now: NOW });
     const after = await tasksService.reassign('afshin', t.id, { assignedTo: 'faiz' }, NOW);
     expect(ids(after)).toEqual([]);
+  });
+});
+
+// Owner, 2026-11-20, right after: "same like if task is of accounts then add faiz, farhan and afshin".
+describe('Accounts tasks are watched by Faiz, Farhan and Afshin', () => {
+  const ids = (t: { watchers: Array<{ id: string }> }): string[] => t.watchers.map((w) => w.id);
+  beforeEach(() => { standing.operations = ['harshit', 'asif', 'farhan']; standing.accounts = ['faiz', 'farhan', 'afshin']; });
+
+  it('a new Accounts task gets the three as watchers, tells them, and names them in the group post', async () => {
+    const t = await tasksService.create('harshit', { ...base, assignedTo: 'satish', department: 'accounts' }, { now: NOW });
+    expect(ids(t)).toEqual(['faiz', 'farhan', 'afshin']);
+    expect(sent).toContainEqual({ event: 'watcher_added', to: ['faiz', 'farhan', 'afshin'], actorId: 'harshit' });
+    expect(groupPosts[0]).toMatchObject({ group: 'accounts' });
+    expect(String(groupPosts[0].body).split('\n')).toContain('Watching: Faiz, Farhan, Afshin Dhanani');
+  });
+
+  it('not the one who gave the task, and not the one it is for', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'faiz', department: 'accounts' }, { now: NOW });
+    expect(ids(t)).toEqual(['farhan']);
+  });
+
+  it('an Operations task still gets only its own three', async () => {
+    const t = await tasksService.create('afshin', { ...base, assignedTo: 'satish', department: 'operations' }, { now: NOW });
+    expect(ids(t)).toEqual(['harshit', 'asif', 'farhan']);
+  });
+
+  it('moved from Accounts to Operations: the Operations people join, the Accounts people stay', async () => {
+    const t = await tasksService.create('harshit', { ...base, assignedTo: 'satish', department: 'accounts' }, { now: NOW });
+    const after = await tasksService.patch('harshit', t.id, { department: 'operations' }, NOW);
+    expect(ids(after)).toEqual(['faiz', 'farhan', 'afshin', 'asif']); // Farhan is on both lists; Harshit gave it
   });
 });
 

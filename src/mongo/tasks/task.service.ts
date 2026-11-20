@@ -190,7 +190,7 @@ export const tasksService = {
     const title = cleanTitle(input.title);
     const description = cleanDescription(input.description);
     const self = actorId === input.assignedTo;
-    // The people who watch every task of this department (Operations — task.autoWatchers). Not on a personal
+    // The people who watch every task of this department (task.autoWatchers). Not on a personal
     // to-do, and not on a repeat copy: that one carries the watchers its task had.
     const standing = self || opts.parentRecurringId ? [] : await departmentWatcherIds(input.department);
     const people = await taskPeople.resolve([actorId, input.assignedTo, ...(input.watcherIds ?? []), ...standing]);
@@ -335,7 +335,7 @@ export const tasksService = {
     if (!next) throw BadRequest('Pick who the task is for');
     const self = input.assignedTo === actorId;
     const watchers = task.watchers.filter((w) => w.userId !== input.assignedTo);
-    // One of the department's standing watchers (Operations — task.autoWatchers) was doing it: they were left
+    // One of the department's standing watchers (task.autoWatchers) was doing it: they were left
     // out of the watchers only because the task was theirs, so they go back to watching it.
     const wasDoing = task.assignedTo;
     if (!self && wasDoing !== task.assignedBy && !watchers.some((w) => w.userId === wasDoing) && (await departmentWatcherIds(task.department)).includes(wasDoing)) {
@@ -421,7 +421,7 @@ export const tasksService = {
       set.department = input.department ?? null;
       rows.push({ taskId: id, userId: actorId, field: 'department', oldValue: task.department ?? null, newValue: input.department ?? null, comment });
       lines.push(input.department ? `set the department to ${DEPARTMENT_LABEL[input.department]}` : 'cleared the department');
-      // Moved into a department that has standing watchers (Operations — task.autoWatchers): they come along.
+      // Moved into a department that has standing watchers (task.autoWatchers): they come along.
       // Moving it out again leaves the watchers as they are.
       if (task.assignedBy !== task.assignedTo) {
         const standing = (await departmentWatcherIds(input.department)).filter((u) => u !== task.assignedBy && u !== task.assignedTo && !task.watchers.some((w) => w.userId === u));
